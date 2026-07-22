@@ -12,6 +12,7 @@ const Users = db.User;
 const Vehicles = db.Vehicles;
 const Vehicle_Models = db.Vehicle_Models;
 const { emitProgress } = require("../../util/socket.util");
+const { notifyRole } = require("../../util/notification.util");
 
 module.exports.getTaskAssignment = async (technicianId) => {
   const serviceOrders = await db.Service_Orders.findAll({
@@ -462,6 +463,26 @@ module.exports.startRescueTask = async (rescueId, technicianId, newStatus) => {
             rescueId: rescue.id,
             technicianId
         });
+    }
+
+    if (rescue.status === 'COMPLETED') {
+        const technician = await db.User.findByPk(technicianId);
+        
+        // Clear customer coordinates
+        if (rescue.customer && rescue.customer.user_id) {
+            await db.User.update(
+                { latitude: null, longitude: null },
+                { where: { id: rescue.customer.user_id } }
+            );
+        }
+
+        await notifyRole('RECEPTIONIST', {
+            title: 'Cứu hộ hoàn tất',
+            content: `Kỹ thuật viên ${technician?.fullName || 'ẩn danh'} đã hoàn tất cứu hộ cho khách hàng ${rescue.customer?.name || 'ẩn danh'} và đưa xe về Gara thành công!`,
+            notificationType: 'SYSTEM',
+            priority: 'NORMAL',
+            link: '/reception/customers'
+        }, 'new_notification', { message: `Kỹ thuật viên ${technician?.fullName || ''} đã cứu hộ hoàn tất!` });
     }
 
     return rescue;
