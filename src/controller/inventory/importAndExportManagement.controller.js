@@ -7,6 +7,9 @@ const scanInvoiceService = require("../../service/inventory/importAndExportManag
 
 module.exports.scanInvoice = async (req, res) => {
   try {
+    console.log("SCAN req.files:", req.files);
+    console.log("SCAN req.file:", req.file);
+    console.log("SCAN body keys:", Object.keys(req.body || {}));
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ message: "Vui lòng upload ít nhất 1 ảnh hóa đơn" });
     }

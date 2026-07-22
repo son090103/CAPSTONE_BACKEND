@@ -12,7 +12,7 @@ router.get("/component", taskAssignment.getAllComponents);
 router.get("/task-assignments", taskAssignment.getTaskAssignment);
 router.get("/service-orders/:id", taskAssignment.getServiceOrderDetail);
 router.put("/task-assignments/start", taskAssignment.startTask);
-router.put("/task-assignments/complete", taskAssignment.completeTask);
+router.patch("/task-assignments/complete", taskAssignment.completeTask);
 
 router.get("/notifications", notificationController.getNotifications);
 router.get("/notifications/unread-count", notificationController.getUnreadCount);

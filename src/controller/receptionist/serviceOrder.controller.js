@@ -91,3 +91,15 @@ module.exports.updateServiceOrderOdo = async (req, res) => {
         });
     }
 };
+
+module.exports.getCompleteServiceOrder = async (req,res) => {
+    try {
+        const result = await serviceOrderService.getCompleteServiceOrder();
+        return res.status(200).json({success: true, data: result});
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+}

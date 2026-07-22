@@ -45,8 +45,12 @@ module.exports = (sequelize, DataTypes) => {
         });
       }
 
-      // 1-n : hasMany
-    }
+   if (models.Task_Assignment) {
+        User.hasMany(models.Task_Assignment, {
+          foreignKey: "technician_id",
+          as: "assignments",
+        });
+      }    }
   }
   User.init(
     {

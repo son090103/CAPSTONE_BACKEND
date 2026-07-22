@@ -77,6 +77,12 @@ io.on('connection', (socket) => {
     // Đồng thời phát cho Kỹ thuật viên để họ nhận thông báo
     io.to(`technician_${data.technicianId}`).emit('incoming-rescue-task', data);
   });
+  socket.on('join-role', (roleCode) => {
+    socket.join(`role-${roleCode}`);
+  });
+  socket.on('join-user', (userId) => {
+    socket.join(`user-${userId}`);
+  });
 });
 const ROUTES = require("./src/router/registry.routes");
 require("./src/jobs/pricingRule.job");

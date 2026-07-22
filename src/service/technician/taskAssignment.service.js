@@ -1,4 +1,4 @@
-const { where } = require("sequelize");
+const {Op, where } = require("sequelize");
 const db = require("../../../models");
 const { includes } = require("zod");
 const Issues = db.Vehicle_Issues;
@@ -291,16 +291,36 @@ module.exports.completeTask = async (taskAssignmentId, technicianId) => {
   });
   if (!taskAssignment) {
     throw { status: 404, message: "Không tìm thấy công việc đang thực hiện." };
-  }
+  };
   await taskAssignment.update({
-    status: "PENDING_QC",
+    status: "COMPLETED",
     actual_end_time: new Date(),
   });
-  emitProgress(taskAssignment.task.service_order_id, {
-    type: "TASK_PENDING_QC",
-    taskId: taskAssignment.task.id,
+  const taskId = taskAssignment.task.id;
+  const serviceOrderId = taskAssignment.task.service_order_id;
+  // Chỉ đóng task khi MỌI assignment của nó đã xong
+  const remainingAsg = await Task_Assignments.count({
+    where: { task_id: taskId, status: { [Op.ne]: "COMPLETED" } },
   });
-  return taskAssignment;
+  if (remainingAsg === 0) {
+    await Tasks.update({ status: "COMPLETED" }, { where: { id: taskId } });
+    // Chỉ đưa xe vào nghiệm thu khi MỌI task đã xong
+    const remainingTasks = await Tasks.count({
+      where: { service_order_id: serviceOrderId, status: { [Op.ne]: "COMPLETED" } },
+    });
+    if (remainingTasks === 0) {
+      await Service_Order.update(
+        { status: "PENDING_FINAL_QC" },
+        { where: { id: serviceOrderId } },
+      );
+    }
+  }
+  emitProgress(serviceOrderId, {
+    type: "PROGRESS_UPDATED",
+    taskId,
+  });
+    return taskAssignment;
+
 };
 
 module.exports.getAllComponents = async () => {
@@ -341,6 +361,24 @@ module.exports.createIssueReports = async (
   const issuesRecords = await Issues.bulkCreate(records);
   await task.update({ status: "COMPLETED" });
   await taskAssignment.update({ status: "COMPLETED" });
+  await notifyRole(
+    "RECEPTIONIST",
+    {
+      title: "Có báo cáo lỗi mới",
+      content: `Kỹ thuật viên vừa ghi nhận ${issuesRecords.length} lỗi cần lập báo giá.`,
+      notificationType: "ISSUE_REPORT",
+      referenceId: task.service_order_id,
+    },
+    "new_notification",
+    {
+      type: "ISSUE_REPORT",
+      serviceOrderId: task.service_order_id,
+    },
+  );
+  emitProgress(task.service_order_id, {
+    type: "INSPECTION_DONE",
+    serviceOrderId: task.service_order_id,
+  });
   return issuesRecords;
 };
 

@@ -59,6 +59,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.TEXT,
       allowNull: true
     },
+    symptoms: {
+      type: DataTypes.TEXT,
+      allowNull: false
+    },
     status: {
       type: DataTypes.STRING(50),
       allowNull: false,
@@ -69,7 +73,7 @@ module.exports = (sequelize, DataTypes) => {
     modelName: 'Appointments',
     tableName: 'Appointments',
     timestamps: true,
-    createdAt: 'created_at',
+    createdAt: 'createdAt',
     updatedAt: 'updatedAt'
   });
   return Appointments;

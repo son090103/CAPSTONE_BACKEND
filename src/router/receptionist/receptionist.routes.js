@@ -23,6 +23,7 @@ router.get("/appointment/:key/vehicle-info", appointmentController.checkVehicleI
 router.post("/customer-info-by-phone", searchController.getCustomerInfoByPhone);
 router.get("/customers", appointmentController.getCustomer);
 
+router.get("/service-orders/complete", serviceOrderController.getCompleteServiceOrder)
 router.post("/service-order", serviceOrderController.createServiceOrder)
 router.get("/service-orders", serviceOrderController.getServiceOrders)
 router.get("/service-order/:id", serviceOrderController.getServiceOrderById)
