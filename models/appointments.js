@@ -59,10 +59,7 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.TEXT,
       allowNull: true
     },
-    symptoms: {
-      type: DataTypes.TEXT,
-      allowNull: false
-    },
+
     status: {
       type: DataTypes.STRING(50),
       allowNull: false,

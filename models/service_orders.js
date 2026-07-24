@@ -73,11 +73,16 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: DataTypes.NOW,
       },
+      symptoms: {
+        type: DataTypes.TEXT,
+        allowNull: false,
+      },
       estimated_finish_time: DataTypes.DATE,
       promised_finish_time: DataTypes.DATE,
       actual_finish_time: DataTypes.DATE,
       exit_time: DataTypes.DATE,
     },
+
     {
       sequelize,
       modelName: "Service_Orders",
