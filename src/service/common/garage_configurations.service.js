@@ -23,7 +23,28 @@ module.exports.getAvailability = async (dateStr) => {
     let bookedCounts = {};
     if (dateStr) {
         const startOfDay = new Date(`${dateStr}T00:00:00Z`);
-        const endOfDay = new Date(`${dateStr}T23:59:59Z`);
+        const endOfDay = new Date(`${dateStr}T23:59:59.999Z`);
+
+        // Helper tính toán các giờ bị trùng chỉ trong 1 ngày cụ thể (dateStr)
+        const getOccupiedHours = (startTime, endTime) => {
+            if (endTime <= startOfDay || startTime >= endOfDay) return [];
+            
+            const effectiveStart = startTime < startOfDay ? startOfDay : startTime;
+            const effectiveEnd = endTime > endOfDay ? endOfDay : endTime;
+            
+            const startHour = effectiveStart.getUTCHours();
+            let endHour = effectiveEnd.getUTCHours();
+            
+            if (effectiveEnd.getMinutes() === 0 && effectiveEnd.getSeconds() === 0 && endHour > startHour) {
+                endHour -= 1;
+            }
+            
+            const hours = [];
+            for (let h = startHour; h <= endHour; h++) {
+                hours.push(h);
+            }
+            return hours;
+        };
 
         // 1. Check tương lai (Appointments)
         const appointments = await db.Appointments.findAll({
@@ -49,25 +70,13 @@ module.exports.getAvailability = async (dateStr) => {
 
         await Promise.all(appointments.map(async (app) => {
             const { endTime } = await calculateAppointmentTime(app.appointmentDetails, app.scheduled_time);
-            const startHour = app.scheduled_time.getUTCHours();
-            let endHour = endTime.getUTCHours();
-
-            // Xử lý cẩn thận trường hợp qua ngày (qua nửa đêm UTC)
-            if (endHour < startHour) {
-                endHour += 24;
-            }
-
-            if (endTime.getMinutes() === 0 && endHour > startHour) {
-                endHour -= 1;
-            }
-            for (let h = startHour; h <= endHour; h++) {
-                const hourKey = h % 24;
-                bookedCounts[hourKey] = (bookedCounts[hourKey] || 0) + 1;
-            }
+            const occupiedHours = getOccupiedHours(app.scheduled_time, endTime);
+            occupiedHours.forEach(h => {
+                bookedCounts[h] = (bookedCounts[h] || 0) + 1;
+            });
         }));
 
-        // 2. Check hiện tại (Service_Orders đang sửa chữa) nếu khách chọn xem lịch của ngày hôm nay!
-        // Các xe đang nằm trên cầu nâng (IN_PROGRESS) sẽ tiếp tục chiếm dụng cầu nâng đến khi estimated_finish_time.
+        // 2. Check hiện tại (Service_Orders đang sửa chữa)
         const activeOrders = await db.Service_Orders.findAll({
             where: {
                 status: {
@@ -75,30 +84,20 @@ module.exports.getAvailability = async (dateStr) => {
                 },
                 estimated_finish_time: {
                     [Op.ne]: null,
-                    [Op.between]: [startOfDay, endOfDay]
+                    [Op.gt]: startOfDay
+                },
+                entry_time: {
+                    [Op.lt]: endOfDay
                 }
             },
             attributes: ['entry_time', 'estimated_finish_time']
         });
 
         activeOrders.forEach(order => {
-            // Xe đã vào xưởng và đang sửa, nên startHour tính từ bây giờ hoặc entry_time
-            const currentUTC = new Date().getUTCHours();
-            const entryUTC = order.entry_time.getUTCHours();
-            const startHour = Math.max(currentUTC, entryUTC);
-            let endHour = order.estimated_finish_time.getUTCHours();
-
-            if (endHour < startHour) {
-                endHour += 24;
-            }
-
-            if (order.estimated_finish_time.getMinutes() === 0 && endHour > startHour) {
-                endHour -= 1;
-            }
-            for (let h = startHour; h <= endHour; h++) {
-                const hourKey = h % 24;
-                bookedCounts[hourKey] = (bookedCounts[hourKey] || 0) + 1;
-            }
+            const occupiedHours = getOccupiedHours(order.entry_time, order.estimated_finish_time);
+            occupiedHours.forEach(h => {
+                bookedCounts[h] = (bookedCounts[h] || 0) + 1;
+            });
         });
     }
 

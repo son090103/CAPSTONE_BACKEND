@@ -68,6 +68,10 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: "INSPECTING",
       },
+      symptoms: {
+        type: DataTypes.TEXT,
+        allowNull: false
+      },
       entry_time: {
         type: DataTypes.DATE,
         allowNull: false,

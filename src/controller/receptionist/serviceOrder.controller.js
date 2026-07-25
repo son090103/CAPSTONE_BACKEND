@@ -68,7 +68,7 @@ module.exports.getServiceOrderById = async (req, res) => {
 module.exports.updateServiceOrderOdo = async (req, res) => {
     try {
         const { id } = req.params;
-        const { current_odo } = req.body;
+        const { current_odo, symptoms } = req.body;
 
         if (current_odo === undefined || current_odo === null) {
             return res.status(400).json({
@@ -77,7 +77,7 @@ module.exports.updateServiceOrderOdo = async (req, res) => {
             });
         }
 
-        const result = await serviceOrderService.updateServiceOrderOdo(id, current_odo);
+        const result = await serviceOrderService.updateServiceOrderOdo(id, current_odo, symptoms);
         
         return res.status(200).json({
             success: true,

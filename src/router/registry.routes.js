@@ -10,6 +10,8 @@ const technicianRoutes = require("./../router/technician/technician.routes.js");
 const technicianLeaderRoutes = require("./../router/technicianLeader/technicianLeader.routes.js");
 const paymentRoutes = require("./../router/payment/payment.routes")
 
+const chatbotRoutes = require("./chatbot/chatbot.routes.js");
+
 module.exports = [
   {
     prefix: "/api/auth/",
@@ -18,6 +20,10 @@ module.exports = [
   {
     prefix: "/api/guest",
     router: guestRoutes,
+  },
+  {
+    prefix: "/api/chatbot",
+    router: chatbotRoutes,
   },
 
   {

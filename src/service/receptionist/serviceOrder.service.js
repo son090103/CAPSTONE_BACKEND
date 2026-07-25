@@ -117,7 +117,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
           customer_id: customerId,
           vehicle_id: actualVehicleId,
           booking_type: autoBookingType,
-          scheduled_time: new Date(),
+          scheduled_time: data.estimated_finish_time ? new Date(data.estimated_finish_time) : new Date(),
           status: "IN_PROGRESS",
           notes: data.notes || "Tạo tự động cho khách đến trực tiếp tại Gara",
         },
@@ -240,6 +240,24 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       );
     }
 
+    // Tính toán lại estimated_finish_time nếu là Sửa chữa (REPAIR)
+    let estimatedFinishTime = data.estimated_finish_time
+      ? new Date(data.estimated_finish_time)
+      : null;
+
+    if (currentBookingType.includes("REPAIR")) {
+      const config = await db.Garage_Configurations.findOne({
+        where: { config_key: "DEFAULT_DIAGNOSIS_MINUTES" },
+        transaction,
+      });
+      const diagnosisMinutes = config && !isNaN(parseInt(config.config_value, 10))
+        ? parseInt(config.config_value, 10)
+        : 60; // Mặc định 60 phút nếu chưa cấu hình
+
+      estimatedFinishTime = data.estimated_finish_time ? new Date(data.estimated_finish_time) : new Date();
+      estimatedFinishTime.setMinutes(estimatedFinishTime.getMinutes() + diagnosisMinutes);
+    }
+
     const serviceOrder = await db.Service_Orders.create(
       {
         appointment_id: actualAppointmentId || null,
@@ -248,13 +266,21 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         bay_id: bayIdToUse || null,
         current_odo: data.current_odo,
         status: "INSPECTING",
-        entry_time: new Date(),
-        estimated_finish_time: data.estimated_finish_time
-          ? new Date(data.estimated_finish_time)
-          : null,
+        entry_time: data.estimated_finish_time ? new Date(data.estimated_finish_time) : new Date(),
+        estimated_finish_time: estimatedFinishTime,
+        symptoms: data.symptoms || "Chưa cập nhật", // Lưu tình trạng xe lúc tiếp nhận
       },
       { transaction },
     );
+
+    // Cập nhật trạng thái Cứu hộ nếu có mã rescue_id được truyền vào
+    if (data.rescue_id) {
+      const rescueRequest = await db.Rescue_Requests.findByPk(data.rescue_id, { transaction });
+      if (rescueRequest && rescueRequest.status === 'COMPLETED') {
+        rescueRequest.status = 'SERVICE_CREATED';
+        await rescueRequest.save({ transaction });
+      }
+    }
 
     //  const techRole = await db.Role.findOne({ where: { roleCode: 'TECHNICIAN' }, transaction });
     // let technicianId = null;
@@ -564,13 +590,16 @@ module.exports.getServiceOrderById = async (id) => {
   return serviceOrder;
 };
 
-module.exports.updateServiceOrderOdo = async (id, currentOdo) => {
+module.exports.updateServiceOrderOdo = async (id, currentOdo, symptoms) => {
   const serviceOrder = await db.Service_Orders.findByPk(id);
   if (!serviceOrder) {
     throw { status: 404, message: "Không tìm thấy Lệnh sửa chữa này" };
   }
 
   serviceOrder.current_odo = currentOdo;
+  if (symptoms) {
+    serviceOrder.symptoms = symptoms;
+  }
   await serviceOrder.save();
 
   // Đồng bộ cập nhật số ODO cho bảng Vehicles nếu ODO mới lớn hơn ODO hiện tại của xe

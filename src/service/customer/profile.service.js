@@ -104,7 +104,7 @@ module.exports.updateLocation = async (userId, latitude, longitude) => {
     if (latitude !== undefined && longitude !== undefined) {
         const customer = await db.Customers.findOne({ where: { user_id: userId } });
         if (customer) {
-            await db.Rescue_Requests.update(
+            const [updatedRows] = await db.Rescue_Requests.update(
                 { customer_lat: latitude, customer_lng: longitude },
                 {
                     where: {
@@ -115,6 +115,16 @@ module.exports.updateLocation = async (userId, latitude, longitude) => {
                     }
                 }
             );
+
+            // Tự động tạo 1 yêu cầu Cứu hộ PENDING nếu khách hàng chưa có yêu cầu nào đang chạy
+            if (updatedRows === 0) {
+                await db.Rescue_Requests.create({
+                    customer_id: customer.id,
+                    status: 'PENDING',
+                    customer_lat: latitude,
+                    customer_lng: longitude
+                });
+            }
         }
     }
 
