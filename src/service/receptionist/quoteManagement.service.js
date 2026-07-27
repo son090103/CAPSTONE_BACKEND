@@ -16,6 +16,8 @@ const Users = db.User;
 const Vehicles = db.Vehicles;
 const Vehicle_Models = db.Vehicle_Models;
 const Service_Catalog = db.Service_Catalog;
+const admin = require("../../config/firebase.config");
+const { normalizeVnPhone } = require("../../util/phone.util");
 
 const transporter = require("../../config/mailer.config");
 const {
@@ -128,7 +130,6 @@ module.exports.getSpareParts = async () => {
   return parts;
 };
 
-
 module.exports.getAllService = async () => {
   const service = await Service_Catalog.findAll({
     attributes: ["id", "service_name", "labor_price"],
@@ -146,29 +147,33 @@ module.exports.createQuotation = async (data, receptionistId) => {
         message: `Công việc #${data.task_id} không tồn tại`,
       };
     }
-    const issueIds = [...new Set(data.items.map((item) => item.issue_id))];
-    const issues = await Issues.findAll({
-      where: { id: issueIds },
-      attributes: ["id", "task_id"],
-      transaction: t,
-    });
-
-    if (issues.length !== issueIds.length) {
-      const foundIds = issues.map((issue) => issue.id);
-      const missingId = issueIds.find((id) => !foundIds.includes(id));
-      throw { status: 404, message: `Lỗi #${missingId} không tồn tại` };
-    }
-    const foreignIssue = issues.find((issue) => issue.task_id !== task.id);
-    if (foreignIssue) {
-      throw {
-        status: 400,
-        message: `Lỗi #${foreignIssue.id} không thuộc công việc #${task.id}`,
-      };
+    const issueIds = [
+      ...new Set(data.items.map((item) => item.issue_id).filter(Boolean)),
+    ];
+    if (issueIds.length > 0) {
+      const issues = await Issues.findAll({
+        where: { id: issueIds },
+        attributes: ["id", "task_id"],
+        transaction: t,
+      });
+      if (issues.length !== issueIds.length) {
+        const foundIds = issues.map((i) => i.id);
+        const missingId = issueIds.find((id) => !foundIds.includes(id));
+        throw { status: 404, message: `Lỗi #${missingId} không tồn tại` };
+      }
+      const foreignIssue = issues.find((issue) => issue.task_id !== task.id);
+      if (foreignIssue) {
+        throw {
+          status: 400,
+          message: `Lỗi #${foreignIssue.id} không thuộc công việc #${task.id}`,
+        };
+      }
     }
     const detailsData = [];
     for (const item of data.items) {
       let unitPrice = 0;
       let repairPrice = 0;
+      let amount = 0;
       if (item.spare_part_id) {
         const part = await SparePart.findByPk(item.spare_part_id, {
           transaction: t,
@@ -180,6 +185,16 @@ module.exports.createQuotation = async (data, receptionistId) => {
           };
         }
         unitPrice = part.retail_price;
+        amount = item.quantity * unitPrice;
+      } else if (item.custom_item_name) {
+        if (!item.unit_price || item.unit_price <= 0) {
+          throw {
+            status: 400,
+            message: "Vui lòng nhập giá cho phụ tùng đặt riêng",
+          };
+        }
+        unitPrice = item.unit_price;
+        amount = item.quantity * unitPrice;
       } else {
         const service = await Service_Catalog.findByPk(item.service_id, {
           transaction: t,
@@ -191,17 +206,20 @@ module.exports.createQuotation = async (data, receptionistId) => {
           };
         }
         repairPrice = item.repair_price ?? service.labor_price;
+        amount = item.quantity * repairPrice;
       }
-      const amount = item.quantity * (unitPrice || repairPrice);
       totalAmount += amount;
       detailsData.push({
-        issue_id: item.issue_id,
+        issue_id: item.issue_id || null,
         spare_part_id: item.spare_part_id || null,
         service_id: item.service_id || null,
+        custom_item_name: item.custom_item_name || null,
         quantity: item.quantity,
         unit_price: unitPrice || 0,
         repair_price: repairPrice || 0,
         amount,
+        status: item.custom_item_name ? "WAITING_DEPOSIT" : "PENDING",
+
       });
     }
     const quotation = await Quotation.create(
@@ -209,6 +227,7 @@ module.exports.createQuotation = async (data, receptionistId) => {
         task_id: data.task_id,
         created_by: receptionistId,
         total_amount: totalAmount,
+        deposit_amount: data.deposit_amount || 0, 
         status: "PENDING",
         note: data.note || null,
       },
@@ -237,15 +256,40 @@ module.exports.updateQuotation = async (id, data, receptionistId) => {
           "Chỉ có thể cập nhật báo giá đang ở trạng thái PENDING hoặc REJECTED",
       };
     }
+    const issueIds = [
+      ...new Set(data.items.map((item) => item.issue_id).filter(Boolean)),
+    ];
+    if (issueIds.length > 0) {
+      const issues = await Issues.findAll({
+        where: { id: issueIds },
+        attributes: ["id", "task_id"],
+        transaction: t,
+      });
+      if (issues.length !== issueIds.length) {
+        const foundIds = issues.map((i) => i.id);
+        const missingId = issueIds.find((id) => !foundIds.includes(id));
+        throw { status: 404, message: `Lỗi #${missingId} không tồn tại` };
+      }
+      const foreignIssue = issues.find(
+        (issue) => issue.task_id !== quotation.task_id,
+      );
+      if (foreignIssue) {
+        throw {
+          status: 400,
+          message: `Lỗi #${foreignIssue.id} không thuộc công việc của báo giá`,
+        };
+      }
+    }
     await QuotationDetail.destroy({
       where: { quotation_id: id },
       transaction: t,
     });
     let totalAmount = 0;
     const detailsData = [];
-    for (const item of data.items) {
+      for (const item of data.items) {
       let unitPrice = 0;
       let repairPrice = 0;
+      let amount = 0;
       if (item.spare_part_id) {
         const part = await SparePart.findByPk(item.spare_part_id, {
           transaction: t,
@@ -257,6 +301,16 @@ module.exports.updateQuotation = async (id, data, receptionistId) => {
           };
         }
         unitPrice = part.retail_price;
+        amount = item.quantity * unitPrice;
+      } else if (item.custom_item_name) {
+        if (!item.unit_price || item.unit_price <= 0) {
+          throw {
+            status: 400,
+            message: "Vui lòng nhập giá cho phụ tùng đặt riêng",
+          };
+        }
+        unitPrice = item.unit_price;
+        amount = item.quantity * unitPrice;
       } else {
         const service = await Service_Catalog.findByPk(item.service_id, {
           transaction: t,
@@ -268,24 +322,28 @@ module.exports.updateQuotation = async (id, data, receptionistId) => {
           };
         }
         repairPrice = item.repair_price ?? service.labor_price;
+        amount = item.quantity * repairPrice;
       }
-      const amount = item.quantity * (unitPrice || repairPrice);
       totalAmount += amount;
       detailsData.push({
         quotation_id: quotation.id,
         issue_id: item.issue_id || null,
         spare_part_id: item.spare_part_id || null,
         service_id: item.service_id || null,
+        custom_item_name: item.custom_item_name || null,
         quantity: item.quantity,
         unit_price: unitPrice || 0,
         repair_price: repairPrice || 0,
         amount,
+        status: item.custom_item_name ? "WAITING_DEPOSIT" : "PENDING",
+
       });
     }
     await QuotationDetail.bulkCreate(detailsData, { transaction: t });
     await quotation.update(
       {
         total_amount: totalAmount,
+        deposit_amount: data.deposit_amount !== undefined ? data.deposit_amount : quotation.deposit_amount,
         status: "PENDING",
         approved_at: null,
         updated_by: receptionistId,
@@ -293,6 +351,7 @@ module.exports.updateQuotation = async (id, data, receptionistId) => {
       },
       { transaction: t },
     );
+
     return quotation;
   });
 };
@@ -305,6 +364,10 @@ module.exports.getQuoteHistory = async () => {
       "created_by",
       "updated_by",
       "total_amount",
+      "deposit_amount",
+      "deposit_paid_at",
+      "approval_method",
+      "approved_phone",
       "status",
       "note",
       "approved_at",
@@ -354,7 +417,8 @@ module.exports.getQuoteHistory = async () => {
       {
         model: QuotationDetail,
         as: "items",
-        attributes: ["id", "quantity", "unit_price", "repair_price", "amount"],
+        attributes: ["id", "quantity", "unit_price", "repair_price", "amount","custom_item_name",
+],
         include: [
           {
             model: Issues,
@@ -425,14 +489,20 @@ module.exports.approveQuotation = async (id) => {
       throw { status: 404, message: "Báo giá không tồn tại" };
     }
     if (quotation.status !== "PENDING") {
-      throw { status: 400, message: "Báo giá đã được xử lý, không thể thay đổi" };
+      throw {
+        status: 400,
+        message: "Báo giá đã được xử lý, không thể thay đổi",
+      };
     }
 
     const inspectionTask = await Task.findByPk(quotation.task_id, {
       transaction: t,
     });
     if (!inspectionTask) {
-      throw { status: 404, message: "Không tìm thấy công việc kiểm tra của báo giá" };
+      throw {
+        status: 404,
+        message: "Không tìm thấy công việc kiểm tra của báo giá",
+      };
     }
 
     const serviceItems = quotation.items.filter((item) => item.service_id);
@@ -455,4 +525,115 @@ module.exports.approveQuotation = async (id) => {
     return quotation;
   });
 };
+
+module.exports.approveQuotationByOTP = async (id, idToken) => {
+  let decoded;
+  try {
+    console.log("Firebase Admin project:", admin.app().options.projectId);
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (e) {
+    console.error("VERIFY FIREBASE TOKEN ERROR:", {
+      code: e.code,
+      message: e.message,
+    });
+    throw { status: 401, message: "Xác thực OTP không hợp lệ" };
+  }
+  const verifiedPhone = decoded.phone_number;
+  if (!verifiedPhone) {
+    throw { status: 400, message: "Không lấy được số điện thoại từ xác thực" };
+  }
+  return await db.sequelize.transaction(async (t) => {
+    const quotation = await Quotation.findByPk(id, {
+      include: [
+        {
+          model: QuotationDetail,
+          as: "items",
+          attributes: ["id", "service_id", "issue_id"],
+        },
+      ],
+      transaction: t,
+    });
+    if (!quotation) {
+      throw { status: 404, message: "Báo giá không tồn tại" };
+    }
+    if (quotation.status !== "PENDING") {
+      throw {
+        status: 400,
+        message: "Báo giá đã được xử lý, không thể thay đổi",
+      };
+    }
+    const inspectionTask = await Task.findByPk(quotation.task_id, {
+      transaction: t,
+    });
+    if (!inspectionTask) {
+      throw {
+        status: 404,
+        message: "Không tìm thấy công việc kiểm tra của báo giá",
+      };
+    }
+    const serviceOrder = await Service_Order.findByPk(
+      inspectionTask.service_order_id,
+      {
+        attributes: ["id"],
+        include: [
+          {
+            model: Vehicles,
+            as: "vehicle",
+            attributes: ["id"],
+            include: [
+              { model: Customers, as: "customer", attributes: ["id", "phone"] },
+            ],
+          },
+        ],
+        transaction: t,
+      },
+    );
+    const customerPhone = serviceOrder?.vehicle?.customer?.phone;
+    if (!customerPhone) {
+      throw { status: 400, message: "Không tìm thấy số điện thoại khách hàng" };
+    }
+    const normVerified = await normalizeVnPhone(verifiedPhone);
+    const normCustomer = await normalizeVnPhone(customerPhone);
+    if (normVerified !== normCustomer) {
+      throw {
+        status: 403,
+        message: "Số điện thoại xác thực không khớp với khách hàng của báo giá",
+      };
+    }
+    const serviceItems = quotation.items.filter((item) => item.service_id);
+    if (serviceItems.length > 0) {
+      await Task.bulkCreate(
+        serviceItems.map((item) => ({
+          service_order_id: inspectionTask.service_order_id,
+          quotation_item_id: item.id,
+          service_catalog_id: item.service_id,
+          type: "REPAIR",
+          status: "PENDING",
+        })),
+        { transaction: t },
+      );
+      await Service_Order.update(
+        { status: "IN_PROGRESS" },
+        {
+          where: {
+            id: inspectionTask.service_order_id,
+            status: "PENDING_QUOTATION",
+          },
+          transaction: t,
+        },
+      );
+    }
+    await quotation.update(
+      {
+        status: "APPROVED",
+        approved_at: new Date(),
+        approval_method: "OTP",
+        approved_phone: verifiedPhone,
+      },
+      { transaction: t },
+    );
+    return quotation;
+  });
+};
+
 

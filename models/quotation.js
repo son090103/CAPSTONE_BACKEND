@@ -34,7 +34,7 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         allowNull: false,
       },
-       updated_by: {
+      updated_by: {
         type: DataTypes.INTEGER,
         allowNull: true,
       },
@@ -55,8 +55,26 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.DATE,
         allowNull: true,
       },
+      approval_method: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+      },
+      approved_phone: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+      },
       note: {
         type: DataTypes.TEXT,
+        allowNull: true,
+      },
+
+      deposit_amount: {
+        type: DataTypes.DECIMAL(12, 2),
+        allowNull: false,
+        defaultValue: 0,
+      },
+      deposit_paid_at: {
+        type: DataTypes.DATE,
         allowNull: true,
       },
     },
