@@ -34,6 +34,7 @@ router.get("/notifications/unread-count", notificationController.getUnreadCount)
 router.get("/notification/:id", notificationController.getNotificationById)
 router.put("/notification/:id/read", notificationController.markAsRead)
 
+router.patch("/quotation/:id/approve-otp", quoteManagementController.approveQuoteByOTP);
 router.patch("/quotation/:id/approve", quoteManagementController.approveQuote);
 // lấy ra toàn bộ technician làm hôm nay 
 router.get("/technicians/working-today", technicianController.getTechniciansWorkingToday);

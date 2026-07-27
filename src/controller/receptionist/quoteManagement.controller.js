@@ -42,12 +42,13 @@ module.exports.getAllService = async (req,res) => {
 
 module.exports.createQuotation = async (req, res) => {
   try {
-    const receptionistId= res.locals.user.id;
-    const { task_id, items, note } = req.body;
+    const receptionistId = res.locals.user.id;
+    const { task_id, items, note, deposit_amount } = req.body;
     const validation = createQuotationSchema.safeParse({
       task_id,
       items,
       note,
+      deposit_amount,
     });
     if (!validation.success) {
       return res.status(400).json({
@@ -68,6 +69,7 @@ module.exports.createQuotation = async (req, res) => {
     });
   }
 };
+
 
 module.exports.updateQuotation = async (req, res) => {
   try {
@@ -122,3 +124,22 @@ module.exports.getQuoteHistory = async (req, res) => {
     });
   }
 };
+
+module.exports.approveQuoteByOTP = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { idToken } = req.body;
+    if (!idToken) {
+      return res.status(400).json({ message: "Thiếu mã xác thực OTP" });
+    }
+    await quoteManagementService.approveQuotationByOTP(id, idToken);
+    return res.status(200).json({ message: "Duyệt báo giá qua OTP thành công" });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+
+
