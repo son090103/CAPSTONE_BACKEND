@@ -30,6 +30,12 @@ module.exports = (sequelize, DataTypes) => {
           as: "assignments",
         });
       }
+      if (models.Repair_Notes) {
+        Task.hasMany(models.Repair_Notes, {
+          foreignKey: "task_id",
+          as: "repairNotes",
+        });
+      }
     }
   }
 

@@ -1,6 +1,5 @@
 const { Op, where } = require("sequelize");
 const db = require("../../../models");
-const { includes } = require("../../router/registry.routes");
 const Task = db.Task;
 const User = db.User;
 const Role = db.Role;
@@ -12,7 +11,7 @@ const Quotation_Details = db.Quotation_Details;
 const Vehicle_Issues = db.Vehicle_Issues;
 const Vehicle_Components = db.Vehicle_Components;
 const Task_Assignment = db.Task_Assignment;
-const { notifyRole,notifyUser } = require("../../util/notification.util");
+const { notifyRole, notifyUser } = require("../../util/notification.util");
 const { emitProgress } = require("../../util/socket.util");
 const ROLES = require("../../constants/roles");
 
@@ -97,6 +96,7 @@ module.exports.getAllTasks = async () => {
     ],
     order: [["createdAt", "ASC"]],
   });
+  console.log("serviceOrders là : ", serviceOrders)
   return serviceOrders;
 };
 

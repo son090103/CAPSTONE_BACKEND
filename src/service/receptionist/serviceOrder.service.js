@@ -1,6 +1,6 @@
 const db = require("../../../models");
 const { Op } = require("sequelize");
-const { includes } = require("../../router/registry.routes");
+const { calculateTotalServicePrice } = require("../../util/calculateServicePrice.util");
 const Quotation = db.Quotations;
 const QuotationDetail = db.Quotation_Details;
 const SparePart = db.Spare_Parts;
@@ -266,7 +266,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         bay_id: bayIdToUse || null,
         current_odo: data.current_odo,
         status: "INSPECTING",
-        entry_time: data.estimated_finish_time ? new Date(data.estimated_finish_time) : new Date(),
+        entry_time: new Date(),
         estimated_finish_time: estimatedFinishTime,
         symptoms: data.symptoms || "Chưa cập nhật", // Lưu tình trạng xe lúc tiếp nhận
       },
@@ -446,7 +446,7 @@ module.exports.getServiceOrders = async () => {
       {
         model: db.Appointments,
         as: "appointment",
-        attributes: ["id", "booking_type", "scheduled_time"],
+        attributes: ["id", "booking_type", "scheduled_time", "status"],
         include: [
           {
             model: db.Appointment_Details,
@@ -471,11 +471,28 @@ module.exports.getServiceOrders = async () => {
         as: "tasks",
         attributes: ["id", "status"],
       },
+      {
+        model: db.Booking_Payments,
+        as: "payment",
+        attributes: ["id", "payment_status", "amount", "payment_method"],
+      }
     ],
     order: [["createdAt", "DESC"]],
   });
 
-  return serviceOrders;
+  // Filter out Service Orders that are tied to an appointment which hasn't been received yet
+  const filteredOrders = serviceOrders.filter(order => {
+    if (!order.appointment_id) return true; // Walk-ins and Rescues
+    if (!order.appointment) return true; // Safety check
+    const apptStatus = order.appointment.status;
+    // If appointment is still PENDING or CONFIRMED, the car hasn't arrived yet
+    if (apptStatus === 'PENDING' || apptStatus === 'CONFIRMED') {
+      return false;
+    }
+    return true;
+  });
+
+  return filteredOrders;
 };
 
 module.exports.getServiceOrderById = async (id) => {
@@ -565,7 +582,14 @@ module.exports.getServiceOrderById = async (id) => {
           {
             model: db.Service_Catalog,
             as: "catalog",
-            attributes: ["id", "service_name", "estimated_duration"],
+            attributes: ["id", "service_name", "estimated_duration", "labor_price", "spare_part_id"],
+            include: [
+              {
+                model: db.Spare_Parts,
+                as: "sparePart",
+                attributes: ["id", "retail_price"],
+              }
+            ]
           },
           {
             model: db.Task_Assignment,
@@ -580,6 +604,11 @@ module.exports.getServiceOrderById = async (id) => {
           },
         ],
       },
+      {
+        model: db.Booking_Payments,
+        as: "payment",
+        attributes: ["id", "payment_status", "amount", "payment_method", "paid_at"],
+      }
     ],
   });
 
@@ -587,7 +616,17 @@ module.exports.getServiceOrderById = async (id) => {
     throw { status: 404, message: "Không tìm thấy Lệnh sửa chữa này" };
   }
 
-  return serviceOrder;
+  const rawServiceOrder = serviceOrder.toJSON();
+  if (rawServiceOrder.tasks) {
+    rawServiceOrder.tasks = rawServiceOrder.tasks.map(task => {
+      if (task.catalog) {
+        task.catalog.total_price = calculateTotalServicePrice(task.catalog);
+      }
+      return task;
+    });
+  }
+
+  return rawServiceOrder;
 };
 
 module.exports.updateServiceOrderOdo = async (id, currentOdo, symptoms) => {
@@ -600,6 +639,8 @@ module.exports.updateServiceOrderOdo = async (id, currentOdo, symptoms) => {
   if (symptoms) {
     serviceOrder.symptoms = symptoms;
   }
+  // Update entry time to the exact moment the receptionist receives the car
+  serviceOrder.entry_time = new Date();
   await serviceOrder.save();
 
   // Đồng bộ cập nhật số ODO cho bảng Vehicles nếu ODO mới lớn hơn ODO hiện tại của xe

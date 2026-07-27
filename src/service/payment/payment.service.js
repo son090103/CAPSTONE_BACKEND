@@ -3,9 +3,9 @@ const db = require("../../../models");
 
 const handleSepayTransaction = async (paymentData) => {
     try {
-        const { 
-            transferType, 
-            transferAmount, 
+        const {
+            transferType,
+            transferAmount,
             content,
             gateway,
             transactionDate,
@@ -26,22 +26,37 @@ const handleSepayTransaction = async (paymentData) => {
         // 1. Phân tích nội dung chuyển khoản (content) để tìm Mã Đặt Lịch
         let bookingCode = null;
         let bookingPayment = null;
-        const match = content?.match(/AGM[- ]?(\d+)/i);
-        
+        const match = content?.match(/(?:AGM|SO)[- ]?(\d+)/i);
+
         if (match) {
             bookingCode = match[1];
-            console.log(`✅ [Sepay] Tìm thấy mã đặt lịch: ${bookingCode}`);
+            console.log(`✅ [Sepay] Tìm thấy mã đơn/lịch hẹn: ${bookingCode}`);
             bookingPayment = await db.Booking_Payments.findOne({
                 where: { order_id: bookingCode, payment_status: 'PENDING' }
             });
+
+            // Nếu chưa có bản ghi Booking_Payments cho đơn này, tự động khởi tạo nếu Service_Order tồn tại
+            if (!bookingPayment) {
+                const serviceOrder = await db.Service_Orders.findByPk(bookingCode);
+                if (serviceOrder) {
+                    console.log(`✅ [Sepay] Tìm thấy ServiceOrder #${bookingCode}. Tự động khởi tạo Booking_Payments.`);
+                    bookingPayment = await db.Booking_Payments.create({
+                        order_id: bookingCode,
+                        amount: transferAmount,
+                        payment_status: 'PENDING',
+                        payment_method: 'VIETQR',
+                        payment_gateway: gateway || 'BANK'
+                    });
+                }
+            }
         }
-        
+
         // --- TỰ ĐỘNG NHẬN DIỆN QUA SỐ TIỀN (FALLBACK) ---
         if (!bookingPayment) {
             console.log(`⚠️ [Sepay] Nội dung không chứa mã hoặc mã không đúng. Kích hoạt Fallback tìm theo số tiền: ${transferAmount} VND`);
             const { Op } = require("sequelize");
             bookingPayment = await db.Booking_Payments.findOne({
-                where: { 
+                where: {
                     payment_status: 'PENDING',
                     amount: transferAmount,
                     created_at: {
@@ -70,7 +85,7 @@ const handleSepayTransaction = async (paymentData) => {
 
         // 3. Luôn luôn lưu giao dịch vào Payment_Transactions để backup/đối soát
         const transaction = await db.Payment_Transactions.create({
-            payment_id: bookingPayment ? bookingPayment.id : null, 
+            payment_id: bookingPayment ? bookingPayment.id : null,
             gateway: gateway || 'BANK',
             transaction_date: transactionDate ? new Date(transactionDate) : new Date(),
             account_number: accountNumber,
@@ -110,7 +125,32 @@ const checkPaymentStatus = async (bookingCode) => {
     }
 };
 
+const initPayment = async (orderId, amount, paymentMethod = 'VIETQR') => {
+    try {
+        const [payment, created] = await db.Booking_Payments.findOrCreate({
+            where: { order_id: orderId },
+            defaults: {
+                order_id: orderId,
+                amount: amount,
+                payment_status: 'PENDING',
+                payment_method: paymentMethod,
+                payment_gateway: 'BANK'
+            }
+        });
+        if (!created && payment.payment_status !== 'PAID') {
+            await payment.update({ amount: amount, payment_status: 'PENDING' });
+        }
+        return payment;
+    } catch (error) {
+        console.error("❌ Lỗi trong service initPayment:", error);
+        throw error;
+    }
+};
+
+
+
 module.exports = {
     handleSepayTransaction,
-    checkPaymentStatus
+    checkPaymentStatus,
+    initPayment,
 };

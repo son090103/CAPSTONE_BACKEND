@@ -1,192 +1,198 @@
+const { GoogleGenerativeAI, SchemaType } = require("@google/generative-ai");
 const vectorStoreService = require('./vectorStore.service');
 const db = require('../../../models');
 
-// 1. MOCK NLU (Giả lập Gemini bóc tách ý định bằng Regex)
-function parseIntent(message, context) {
-  const msg = message.toLowerCase().trim();
-  const step = context?.step || "none";
+// Cấu hình Gemini API
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-  // Luôn ưu tiên Cancel
-  if (["hủy", "thôi", "bỏ", "làm lại", "ko đặt nữa"].some(k => msg.includes(k))) {
-    return { intent: "cancel" };
-  }
-
-  // Nếu đang ở bước đặt lịch, mọi tin nhắn đều được hiểu theo context hiện tại
-  if (step === "booking_get_phone") {
-    // Tìm SĐT
-    const phoneMatch = msg.match(/(0[0-9]{8,10})/);
-    if (phoneMatch) return { intent: "provide_phone", phone: phoneMatch[1] };
-    // Nếu không có SĐT, BỎ QUA để nó rơi xuống dưới (xem như khách đang hỏi câu khác, tự động thoát luồng Đặt lịch)
-  } else if (step === "booking_get_date") {
-    // Chấp nhận ngày tháng nếu nó ngắn
-    if (msg.length < 50) return { intent: "provide_date", date: message };
-  } else if (step === "booking_get_service") {
-    if (msg.length < 100) return { intent: "provide_service", service: message };
-  }
-
-  // Nếu rơi xuống đây (chưa có context hoặc đã thoát khỏi luồng do không hợp lệ)
-  if (["xin chào", "hi", "hello"].some(k => msg.includes(k))) {
-    return { intent: "greeting" };
-  }
-  
-  // Dùng từ khóa chặt chẽ hơn để tránh hiểu lầm khi khách chỉ hỏi "lịch trống"
-  if (["đặt lịch", "book", "tạo lịch", "muốn đặt", "đăng ký lịch"].some(k => msg.includes(k))) {
-    return { intent: "book_appointment" };
-  }
-
-  // Tra cứu lịch trống thực tế (Dynamic Data)
-  if (["lịch trống", "còn trống", "nào rảnh", "giờ nào", "còn giờ", "lịch đặt", "lịch hẹn"].some(k => msg.includes(k))) {
-    
-    // Thuật toán thô sơ bóc tách Ngày tháng (Giả lập Gemini)
-    let targetDate = new Date();
-    targetDate.setHours(0,0,0,0);
-
-    if (msg.includes("mai")) {
-      targetDate.setDate(targetDate.getDate() + 1);
-    } else if (msg.includes("mốt") || msg.includes("kia")) {
-      targetDate.setDate(targetDate.getDate() + 2);
-    } else {
-      const dayMatch = msg.match(/ngày\s*(\d{1,2})/);
-      if (dayMatch) {
-        const day = parseInt(dayMatch[1]);
-        if (day >= 1 && day <= 31) {
-          targetDate.setDate(day);
-          // Nếu ngày nhập vào nhỏ hơn hôm nay (ví dụ hnay 25, khách đòi ngày 1), thì hiểu là mùng 1 tháng sau
-          const today = new Date();
-          today.setHours(0,0,0,0);
-          if (targetDate < today) {
-            targetDate.setMonth(targetDate.getMonth() + 1);
-          }
-        }
-      }
+// Schema ép kiểu JSON cho Gemini
+const intentSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    intent: {
+      type: SchemaType.STRING,
+      description: "Ý định của khách hàng. Phải là 1 trong các giá trị: greeting, cancel, book_appointment, provide_phone, provide_date, provide_service, check_schedule, search_service, unknown",
+    },
+    targetDate: {
+      type: SchemaType.STRING,
+      description: "Dành cho check_schedule. Ngày khách muốn tra cứu, định dạng YYYY-MM-DD. Tự tính nếu khách nói 'ngày mai', 'mốt'. Trả về rỗng nếu không có.",
+    },
+    phone: {
+      type: SchemaType.STRING,
+      description: "Số điện thoại khách hàng (chỉ trích xuất nếu có dãy số).",
+    },
+    date: {
+      type: SchemaType.STRING,
+      description: "Chuỗi ngày/thời gian khách muốn đặt lịch.",
+    },
+    service: {
+      type: SchemaType.STRING,
+      description: "Tên dịch vụ, yêu cầu hoặc triệu chứng lỗi xe khách hàng cung cấp.",
+    },
+    query: {
+      type: SchemaType.STRING,
+      description: "Nội dung câu hỏi của khách nếu hỏi thông tin chung (search_service).",
     }
-    
-    return { intent: "check_schedule", targetDate: targetDate };
-  }
+  },
+  required: ["intent"],
+};
 
-  // Mặc định là tra cứu kiến thức chung (Pinecone RAG)
-  return { intent: "search_service", query: message };
+// ==========================================
+// TẦNG 1: ĐỌC HIỂU (NLU)
+// ==========================================
+async function analyzeIntentWithGemini(message, context) {
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: intentSchema,
+    },
+  });
+
+  const prompt = `
+  Bạn là AI Trợ lý của Gara ô tô. Nhiệm vụ của bạn là phân tích câu nói của khách hàng và phân loại ý định (intent).
+  Ngữ cảnh hiện tại của phiên chat (trạng thái luồng đặt lịch): ${JSON.stringify(context || {})}
+  
+  LUẬT PHÂN LOẠI:
+  1. Nếu ngữ cảnh đang là {"step": "booking_get_phone"}: Hãy tìm số điện thoại. Nếu có SĐT -> intent: "provide_phone". Nếu KHÔNG có SĐT mà khách hỏi câu khác -> intent chuyển sang câu hỏi đó.
+  2. Nếu ngữ cảnh đang là {"step": "booking_get_date"}: Lấy ngày giờ -> intent: "provide_date".
+  3. Nếu ngữ cảnh đang là {"step": "booking_get_service"}: Lấy thông tin -> intent: "provide_service".
+  4. Nếu khách hỏi "lịch rảnh", "giờ trống", "còn trống không", "hôm nay rảnh không" -> intent: "check_schedule".
+  5. Nếu khách bảo muốn "đặt lịch", "tạo lịch", "book" -> intent: "book_appointment".
+  6. Nếu khách hỏi giá, quy trình, bảo hành, hỏi dịch vụ -> intent: "search_service", đồng thời điền câu hỏi vào field 'query'.
+  7. Nếu khách bảo "thôi", "hủy", "không cần" -> intent: "cancel".
+  8. Nếu khách chào hỏi chung chung -> intent: "greeting".
+  
+  Câu nói của khách: "${message}"
+  `;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const parsed = JSON.parse(result.response.text());
+    console.log("[Tầng 1 - NLU] Phân tích Ý định:", parsed);
+    return parsed;
+  } catch (error) {
+    console.error("Lỗi gọi Gemini NLU:", error);
+    return { intent: "search_service", query: message };
+  }
 }
 
-// 2. HANDLERS (Business Logic)
+// ==========================================
+// TẦNG 2: XỬ LÝ LOGIC (Lấy Data Thô từ Database)
+// ==========================================
 async function handleGreeting(context) {
-  return {
-    reply: "Dạ, em chào anh/chị. Em là trợ lý ảo của Gara. Anh/chị cần em tư vấn dịch vụ hay muốn đặt lịch hẹn sửa chữa ạ?",
-    context: {}
-  };
+  return { rawData: { action: "Chào hỏi khách hàng và hỏi xem họ cần hỗ trợ gì (ví dụ: đặt lịch, tra cứu giá...)." }, context: {} };
 }
 
 async function handleCancel(context) {
-  return {
-    reply: "Dạ vâng, em đã hủy thao tác đang làm. Anh/chị cần hỗ trợ gì khác không ạ?",
-    context: {}
-  };
+  return { rawData: { action: "Xác nhận đã hủy thao tác thành công và hỏi khách có cần hỗ trợ gì khác không." }, context: {} };
 }
 
-async function handleSearchService(parsed, context) {
-  const pineconeContext = await vectorStoreService.searchKnowledge(parsed.query);
+async function handleSearchService(parsed, context, userMessage) {
+  const query = parsed.query || userMessage;
+  const pineconeContext = await vectorStoreService.searchKnowledge(query);
   
-  if (pineconeContext && pineconeContext !== "Không có tài liệu nào.") {
-      const chunks = pineconeContext.split('\n\n').filter(Boolean);
-      const bestMatch = chunks[0].replace(/\n/g, ' ');
-      return {
-          reply: `Dạ, theo thông tin em tra cứu được thì:\n👉 ${bestMatch}\n\nAnh/chị có muốn đặt lịch dịch vụ này không ạ?`,
-          context: {}
-      };
-  }
+  const services = await db.Service_Catalog.findAll({ 
+      where: { is_active: true },
+      include: [{
+          model: db.Spare_Parts,
+          as: 'sparePart',
+          attributes: ['name', 'retail_price']
+      }]
+  });
   
+  const catalogList = services.map(s => {
+      let total = Number(s.labor_price) || 0;
+      let partStr = '';
+      if (s.sparePart && s.sparePart.retail_price) {
+          const partPrice = Number(s.sparePart.retail_price);
+          total += partPrice;
+          partStr = ` (Tiền công: ${Number(s.labor_price).toLocaleString('vi-VN')}đ + Phụ tùng ${s.sparePart.name}: ${partPrice.toLocaleString('vi-VN')}đ)`;
+      } else {
+          partStr = ` (Chỉ tính tiền công)`;
+      }
+      return `- ${s.service_name} | Tổng giá: ${total.toLocaleString('vi-VN')} VNĐ ${partStr}`;
+  }).join("\n");
+
   return {
-      reply: "Dạ câu hỏi này hơi khó, em chưa tìm thấy thông tin chính xác. Anh/chị có thể gọi hotline để nhân viên tư vấn trực tiếp được không ạ?",
-      context: {}
+    rawData: {
+      action: "Khách đang hỏi/kể bệnh. Hãy suy luận dựa vào Bảng giá để chọn Dịch vụ phù hợp tư vấn cho khách. Kèm theo Tài liệu nếu cần thiết.",
+      catalogList,
+      pineconeContext
+    },
+    context: {}
   };
 }
 
 async function handleCheckSchedule(parsed, context) {
   try {
-    const { Op } = require('sequelize');
-    const targetDate = parsed.targetDate || new Date();
-    const nextDay = new Date(targetDate);
-    nextDay.setDate(nextDay.getDate() + 1); 
+    const garageConfigService = require('../common/garage_configurations.service');
+    const targetDate = parsed.targetDate ? new Date(parsed.targetDate) : new Date();
+    
+    const y = targetDate.getFullYear();
+    const m = String(targetDate.getMonth() + 1).padStart(2, '0');
+    const d = String(targetDate.getDate()).padStart(2, '0');
+    const dateStr = `${y}-${m}-${d}`;
+    const displayDateStr = `${d}/${m}/${y}`;
 
-    const dateStr = `${targetDate.getDate()}/${targetDate.getMonth() + 1}`;
-
-    // Lấy lịch hẹn trong ngày mục tiêu
-    const appointments = await db.Appointments.findAll({
-      where: {
-        scheduled_time: { [Op.between]: [targetDate, nextDay] },
-        status: { [Op.ne]: 'CANCELLED' } 
-      },
-      order: [['scheduled_time', 'ASC']]
-    });
-
-    // Các khung giờ chuẩn của Gara (8h sáng đến 16h chiều, nghỉ trưa 12h)
-    const workingSlots = ["08:00", "09:00", "10:00", "11:00", "13:00", "14:00", "15:00", "16:00"];
-
-    if (appointments.length === 0) {
-      return {
-        reply: `Dạ, vào **ngày ${dateStr}** Gara đang trống toàn bộ các khung giờ: **${workingSlots.join(", ")}**.\nAnh/chị muốn đặt lịch vào lúc mấy giờ để em giữ chỗ ạ?`,
-        context: {}
-      };
+    const availability = await garageConfigService.getAvailability(dateStr);
+    
+    if (availability.capacity === 0) {
+       return { rawData: { status: "GARAGE_CLOSED", message: "Gara hiện đang không có khả năng tiếp nhận thêm xe." }, context: {} };
     }
 
-    // Lọc ra các khung giờ đã bị đặt (lấy phần giờ, VD: 10h)
-    const bookedHours = appointments.map(app => {
-      const time = new Date(app.scheduled_time);
-      return time.getHours().toString().padStart(2, '0'); // Lấy "10"
-    });
-
-    // Tìm các giờ còn trống
-    const freeSlots = workingSlots.filter(slot => {
-      const slotHour = slot.split(":")[0]; // Lấy "08"
-      return !bookedHours.includes(slotHour);
-    });
-
-    if (freeSlots.length === 0) {
-       return {
-        reply: `Dạ rất tiếc, vào ngày ${dateStr} Gara đã KÍN LỊCH hoàn toàn. Anh/chị có muốn đặt lịch sang ngày khác không ạ?`,
-        context: {}
-      };
+    let allWorkingHours = [];
+    if (availability.shifts && availability.shifts.length > 0) {
+       availability.shifts.forEach(shift => {
+          let startH = parseInt(shift.start_time.split(':')[0]);
+          let endH = parseInt(shift.end_time.split(':')[0]);
+          for(let h = startH; h < endH; h++) { allWorkingHours.push(h); }
+       });
+    } else {
+       allWorkingHours = [8, 9, 10, 11, 13, 14, 15, 16];
     }
 
-    return {
-      reply: `Dạ, ngày ${dateStr} Gara đã có khách ở một số khung giờ.\n👉 Hiện tại bên em CHỈ CÒN TRỐNG các giờ sau: **${freeSlots.join(", ")}**.\nAnh/chị muốn chốt đặt lịch vào giờ nào trong số này ạ?`,
-      context: {} 
-    };
+    // Lọc ra các giờ chưa bị quá tải
+    let freeHours = allWorkingHours.filter(h => (availability.bookedCounts[h] || 0) < availability.capacity);
+
+    // [QUAN TRỌNG] Tránh việc book giờ trong quá khứ nếu đang xem lịch ngày hôm nay
+    const now = new Date();
+    const isToday = (y === now.getFullYear() && parseInt(m) === now.getMonth() + 1 && parseInt(d) === now.getDate());
+    
+    if (isToday) {
+       const currentHour = now.getHours();
+       // Lọc bỏ các giờ cũ. Dư ra 1 tiếng để kịp đi lại (buffer)
+       freeHours = freeHours.filter(h => h > currentHour);
+    }
+
+    const freeSlotsStr = freeHours.map(h => `${String(h).padStart(2, '0')}:00`);
+
+    if (freeSlotsStr.length === 0) {
+       return { rawData: { status: "FULLY_BOOKED", targetDate: displayDateStr, message: "Gara đã KÍN LỊCH hoàn toàn. Hãy đề xuất khách chuyển sang ngày khác." }, context: {} };
+    }
+
+    return { rawData: { status: "AVAILABLE", targetDate: displayDateStr, freeSlots: freeSlotsStr, message: "Hãy báo cáo các khung giờ trống cho khách và hỏi họ muốn chọn giờ nào." }, context: {} };
   } catch (error) {
     console.error("Lỗi check lịch trống:", error);
-    return {
-      reply: "Dạ hệ thống kiểm tra lịch đang bận, anh/chị vui lòng gọi hotline để nhân viên xem lịch thực tế nhé!",
-      context: {}
-    };
+    return { rawData: { status: "ERROR", message: "Hệ thống kiểm tra lịch đang bảo trì." }, context: {} };
   }
 }
 
 async function handleBookAppointment(parsed, context) {
-  return {
-    reply: "Dạ, anh/chị cho em xin **Số điện thoại** để em tiện lưu thông tin đặt lịch nhé (VD: 0901234567).",
-    context: { step: "booking_get_phone" }
-  };
+  return { rawData: { action: "Bắt đầu quy trình đặt lịch. Hãy yêu cầu khách cung cấp SỐ ĐIỆN THOẠI để tiện liên hệ." }, context: { step: "booking_get_phone" } };
 }
 
 async function handleProvidePhone(parsed, context) {
-  return {
-    reply: `Dạ vâng, em đã ghi nhận số điện thoại ${parsed.phone}.\nAnh/chị muốn đặt lịch vào **Ngày, giờ nào** ạ? (VD: Sáng mai lúc 9h)`,
-    context: { ...context, step: "booking_get_date", phone: parsed.phone }
-  };
+  return { rawData: { action: "Xác nhận đã nhận số điện thoại. Tiếp theo, hãy hỏi khách muốn đặt lịch vào NGÀY, GIỜ nào.", phoneReceived: parsed.phone }, context: { ...context, step: "booking_get_date", phone: parsed.phone } };
 }
 
 async function handleProvideDate(parsed, context) {
-  return {
-    reply: `Dạ, lịch dự kiến là: ${parsed.date}.\nCuối cùng, anh/chị muốn **làm dịch vụ gì** hoặc xe đang gặp tình trạng gì ạ? (VD: Xe bị xì lốp, Cần thay nhớt...)`,
-    context: { ...context, step: "booking_get_service", date: parsed.date }
-  };
+  return { rawData: { action: "Xác nhận đã nhận thời gian. Cuối cùng, hãy hỏi khách xe đang bị gì hoặc muốn làm DỊCH VỤ gì.", dateReceived: parsed.date }, context: { ...context, step: "booking_get_service", date: parsed.date } };
 }
 
 async function handleProvideService(parsed, context) {
   try {
-    // Đủ thông tin -> Lưu thẳng vào Database (Bảng Appointments)
-    // 1. Tìm hoặc tạo một user Khách Vãng Lai để gán vào Customer ID
-    let guest = await db.Customers.findOne();
+    let guest = await db.Customers.findOne({ where: { phone_number: context.phone } });
     if (!guest) {
         guest = await db.Customers.create({ full_name: 'Khách từ Chatbot', phone_number: context.phone, is_active: true });
     }
@@ -194,72 +200,90 @@ async function handleProvideService(parsed, context) {
     await db.Appointments.create({
       customer_id: guest.id, 
       booking_type: 'ONLINE',
-      scheduled_time: new Date(), // Vì khách nhập text tự do, ta lưu tạM thời gian hiện tại
-      notes: `SĐT: ${context.phone} | Thời gian khách yêu cầu: ${context.date} | Dịch vụ: ${parsed.service}`,
+      scheduled_time: new Date(), 
+      notes: `SĐT: ${context.phone} | Khách ghi chú t/g: ${context.date} | Dịch vụ: ${parsed.service}`,
       status: 'CONFIRMED'
     });
 
     return {
-      reply: `🎉 Đặt lịch thành công!\n\n📋 **Thông tin lịch hẹn:**\n- SĐT: ${context.phone}\n- Thời gian: ${context.date}\n- Yêu cầu: ${parsed.service}\n\nNhân viên Gara sẽ gọi lại xác nhận cho anh/chị sớm nhất ạ!`,
+      rawData: { 
+        status: "SUCCESS", 
+        action: "Thông báo đặt lịch thành công. Nhân viên sẽ sớm gọi điện xác nhận.",
+        appointmentDetails: { phone: context.phone, date: context.date, service_requested: parsed.service }
+      },
       context: {}
     };
   } catch (error) {
     console.error("Lỗi tạo lịch hẹn:", error);
-    return {
-      reply: "Dạ hệ thống đang bận, anh/chị vui lòng thử lại sau hoặc gọi hotline nhé!",
-      context: {}
-    };
+    return { rawData: { status: "ERROR", message: "Lỗi hệ thống khi tạo lịch." }, context: {} };
   }
 }
 
-// 3. MAIN CONTROLLER
+// ==========================================
+// TẦNG 3: ĂN NÓI (Generative Language)
+// ==========================================
+async function generateFinalReplyWithGemini(userMessage, parsed, rawData, context) {
+  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  
+  const prompt = `Bạn là nhân viên tư vấn cực kỳ thông minh, duyên dáng và chuyên nghiệp của Gara ô tô.
+Khách hàng vừa nhắn: "${userMessage}"
+Ý định của khách (hệ thống đã phân tích): ${parsed.intent}
+
+DỮ LIỆU TỪ HỆ THỐNG GARA TRẢ VỀ (Raw Data):
+"""
+${JSON.stringify(rawData, null, 2)}
+"""
+
+NHIỆM VỤ CỦA BẠN:
+Đóng vai nhân viên lễ tân, sử dụng "DỮ LIỆU TỪ HỆ THỐNG GARA TRẢ VỀ" để viết một câu trả lời gửi cho khách.
+- Tuyệt đối không để lộ đây là dữ liệu máy tính (như không nói "Theo JSON", "Theo rawData").
+- Tùy biến văn phong đa dạng, không lặp lại y chang các câu máy móc.
+- Nếu hệ thống yêu cầu "action" (VD: xin số điện thoại, xin ngày), hãy khéo léo hỏi khách.
+- [QUAN TRỌNG] Trình bày câu trả lời phải thật ĐẸP:
+  + Dùng dấu xuống dòng (\\n) để chia đoạn văn cho dễ đọc.
+  + Nếu liệt kê (giá cả, lịch rảnh), BẮT BUỘC dùng dấu gạch ngang (-) ở đầu mỗi dòng.
+  + TUYỆT ĐỐI KHÔNG dùng dấu sao (*) để làm gạch đầu dòng hoặc in đậm (không dùng **).
+- Luôn giữ thái độ thân thiện, nhiệt tình.`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    console.log("[Tầng 3 - NLG] AI sinh câu trả lời thành công.");
+    return result.response.text();
+  } catch(e) {
+    console.error("Lỗi Tầng 3 (NLG):", e);
+    return "Dạ, hiện tại hệ thống AI bên em đang quá tải, anh/chị vui lòng gọi hotline để được hỗ trợ nhé!";
+  }
+}
+
+// ==========================================
+// TRUNG TÂM ĐIỀU PHỐI (Main Controller)
+// ==========================================
 const generateResponse = async (userMessage, history, context) => {
   try {
-    // 3.1. Phân tích Intent
-    const parsed = parseIntent(userMessage, context);
-    console.log("[Mock NLU] Parsed Intent:", parsed);
+    // Tầng 1: Đọc Hiểu
+    const parsed = await analyzeIntentWithGemini(userMessage, context);
 
-    // 3.2. Giả lập delay suy nghĩ
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // 3.3. Routing State Machine
+    // Tầng 2: Đi lấy Raw Data
     let result;
     switch (parsed.intent) {
-      case "greeting":
-        result = await handleGreeting(context);
-        break;
-      case "cancel":
-        result = await handleCancel(context);
-        break;
-      case "search_service":
-        result = await handleSearchService(parsed, context);
-        break;
-      case "check_schedule":
-        result = await handleCheckSchedule(parsed, context);
-        break;
-      case "book_appointment":
-        result = await handleBookAppointment(parsed, context);
-        break;
-      case "provide_phone":
-        result = await handleProvidePhone(parsed, context);
-        break;
-      case "provide_date":
-        result = await handleProvideDate(parsed, context);
-        break;
-      case "provide_service":
-        result = await handleProvideService(parsed, context);
-        break;
-      default:
-        result = {
-          reply: "Dạ, em chưa hiểu ý anh/chị lắm. Anh/chị có thể nói rõ hơn thông tin cần đặt lịch không ạ?",
-          context
-        };
+      case "greeting": result = await handleGreeting(context); break;
+      case "cancel": result = await handleCancel(context); break;
+      case "search_service": result = await handleSearchService(parsed, context, userMessage); break;
+      case "check_schedule": result = await handleCheckSchedule(parsed, context); break;
+      case "book_appointment": result = await handleBookAppointment(parsed, context); break;
+      case "provide_phone": result = await handleProvidePhone(parsed, context); break;
+      case "provide_date": result = await handleProvideDate(parsed, context); break;
+      case "provide_service": result = await handleProvideService(parsed, context); break;
+      default: result = { rawData: { action: "Em chưa hiểu rõ ý anh/chị. Yêu cầu khách diễn đạt lại rõ hơn." }, context };
     }
 
-    return result;
+    // Tầng 3: Nhờ AI vắt óc viết câu trả lời dựa trên Raw Data
+    const finalReply = await generateFinalReplyWithGemini(userMessage, parsed, result.rawData, context);
+
+    return { reply: finalReply, context: result.context };
   } catch (error) {
-    console.error("Lỗi Chatbot:", error.message);
-    return { reply: "Hệ thống đang bảo trì, vui lòng thử lại sau.", context: {} };
+    console.error("Lỗi Chatbot Controller:", error.message);
+    return { reply: "Hệ thống AI đang bảo trì, vui lòng thử lại sau.", context: {} };
   }
 };
 
