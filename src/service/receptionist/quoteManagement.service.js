@@ -227,7 +227,7 @@ module.exports.createQuotation = async (data, receptionistId) => {
         task_id: data.task_id,
         created_by: receptionistId,
         total_amount: totalAmount,
-        deposit_amount: data.deposit_amount || 0, 
+        deposit_amount: data.deposit_amount || 0,
         status: "PENDING",
         note: data.note || null,
       },
@@ -286,7 +286,7 @@ module.exports.updateQuotation = async (id, data, receptionistId) => {
     });
     let totalAmount = 0;
     const detailsData = [];
-      for (const item of data.items) {
+    for (const item of data.items) {
       let unitPrice = 0;
       let repairPrice = 0;
       let amount = 0;
@@ -417,8 +417,8 @@ module.exports.getQuoteHistory = async () => {
       {
         model: QuotationDetail,
         as: "items",
-        attributes: ["id", "quantity", "unit_price", "repair_price", "amount","custom_item_name",
-],
+        attributes: ["id", "quantity", "unit_price", "repair_price", "amount", "custom_item_name",
+        ],
         include: [
           {
             model: Issues,

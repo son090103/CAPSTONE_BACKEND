@@ -38,7 +38,24 @@ const checkPaymentStatus = async (req, res) => {
     }
 };
 
+const initPayment = async (req, res) => {
+    try {
+        const { orderId, amount } = req.body;
+        if (!orderId) {
+            return res.status(400).json({ success: false, message: "Missing orderId" });
+        }
+        const payment = await paymentService.initPayment(orderId, amount);
+        return res.status(200).json({ success: true, data: payment });
+    } catch (error) {
+        console.error("❌ [Init Payment] Lỗi:", error);
+        return res.status(500).json({ success: false, message: "Internal server error" });
+    }
+};
+
+
+
 module.exports = {
     sepayWebhook,
-    checkPaymentStatus
+    checkPaymentStatus,
+    initPayment,
 };

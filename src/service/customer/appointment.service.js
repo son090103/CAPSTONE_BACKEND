@@ -271,7 +271,8 @@ module.exports.createAppointment = async (userId, data) => {
                 bay_id: bayId,
                 current_odo: 0,
                 status: 'INSPECTING',
-                entry_time: new Date()
+                entry_time: appointment.scheduled_time,
+                symptoms: "Chưa cập nhật"
             }, { transaction });
 
             const { findAvailableTechnicians } = require("../../util/findAvailableTechnicians.util");

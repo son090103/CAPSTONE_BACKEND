@@ -3,6 +3,7 @@ const { Op } = require("sequelize");
 const { where } = require("sequelize");
 const db = require("../../../models");
 const { HfInference } = require('@huggingface/inference');
+const vectorStoreService = require('../ai/vectorStore.service'); // Import dịch vụ AI
 
 const Service_Categories = db.Service_Categories;
 const Service_Catalog = db.Service_Catalog;
@@ -143,6 +144,10 @@ module.exports.createServiceCatalog = async (category_id, service_name, descript
     await applyCatalogTranslations(t, serviceCatalog.id, service_name, description);
 
     await t.commit();
+
+    // [Real-time AI Sync] Chạy ngầm đồng bộ lên Pinecone mà không dùng await để không bắt Admin chờ
+    vectorStoreService.syncAllServicesToPinecone().catch(err => console.error("Lỗi Background Sync:", err));
+
     return serviceCatalog;
   } catch (error) {
     await t.rollback();
@@ -235,6 +240,9 @@ module.exports.updateServiceCatalog = async (service_catalog_id, category_id, se
     estimated_duration,
     is_active,
   });
+
+  // [Real-time AI Sync] Chạy ngầm đồng bộ lên Pinecone
+  vectorStoreService.syncAllServicesToPinecone().catch(err => console.error("Lỗi Background Sync:", err));
 
   return serviceCatalog;
 };

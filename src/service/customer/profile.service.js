@@ -1,5 +1,7 @@
 const db = require("../../../models");
 const User = db.User;
+const { Op } = require("sequelize");
+const { notifyRole } = require("../../util/notification.util");
 const { normalizeVnPhone } = require("../../util/phone.util");
 const bcrypt = require("bcrypt");
 module.exports.getProfile = async (userId) => {
@@ -102,7 +104,7 @@ module.exports.updateLocation = async (userId, latitude, longitude) => {
     if (latitude !== undefined && longitude !== undefined) {
         const customer = await db.Customers.findOne({ where: { user_id: userId } });
         if (customer) {
-            await db.Rescue_Requests.update(
+            const [updatedRows] = await db.Rescue_Requests.update(
                 { customer_lat: latitude, customer_lng: longitude },
                 {
                     where: {
@@ -113,8 +115,31 @@ module.exports.updateLocation = async (userId, latitude, longitude) => {
                     }
                 }
             );
+
+            // Tự động tạo 1 yêu cầu Cứu hộ PENDING nếu khách hàng chưa có yêu cầu nào đang chạy
+            if (updatedRows === 0) {
+                await db.Rescue_Requests.create({
+                    customer_id: customer.id,
+                    status: 'PENDING',
+                    customer_lat: latitude,
+                    customer_lng: longitude
+                });
+            }
         }
     }
 
-    return { message: "Cập nhật vị trí thành công" };
+    if (latitude !== undefined && longitude !== undefined) {
+        // Gửi thông báo đến Lễ Tân
+        await notifyRole('RECEPTIONIST', {
+            title: 'Khách hàng chia sẻ vị trí cứu hộ',
+            content: `Khách hàng ${user.fullName || 'Một khách hàng'} vừa cập nhật vị trí yêu cầu cứu hộ!`,
+            notificationType: 'SYSTEM',
+            priority: 'HIGH',
+            link: '/reception/customers'
+        }, 'new_notification', { message: `Khách hàng ${user.fullName || ''} đang yêu cầu cứu hộ khẩn cấp!` });
+
+        return { message: "Đã bật chia sẻ vị trí và thông báo cho bộ phận Lễ tân thành công" };
+    }
+
+    return { message: "Tắt chia sẻ vị trí thành công" };
 };

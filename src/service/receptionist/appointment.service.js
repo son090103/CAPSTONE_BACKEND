@@ -95,11 +95,6 @@ module.exports.getCustomer = async (searchParams = "") => {
                     model: db.Rescue_Requests,
                     as: 'rescueRequests',
                     required: false,
-                    where: {
-                        status: {
-                            [db.Sequelize.Op.in]: ['PENDING', 'ASSIGNED', 'ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']
-                        }
-                    },
                     include: [
                         {
                             model: db.User,

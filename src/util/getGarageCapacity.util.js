@@ -51,7 +51,7 @@ const getGarageCapacity = async () => {
     );
 
     // Sức chứa TỐI ĐA vật lý của Gara (dành cho việc tính toán kín lịch trong tương lai)
-    const maxCapacity = 1; // FIX CỨNG BẰNG 1 ĐỂ TEST OVERLAP LOGIC (Thay vì Math.min(bayCount, technicianCount))
+    const maxCapacity = Math.min(bayCount, technicianCount);
 
     console.log(`Cầu nâng: Tổng ${bayCount}, Bận ${busyBays}, Rảnh ${idleBays}`);
     console.log(`Thợ: Tổng ${technicianCount}, Bận ${busyTechnicians}, Rảnh ${idleTechnicians}`);

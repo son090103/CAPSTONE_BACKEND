@@ -504,22 +504,24 @@ module.exports.startRescueTask = async (rescueId, technicianId, newStatus) => {
 
   await rescue.save();
 
-  if (rescue.status === "EN_ROUTE" && global._io) {
-    const userId = rescue.customer?.user_id || rescue.customer_id;
-    // Gửi cho lễ tân (global) hoặc có thể gửi cụ thể nếu có room lễ tân
-    global._io.emit("rescue-vehicle-moving", {
-      rescueId: rescue.id,
-      technicianId,
-      customerId: userId,
-      customerLat: rescue.customer_lat,
-      customerLng: rescue.customer_lng,
-    });
+  if (rescue.status === 'COMPLETED') {
+    const technician = await db.User.findByPk(technicianId);
 
-    // Gửi cho khách hàng cụ thể
-    global._io.to(`customer_${userId}`).emit("rescue-vehicle-moving", {
-      rescueId: rescue.id,
-      technicianId,
-    });
+    // Clear customer coordinates
+    if (rescue.customer && rescue.customer.user_id) {
+      await db.User.update(
+        { latitude: null, longitude: null },
+        { where: { id: rescue.customer.user_id } }
+      );
+    }
+
+    await notifyRole('RECEPTIONIST', {
+      title: 'Cứu hộ hoàn tất',
+      content: `Kỹ thuật viên ${technician?.fullName || 'ẩn danh'} đã hoàn tất cứu hộ cho khách hàng ${rescue.customer?.name || 'ẩn danh'} và đưa xe về Gara thành công!`,
+      notificationType: 'SYSTEM',
+      priority: 'NORMAL',
+      link: '/reception/customers'
+    }, 'new_notification', { message: `Kỹ thuật viên ${technician?.fullName || ''} đã cứu hộ hoàn tất!` });
   }
 
   return rescue;

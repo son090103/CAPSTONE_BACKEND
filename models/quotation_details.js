@@ -70,7 +70,7 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: "PENDING",
         validate: {
-          isIn: [["PENDING", "EXPORTED", "WAITING_DEPOSIT"]],
+          isIn: [["PENDING", "EXPORTED", "WAITING_DEPOSIT", "WAITING_STOCK"]],
         },
       },
       custom_item_name: {

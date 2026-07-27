@@ -38,6 +38,13 @@ module.exports = (sequelize, DataTypes) => {
           as: "tasks",
         });
       }
+
+      if (models.Booking_Payments) {
+        this.hasOne(models.Booking_Payments, {
+          foreignKey: "order_id",
+          as: "payment"
+        });
+      }
     }
   }
   Service_Orders.init(
@@ -67,6 +74,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(50),
         allowNull: false,
         defaultValue: "INSPECTING",
+      },
+      symptoms: {
+        type: DataTypes.TEXT,
+        allowNull: false
       },
       entry_time: {
         type: DataTypes.DATE,
