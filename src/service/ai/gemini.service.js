@@ -59,7 +59,7 @@ async function analyzeIntentWithGemini(message, context) {
   3. Nếu ngữ cảnh đang là {"step": "booking_get_service"}: Lấy thông tin -> intent: "provide_service".
   4. Nếu khách hỏi "lịch rảnh", "giờ trống", "còn trống không", "hôm nay rảnh không" -> intent: "check_schedule".
   5. Nếu khách bảo muốn "đặt lịch", "tạo lịch", "book" -> intent: "book_appointment".
-  6. Nếu khách hỏi giá, quy trình, bảo hành, hỏi dịch vụ -> intent: "search_service", đồng thời điền câu hỏi vào field 'query'.
+  6. Nếu khách hỏi giá, quy trình, bảo hành, hỏi dịch vụ, hoặc KỂ BỆNH, TÌM NGUYÊN NHÂN LỖI XE -> intent: "search_service", đồng thời điền câu hỏi vào field 'query'.
   7. Nếu khách bảo "thôi", "hủy", "không cần" -> intent: "cancel".
   8. Nếu khách chào hỏi chung chung -> intent: "greeting".
   
@@ -116,7 +116,7 @@ async function handleSearchService(parsed, context, userMessage) {
 
   return {
     rawData: {
-      action: "Khách đang hỏi/kể bệnh. Hãy suy luận dựa vào Bảng giá để chọn Dịch vụ phù hợp tư vấn cho khách. Kèm theo Tài liệu nếu cần thiết.",
+      action: "Khách đang hỏi/kể bệnh hoặc hỏi dịch vụ. BẠN PHẢI ĐÓNG VAI LÀ CHUYÊN GIA KỸ THUẬT. TUYỆT ĐỐI KHÔNG ĐƯỢC TỪ CHỐI CHẨN ĐOÁN! Hãy sử dụng Tài liệu (pineconeContext) để phân tích nguyên nhân gây bệnh, sau đó chọn và báo giá các Dịch vụ phù hợp trong Bảng giá (catalogList) để tư vấn hướng khắc phục. Phân tích xong mới được khéo léo mời khách mang xe tới Gara kiểm tra thêm.",
       catalogList,
       pineconeContext
     },
@@ -225,7 +225,7 @@ async function handleProvideService(parsed, context) {
 async function generateFinalReplyWithGemini(userMessage, parsed, rawData, context) {
   const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
   
-  const prompt = `Bạn là nhân viên tư vấn cực kỳ thông minh, duyên dáng và chuyên nghiệp của Gara ô tô.
+  const prompt = `Bạn là Cố vấn Dịch vụ & Kỹ thuật cực kỳ thông minh, chuyên nghiệp của Gara ô tô.
 Khách hàng vừa nhắn: "${userMessage}"
 Ý định của khách (hệ thống đã phân tích): ${parsed.intent}
 
@@ -235,13 +235,14 @@ ${JSON.stringify(rawData, null, 2)}
 """
 
 NHIỆM VỤ CỦA BẠN:
-Đóng vai nhân viên lễ tân, sử dụng "DỮ LIỆU TỪ HỆ THỐNG GARA TRẢ VỀ" để viết một câu trả lời gửi cho khách.
+Đóng vai Cố vấn Dịch vụ & Kỹ thuật, sử dụng "DỮ LIỆU TỪ HỆ THỐNG GARA TRẢ VỀ" để viết một câu trả lời gửi cho khách.
 - Tuyệt đối không để lộ đây là dữ liệu máy tính (như không nói "Theo JSON", "Theo rawData").
 - Tùy biến văn phong đa dạng, không lặp lại y chang các câu máy móc.
+- [ĐẶC BIỆT QUAN TRỌNG]: Nếu trong Raw Data có chứa 'catalogList' (Bảng giá dịch vụ) hoặc 'pineconeContext' (Tài liệu), BẠN BẮT BUỘC PHẢI TƯ VẤN BỆNH VÀ LIỆT KÊ ÍT NHẤT 1-2 DỊCH VỤ CÙNG BÁO GIÁ CỤ THỂ CHO KHÁCH (lấy đúng giá từ catalogList). TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈ MỜI KHÁCH ĐẾN GARA MÀ KHÔNG BÁO GIÁ/KHÔNG CHẨN ĐOÁN!
 - Nếu hệ thống yêu cầu "action" (VD: xin số điện thoại, xin ngày), hãy khéo léo hỏi khách.
 - [QUAN TRỌNG] Trình bày câu trả lời phải thật ĐẸP:
   + Dùng dấu xuống dòng (\\n) để chia đoạn văn cho dễ đọc.
-  + Nếu liệt kê (giá cả, lịch rảnh), BẮT BUỘC dùng dấu gạch ngang (-) ở đầu mỗi dòng.
+  + Nếu liệt kê (giá cả, lịch rảnh, dịch vụ), BẮT BUỘC dùng dấu gạch ngang (-) ở đầu mỗi dòng.
   + TUYỆT ĐỐI KHÔNG dùng dấu sao (*) để làm gạch đầu dòng hoặc in đậm (không dùng **).
 - Luôn giữ thái độ thân thiện, nhiệt tình.`;
 
