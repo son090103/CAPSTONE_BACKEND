@@ -61,19 +61,6 @@ module.exports.importSparePart = async (req, res) => {
   }
 };
 
-module.exports.viewImportHistory = async (req, res) => {
-  try {
-    const result = await ImportAndExportManagement.viewImportHistory();
-    return res.status(200).json({
-      data: result,
-    });
-  } catch (error) {
-    return res.status(error.status || 500).json({
-      message: error.message || "Internal server error",
-    });
-  }
-};
-
 module.exports.getApprovedQuotesWithParts = async (req, res) => {
   try {
     const result = await ImportAndExportManagement.getApprovedQuotesWithParts();
@@ -118,6 +105,31 @@ module.exports.approveExportByQuotation = async (req, res) => {
   }
 };
 
+module.exports.viewImportHistory = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.viewImportHistory();
+    return res.status(200).json({
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.viewImportDetail = async (req, res) => {
+  try {
+    const { receiptCode } = req.params;
+    const result = await ImportAndExportManagement.viewImportDetail(receiptCode);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
 module.exports.viewExportHistory = async (req, res) => {
   try {
     const result = await ImportAndExportManagement.viewExportHistory();
@@ -135,6 +147,17 @@ module.exports.viewExportDetail = async (req, res) => {
   try {
     const { receiptCode } = req.params;
     const result = await ImportAndExportManagement.viewExportDetail(receiptCode);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getWaitingStockItems = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getWaitingStockItems();
     return res.status(200).json({ data: result });
   } catch (error) {
     return res.status(error.status || 500).json({

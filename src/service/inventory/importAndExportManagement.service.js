@@ -315,41 +315,6 @@ module.exports.importSparePart = async (manager_id, supplier_id, items) => {
   });
 };
 
-module.exports.viewImportHistory = async () => {
-  const result = await InventoryLog.findAll({
-    where: {
-      type: "IN",
-    },
-    attributes: [
-      "id",
-      "receipt_code",
-      "createdAt",
-      "type",
-      "quantity",
-      "unit_price",
-    ],
-    include: [
-      {
-        model: User,
-        as: "manager",
-        attributes: ["fullName"],
-      },
-      {
-        model: SparePart,
-        as: "part",
-        attributes: ["sku", "name"],
-      },
-      {
-        model: Supplier,
-        as: "supplier",
-        attributes: ["name"],
-      },
-    ],
-    order: [["createdAt", "DESC"]],
-  });
-  return result;
-};
-
 module.exports.getApprovedQuotesWithParts = async () => {
   const result = await Quotation.findAll({
     where: { status: "APPROVED" },
@@ -381,7 +346,6 @@ module.exports.getApprovedQuotesWithParts = async () => {
   });
   return result;
 };
-
 
 module.exports.approveExportByQuotation = async (quotationId, detailIds, managerId) => {
   return await db.sequelize.transaction(async (t) => {
@@ -455,6 +419,37 @@ module.exports.approveExportByQuotation = async (quotationId, detailIds, manager
   });
 };
 
+module.exports.viewImportHistory = async () => {
+  const result = await InventoryLog.findAll({
+    where: { type: "IN" },
+    attributes: [
+      "receipt_code",
+      [db.sequelize.fn("MAX", db.sequelize.col("Inventory_Logs.createdAt")), "imported_at"],
+      [db.sequelize.fn("COUNT", db.sequelize.col("Inventory_Logs.id")), "item_count"],
+      [db.sequelize.fn("SUM", db.sequelize.literal("quantity * unit_price")), "total_amount"],
+      [db.sequelize.fn("MAX", db.sequelize.col("manager.fullName")), "manager_name"],
+    ],
+    include: [{ model: User, as: "manager", attributes: [] }],
+    group: ["Inventory_Logs.receipt_code"],
+    order: [[db.sequelize.fn("MAX", db.sequelize.col("Inventory_Logs.createdAt")), "DESC"]],
+    raw: true,
+  });
+  return result;
+};
+
+module.exports.viewImportDetail = async (receiptCode) => {
+  const result = await InventoryLog.findAll({
+    where: { type: "IN", receipt_code: receiptCode },
+    attributes: ["id", "receipt_code", "createdAt", "quantity", "unit_price"],
+    include: [
+      { model: SparePart, as: "part", attributes: ["sku", "name"] },
+      { model: Supplier, as: "supplier", attributes: ["name"] },
+    ],
+    order: [["id", "ASC"]],
+  });
+  return result;
+};
+
 module.exports.viewExportHistory = async () => {
   const result = await InventoryLog.findAll({
     where: { type: "OUT" },
@@ -486,5 +481,64 @@ module.exports.viewExportDetail = async (receiptCode) => {
     order: [["id", "ASC"]],
   });
   return result;
+};
+
+module.exports.getWaitingStockItems = async () => {
+  return await QuotationDetail.findAll({
+    where: { status: "WAITING_STOCK" },
+    attributes: ["id", "custom_item_name", "quantity", "unit_price", "status", "createdAt"],
+    include: [
+      {
+        model: Quotation,
+        as: "quotation",
+        attributes: ["id", "deposit_amount", "deposit_paid_at"],
+        required: true,
+        include: [
+          {
+            model: Task,
+            as: "task",
+            attributes: ["id"],
+            required: true,
+            include: [
+              {
+                model: Service_Orders,
+                as: "serviceOrder",
+                attributes: ["id"],
+                required: true,
+                include: [
+                  {
+                    model: Vehicles,
+                    as: "vehicle",
+                    attributes: ["id", "license_plate", "color"],
+                    required: true,
+                    include: [
+                      {
+                        model: Vehicle_Models,
+                        as: "model",
+                        attributes: ["id", "model_name"],
+                      },
+                      {
+                        model: Customers,
+                        as: "customer",
+                        attributes: ["id", "name", "phone"],
+                        include: [
+                          {
+                            model: User,
+                            as: "user",
+                            attributes: ["id", "fullName", "phoneNumber"],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "ASC"]],
+  });
 };
 

@@ -19,6 +19,7 @@ router.patch("/part/:id", sparePartManagementController.updateSparePart);
 
 router.post("/import", importAndExportManagementController.importSparePart);
 router.get("/import", importAndExportManagementController.viewImportHistory);
+router.get("/import/:receiptCode", importAndExportManagementController.viewImportDetail);
 
 router.get("/part-category", sparePartCategoryManagementController.getPartCategory);
 router.post("/part-category", sparePartCategoryManagementController.createPartCategory);
@@ -27,5 +28,7 @@ router.patch("/part-category/:id", sparePartCategoryManagementController.updateP
 router.get("/supplier", supplierManagementController.getSupplier);
 router.post("/supplier", supplierManagementController.createSupplier);
 router.patch("/supplier/:id", supplierManagementController.updateSupplier);
+
+router.get("/inventory/waiting-stock", importAndExportManagementController.getWaitingStockItems);
 
 module.exports = router;
