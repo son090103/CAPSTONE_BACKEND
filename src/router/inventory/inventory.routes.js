@@ -20,6 +20,7 @@ router.patch("/part/:id", sparePartManagementController.updateSparePart);
 router.post("/import", importAndExportManagementController.importSparePart);
 router.get("/import", importAndExportManagementController.viewImportHistory);
 router.get("/import/:receiptCode", importAndExportManagementController.viewImportDetail);
+router.post("/import/order-item", importAndExportManagementController.importSparePartForOrderItem);
 
 router.get("/part-category", sparePartCategoryManagementController.getPartCategory);
 router.post("/part-category", sparePartCategoryManagementController.createPartCategory);

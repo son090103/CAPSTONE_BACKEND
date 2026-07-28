@@ -442,7 +442,7 @@ module.exports.viewImportDetail = async (receiptCode) => {
     where: { type: "IN", receipt_code: receiptCode },
     attributes: ["id", "receipt_code", "createdAt", "quantity", "unit_price"],
     include: [
-      { model: SparePart, as: "part", attributes: ["sku", "name"] },
+      { model: SparePart, as: "part", attributes: ["sku", "name", "brand"] },
       { model: Supplier, as: "supplier", attributes: ["name"] },
     ],
     order: [["id", "ASC"]],
@@ -542,3 +542,191 @@ module.exports.getWaitingStockItems = async () => {
   });
 };
 
+module.exports.importSparePartForOrderItem = async (manager_id, supplier_id, items) => {
+  return await db.sequelize.transaction(async (t) => {
+    const now = new Date();
+    const day = String(now.getDate()).padStart(2, "0");
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const year = now.getFullYear();
+    const prefix = `PN-${year}${month}${day}-`;
+    const last = await InventoryLog.findOne({
+      where: {
+        receipt_code: {
+          [Op.like]: `${prefix}%`,
+        },
+      },
+      order: [["receipt_code", "DESC"]],
+      transaction: t,
+    });
+    let next = 1;
+    if (last?.receipt_code) {
+      next = parseInt(last.receipt_code.slice(prefix.length), 10) + 1;
+    }
+    const receipt_code = `${prefix}${String(next).padStart(4, "0")}`;
+    const parts = [];
+    const logsData = [];
+    const linkedDetails = []; // NEW: theo dõi các dòng báo giá vừa được liên kết
+    for (const item of items) {
+      const {
+        quantity,
+        unit_price,
+        retail_price,
+        part_id,
+        name,
+        brand,
+        category_id,
+        warranty_period_months,
+        warranty_km_limit,
+        force,
+        quotation_item_id, // NEW
+      } = item;
+      let part;
+      if (part_id) {
+        part = await SparePart.findByPk(part_id, {
+          transaction: t,
+        });
+        if (!part) {
+          throw {
+            status: 404,
+            message: `Sản phẩm #${part_id} không tồn tại`,
+          };
+        }
+        await part.increment("stock_quantity", {
+          by: quantity,
+          transaction: t,
+        });
+        if (retail_price != null) {
+          await part.update(
+            {
+              retail_price,
+            },
+            {
+              transaction: t,
+            },
+          );
+        }
+      } else {
+        const normName = normalizeName(name);
+        const samePart = await SparePart.findAll({
+          where: {
+            category_id,
+          },
+          attributes: ["id", "sku", "name", "brand"],
+          transaction: t,
+        });
+        const sameBrand = (b1, b2) =>
+          (b1 || "").trim().toLowerCase() === (b2 || "").trim().toLowerCase();
+        const exactPart = samePart.find(
+          (p) =>
+            normalizeName(p.name) === normName && sameBrand(p.brand, brand),
+        );
+        if (exactPart) {
+          throw {
+            status: 409,
+            message: `Sản phẩm "${name}" đã tồn tại, vui lòng chọn từ danh sách`,
+            part: {
+              id: exactPart.id,
+              sku: exactPart.sku,
+              name: exactPart.name,
+              brand: exactPart.brand,
+            },
+          };
+        }
+        const candidateParts = samePart
+          .map((p) => ({
+            p,
+            score: similarity(normName, normalizeName(p.name)),
+          }))
+          .filter((x) => x.score >= 0.8)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 5)
+          .map((x) => ({
+            id: x.p.id,
+            sku: x.p.sku,
+            name: x.p.name,
+            brand: x.p.brand,
+          }));
+        if (!force && candidateParts.length) {
+          throw {
+            status: 409,
+            message: `Có sản phẩm gần giống "${name}". Kiểm tra lại trước khi tạo mới`,
+            part: candidateParts,
+          };
+        }
+        part = await sparePartService.createSparePart(
+          name,
+          brand,
+          category_id,
+          warranty_period_months,
+          warranty_km_limit,
+          t,
+        );
+        await part.update(
+          {
+            stock_quantity: quantity,
+            retail_price: retail_price,
+          },
+          {
+            transaction: t,
+          },
+        );
+      }
+      if (quotation_item_id) {
+        const detail = await QuotationDetail.findByPk(quotation_item_id, {
+          transaction: t,
+        });
+        if (!detail || detail.status !== "WAITING_STOCK") {
+          throw {
+            status: 400,
+            message: `Dòng báo giá #${quotation_item_id} không ở trạng thái chờ hàng`,
+          };
+        }
+          if (Number(unit_price) > Number(detail.unit_price)) {
+          throw {
+            status: 400,
+            message: `Giá nhập (${unit_price}) cao hơn giá đã báo khách (${detail.unit_price}) cho "${detail.custom_item_name}". Không thể nhập kho.`,
+          };
+        }
+        await detail.update(
+          { spare_part_id: part.id, status: "PENDING" },
+          { transaction: t },
+        );
+        linkedDetails.push(detail);
+      }
+      logsData.push({
+        receipt_code,
+        part_id: part.id,
+        supplier_id,
+        type: "IN",
+        quantity,
+        unit_price,
+        manager_id,
+      });
+      await part.reload({
+        transaction: t,
+      });
+      parts.push(part);
+    }
+    const logs = await InventoryLog.bulkCreate(logsData, {
+      transaction: t,
+      returning: true,
+    });
+    const batchData = logs.map((log, index) => ({
+      inventory_log_id: log.id,
+      unit_cost: items[index].unit_price,
+      remaining_quantity: items[index].quantity,
+    }));
+    await InventoryBatch.bulkCreate(batchData, {
+      transaction: t,
+    });
+    const results = parts.map((part, index) => ({
+      part,
+      importLog: logs[index],
+    }));
+    return {
+      receipt_code,
+      items: results,
+      linkedDetails, 
+    };
+  });
+};
