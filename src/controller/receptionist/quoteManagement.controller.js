@@ -127,16 +127,6 @@ module.exports.updateQuotation = async (req, res) => {
 };
 
 
-module.exports.approveQuote = async (req,res) => {
-    try {
-        const {id} = req.params;
-        await quoteManagementService.approveQuotation(id);
-        return res.status(200).json({ message: "Đồng ý báo giá thành công"});
-    } catch (error) {
-        return res.status(error.status || 500).json({ message: error.message || "Internal server error" });
-    };
-};
-
 module.exports.getQuoteHistory = async (req, res) => {
   try {
     const result = await quoteManagementService.getQuoteHistory();

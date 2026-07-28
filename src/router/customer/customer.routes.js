@@ -8,8 +8,13 @@ const vehicleController = require("../../controller/customer/vehicle.controller"
 const feedbackController = require("../../controller/customer/feedback.controller");
 const waitingTimeController = require("../../controller/customer/waiting-time.controller");
 const serviceHistoryAndTrackingController = require("../../controller/customer/serviceHistoryAndTracking.controller");
+const quoteManagementController = require("../../controller/customer/quoteManagement.controller");
 
 router.get("/repair-progress", serviceHistoryAndTrackingController.getRepairProgress);
+
+router.get("/quotations/pending", quoteManagementController.getPendingQuotations);
+router.get("/quotations/history", quoteManagementController.getQuotationHistory);
+router.patch("/quotations/:id/approve", quoteManagementController.approveQuotation);
 
 router.get("/profile", profileController.getProfile);
 router.put("/profile", upload.single("avatar"), profileController.updateProfile);

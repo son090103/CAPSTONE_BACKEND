@@ -592,59 +592,6 @@ module.exports.getQuoteHistory = async () => {
   return result;
 };
 
-module.exports.approveQuotation = async (id) => {
-  return await db.sequelize.transaction(async (t) => {
-    const quotation = await Quotation.findByPk(id, {
-      include: [
-        {
-          model: QuotationDetail,
-          as: "items",
-          attributes: ["id", "service_id", "issue_id"],
-        },
-      ],
-      transaction: t,
-    });
-    if (!quotation) {
-      throw { status: 404, message: "Báo giá không tồn tại" };
-    }
-    if (quotation.status !== "PENDING") {
-      throw {
-        status: 400,
-        message: "Báo giá đã được xử lý, không thể thay đổi",
-      };
-    }
-
-    const inspectionTask = await Task.findByPk(quotation.task_id, {
-      transaction: t,
-    });
-    if (!inspectionTask) {
-      throw {
-        status: 404,
-        message: "Không tìm thấy công việc kiểm tra của báo giá",
-      };
-    }
-
-    const serviceItems = quotation.items.filter((item) => item.service_id);
-    if (serviceItems.length > 0) {
-      await Task.bulkCreate(
-        serviceItems.map((item) => ({
-          service_order_id: inspectionTask.service_order_id,
-          quotation_item_id: item.id,
-          service_catalog_id: item.service_id,
-          type: "REPAIR",
-          status: "PENDING",
-        })),
-        { transaction: t },
-      );
-    }
-    await quotation.update(
-      { status: "APPROVED", approved_at: new Date() },
-      { transaction: t },
-    );
-    return quotation;
-  });
-};
-
 module.exports.approveQuotationByOTP = async (id, idToken) => {
   let decoded;
   try {
