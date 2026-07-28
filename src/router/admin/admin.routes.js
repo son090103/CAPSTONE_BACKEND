@@ -10,7 +10,9 @@ const warrantyController = require("../../controller/admin/warrantyPolicies.cont
 const warrantyUpload = require("../../util/warrantyUpload.util");
 const manageCustomer = require("./../../controller/admin/manageCustomer.controller");
 const shiftController = require('../../controller/admin/shift.controller');
+const dashboardController = require('../../controller/admin/dashboard.controller');
 
+router.get("/dashboard", dashboardController.getAdminDashboard);
 router.get("/role", staffController.getRoles);
 router.get("/staff", staffController.getStaffList);
 router.post("/staff", staffController.createStaff);
