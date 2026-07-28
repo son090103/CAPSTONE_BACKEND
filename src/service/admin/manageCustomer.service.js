@@ -19,7 +19,7 @@ module.exports.getCustomers = async (searchParams = "") => {
                 {
                     model: User,
                     as: 'user',
-                    attributes: ['id', 'fullName', 'phoneNumber', 'avatar', 'status'],
+                    attributes: ['id', 'fullName', 'phoneNumber', 'avatar', 'status', 'latitude', 'longitude'],
                     required: false
                 }
             ],

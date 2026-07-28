@@ -70,6 +70,56 @@ module.exports.getAppointment = async () => {
     return appointments;
 };
 
+module.exports.getCustomer = async (searchParams = "") => {
+    try {
+        let whereCondition = {};
+        if (searchParams) {
+            whereCondition = {
+                [db.Sequelize.Op.or]: [
+                    { name: { [db.Sequelize.Op.like]: `%${searchParams}%` } },
+                    { phone: { [db.Sequelize.Op.like]: `%${searchParams}%` } }
+                ]
+            };
+        }
+
+        const customers = await db.Customers.findAll({
+            where: whereCondition,
+            include: [
+                {
+                    model: db.User,
+                    as: 'user',
+                    attributes: ['id', 'fullName', 'phoneNumber', 'avatar', 'status', 'latitude', 'longitude'],
+                    required: false
+                },
+                {
+                    model: db.Rescue_Requests,
+                    as: 'rescueRequests',
+                    required: false,
+                    include: [
+                        {
+                            model: db.User,
+                            as: 'technician',
+                            attributes: ['id', 'fullName', 'phoneNumber', 'avatar'],
+                            required: false
+                        }
+                    ]
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        const registeredCustomers = customers.filter(c => c.user_id !== null);
+        const guestCustomers = customers.filter(c => c.user_id === null);
+
+        return {
+            registeredCustomers,
+            guestCustomers
+        };
+    } catch (error) {
+        throw error;
+    }
+};
+
 module.exports.getAppointmentByKey = async (key) => {
     const appointment = await db.Appointments.findOne({
         where: { id: key },

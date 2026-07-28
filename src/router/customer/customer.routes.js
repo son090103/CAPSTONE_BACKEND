@@ -7,12 +7,14 @@ const appointmentController = require("../../controller/customer/appointment.con
 const vehicleController = require("../../controller/customer/vehicle.controller");
 const feedbackController = require("../../controller/customer/feedback.controller");
 const waitingTimeController = require("../../controller/customer/waiting-time.controller");
+const serviceHistoryAndTrackingController = require("../../controller/customer/serviceHistoryAndTracking.controller");
+
+router.get("/repair-progress", serviceHistoryAndTrackingController.getRepairProgress);
+
 router.get("/profile", profileController.getProfile);
 router.put("/profile", upload.single("avatar"), profileController.updateProfile);
 router.put("/change-password", profileController.changePassword);
-
-
-
+router.patch("/location", profileController.updateLocation);
 
 router.get("/appointment", appointmentController.getAppointment);
 router.post("/appointment", appointmentController.createAppointment);

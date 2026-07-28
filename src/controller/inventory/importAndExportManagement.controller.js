@@ -2,11 +2,15 @@ const ImportAndExportManagement = require("../../service/inventory/importAndExpo
 const {
   importReceiptSchema,
   approveExportSchema,
+  importForOrderReceiptSchema,
 } = require("../../validation/inventory/importAndExportManagement.validation");
 const scanInvoiceService = require("../../service/inventory/importAndExportManagement.service");
 
 module.exports.scanInvoice = async (req, res) => {
   try {
+    console.log("SCAN req.files:", req.files);
+    console.log("SCAN req.file:", req.file);
+    console.log("SCAN body keys:", Object.keys(req.body || {}));
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ message: "Vui lòng upload ít nhất 1 ảnh hóa đơn" });
     }
@@ -58,19 +62,6 @@ module.exports.importSparePart = async (req, res) => {
   }
 };
 
-module.exports.viewImportHistory = async (req, res) => {
-  try {
-    const result = await ImportAndExportManagement.viewImportHistory();
-    return res.status(200).json({
-      data: result,
-    });
-  } catch (error) {
-    return res.status(error.status || 500).json({
-      message: error.message || "Internal server error",
-    });
-  }
-};
-
 module.exports.getApprovedQuotesWithParts = async (req, res) => {
   try {
     const result = await ImportAndExportManagement.getApprovedQuotesWithParts();
@@ -115,6 +106,31 @@ module.exports.approveExportByQuotation = async (req, res) => {
   }
 };
 
+module.exports.viewImportHistory = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.viewImportHistory();
+    return res.status(200).json({
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.viewImportDetail = async (req, res) => {
+  try {
+    const { receiptCode } = req.params;
+    const result = await ImportAndExportManagement.viewImportDetail(receiptCode);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
 module.exports.viewExportHistory = async (req, res) => {
   try {
     const result = await ImportAndExportManagement.viewExportHistory();
@@ -136,6 +152,47 @@ module.exports.viewExportDetail = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getWaitingStockItems = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getWaitingStockItems();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.importSparePartForOrderItem = async (req, res) => {
+  try {
+    const manager_id = res.locals.user.id;
+    const { supplier_id, items } = req.body;
+    const validation = importForOrderReceiptSchema.safeParse({
+      supplier_id,
+      items,
+    });
+    if (!validation.success) {
+      return res.status(400).json({
+        message: validation.error.issues[0].message,
+      });
+    }
+    const result = await ImportAndExportManagement.importSparePartForOrderItem(
+      manager_id,
+      supplier_id,
+      items,
+    );
+    return res.status(201).json({
+      message: "Nhập kho cho đơn đặt riêng thành công",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+      part: error.part,
     });
   }
 };

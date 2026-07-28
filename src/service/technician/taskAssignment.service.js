@@ -1,7 +1,9 @@
-const { where } = require("sequelize");
+const { Op, where } = require("sequelize");
 const db = require("../../../models");
-const { includes } = require("zod");
 const Issues = db.Vehicle_Issues;
+const { emitProgress } = require("../../util/socket.util");
+const { notifyRole, notifyUser } = require("../../util/notification.util");
+const geminiClient = require("../../config/gemini.config");
 const Components = db.Vehicle_Components;
 const Tasks = db.Task;
 const Task_Assignments = db.Task_Assignment;
@@ -11,6 +13,10 @@ const Customers = db.Customers;
 const Users = db.User;
 const Vehicles = db.Vehicles;
 const Vehicle_Models = db.Vehicle_Models;
+const Vehicle_Makes = db.Vehicle_Makes;
+const Diagnostic_Knowledge = db.Diagnostic_Knowledge;
+const Repair_Notes = db.Repair_Notes;
+const Service_Catalog = db.Service_Catalog;
 
 module.exports.getTaskAssignment = async (technicianId) => {
   const serviceOrders = await db.Service_Orders.findAll({
@@ -18,7 +24,7 @@ module.exports.getTaskAssignment = async (technicianId) => {
       {
         model: db.Vehicles,
         as: "vehicle",
-        attributes: ["id", "license_plate", "vin_number"],
+        attributes: ["id", "license_plate", "vin_number", "color"],
         include: [
           {
             model: db.Vehicle_Models,
@@ -65,7 +71,7 @@ module.exports.getTaskAssignment = async (technicianId) => {
         model: db.Task,
         as: "tasks",
         required: true,
-        where: { type: ["INSPECTION", "REPAIR"], status: ["PENDING", "IN_PROGRESS"] },
+        where: { status: ["PENDING", "IN_PROGRESS"] },
         include: [
           {
             model: db.Task_Assignment,
@@ -85,12 +91,30 @@ module.exports.getTaskAssignment = async (technicianId) => {
             as: "catalog",
             attributes: ["id", "service_name", "estimated_duration"],
           },
+             {
+            model: db.Quotation_Details,
+            as: "quotationItem",
+            attributes: ["id", "quantity"],
+            include: [
+              {
+                model: db.Vehicle_Issues,
+                as: "issue",
+                attributes: ["id", "error_description", "note"],
+                include: [
+                  {
+                    model: db.Vehicle_Components,
+                    as: "component",
+                    attributes: ["id", "name"],
+                  },
+                ],
+              },
+            ],
+          },
         ],
       },
     ],
-    order: [["createdAt", "DESC"]],
+    order: [["createdAt", "ASC"]],
   });
-
   return serviceOrders;
 };
 
@@ -272,87 +296,64 @@ module.exports.startTask = async (taskAssignmentId, technicianId) => {
   return assignment;
 };
 
-module.exports.completeTask = async (taskAssignmentId, technicianId) => {
-  const assignment = await db.Task_Assignment.findOne({
-    where: { id: taskAssignmentId, technician_id: technicianId },
-    include: [
-      {
-        model: db.Task,
-        as: "task",
-        include: [{ model: db.Service_Orders, as: "serviceOrder" }],
-      },
-    ],
-  });
-
-  if (!assignment) {
-    throw { status: 404, message: "Không tìm thấy phân công công việc." };
-  }
-
-  const serviceOrderId = assignment.task.service_order_id;
-
-  const allAssignments = await db.Task_Assignment.findAll({
-    where: { technician_id: technicianId, status: "IN_PROGRESS" },
-    include: [
-      {
-        model: db.Task,
-        as: "task",
-        where: { service_order_id: serviceOrderId },
-      },
-    ],
-  });
-
-  if (allAssignments.length === 0) {
-    throw {
-      status: 400,
-      message: "Không có công việc nào đang thực hiện để hoàn thành.",
-    };
-  }
-
-  for (const asg of allAssignments) {
-    asg.status = "COMPLETED";
-    asg.actual_end_time = new Date();
-    await asg.save();
-
-    const task = asg.task;
-
-    const uncompletedAssignmentsCount = await db.Task_Assignment.count({
-      where: {
-        task_id: task.id,
-        status: { [db.Sequelize.Op.ne]: "COMPLETED" },
-      },
-    });
-
-    if (uncompletedAssignmentsCount === 0) {
-      task.status = "COMPLETED";
-      await task.save();
-    }
-  }
-
-  // 4. Kiểm tra xem toàn bộ Service Order đã hoàn thành chưa
-  const uncompletedTasksCount = await db.Task.count({
+module.exports.completeTask = async (
+  taskAssignmentId,
+  technicianId,
+  content,
+) => {
+  const taskAssignment = await Task_Assignments.findOne({
     where: {
-      service_order_id: serviceOrderId,
-      status: { [db.Sequelize.Op.ne]: "COMPLETED" },
+      id: taskAssignmentId,
+      technician_id: technicianId,
+      status: "IN_PROGRESS",
     },
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id", "service_order_id", "type"],
+      },
+    ],
   });
-
-  if (uncompletedTasksCount === 0) {
-    const serviceOrder = assignment.task.serviceOrder;
-    serviceOrder.status = "COMPLETED";
-    await serviceOrder.save();
-
-    if (serviceOrder.appointment_id) {
-      const appointmentToUpdate = await db.Appointments.findByPk(
-        serviceOrder.appointment_id,
-      );
-      if (appointmentToUpdate && appointmentToUpdate.status !== "COMPLETED") {
-        appointmentToUpdate.status = "COMPLETED";
-        await appointmentToUpdate.save();
+  if (!taskAssignment) {
+    throw { status: 404, message: "Không tìm thấy công việc đang thực hiện." };
+  }
+  await taskAssignment.update({
+    status: "COMPLETED",
+    actual_end_time: new Date(),
+  });
+  const task = taskAssignment.task;
+  const taskId = task.id;
+  const serviceOrderId = task.service_order_id;
+  const remainingAsg = await Task_Assignments.count({
+    where: { task_id: taskId, status: { [Op.ne]: "COMPLETED" } },
+  });
+  if (remainingAsg === 0) {
+    await Tasks.update({ status: "COMPLETED" }, { where: { id: taskId } });
+    if (task.type === "REPAIR") {
+      const remainingRepair = await Tasks.count({
+        where: {
+          service_order_id: serviceOrderId,
+          type: "REPAIR",
+          status: { [Op.ne]: "COMPLETED" },
+        },
+      });
+      if (remainingRepair === 0) {
+        await Service_Order.update(
+          { status: "PENDING_FINAL_QC" },
+          { where: { id: serviceOrderId } },
+        );
+      }
+      if (content && content.trim()) {
+        await Repair_Notes.create({
+          task_id: taskId,
+          content: content.trim(),
+        });
       }
     }
   }
-
-  return assignment;
+  emitProgress(serviceOrderId, { type: "PROGRESS_UPDATED", taskId });
+  return taskAssignment;
 };
 
 module.exports.getAllComponents = async () => {
@@ -371,6 +372,7 @@ module.exports.createIssueReports = async (
   const task = await Tasks.findOne({
     where: {
       id: task_id,
+      type: "INSPECTION",
       status: "IN_PROGRESS",
     },
   });
@@ -382,12 +384,9 @@ module.exports.createIssueReports = async (
     },
   });
   if (!task || !taskAssignment) {
-    throw { status: 404, message: "Không tìm thấy công việc đang thực hiện." };
-  }
-  if (task.type !== "INSPECTION") {
     throw {
-      status: 400,
-      message: "Chỉ có thể báo cáo sự cố khi đang kiểm tra xe",
+      status: 404,
+      message: "Không tìm thấy công việc kiểm tra đang thực hiện.",
     };
   }
   const records = issues.map((item) => ({
@@ -399,6 +398,78 @@ module.exports.createIssueReports = async (
   const issuesRecords = await Issues.bulkCreate(records);
   await task.update({ status: "COMPLETED" });
   await taskAssignment.update({ status: "COMPLETED" });
+  await Service_Order.update(
+    { status: "PENDING_QUOTATION" },
+    { where: { id: task.service_order_id } },
+  );
+  await notifyRole(
+    "RECEPTIONIST",
+    {
+      title: "Có báo cáo lỗi mới",
+      content: `Kỹ thuật viên vừa ghi nhận ${issuesRecords.length} lỗi cần lập báo giá.`,
+      notificationType: "ISSUE_REPORT",
+      referenceId: task.service_order_id,
+    },
+    "new_notification",
+    {
+      type: "ISSUE_REPORT",
+      serviceOrderId: task.service_order_id,
+    },
+  );
+  emitProgress(task.service_order_id, {
+    type: "INSPECTION_DONE",
+    serviceOrderId: task.service_order_id,
+  });
+  return issuesRecords;
+};
+
+module.exports.reportAdditionalIssue = async (
+  task_id,
+  issues,
+  note,
+  technicianId,
+) => {
+  const task = await Tasks.findOne({
+    where: {
+      id: task_id,
+      type: "REPAIR",
+      status: "IN_PROGRESS",
+    },
+  });
+  const taskAssignment = await Task_Assignments.findOne({
+    where: {
+      task_id: task_id,
+      technician_id: technicianId,
+      status: "IN_PROGRESS",
+    },
+  });
+  if (!task || !taskAssignment) {
+    throw {
+      status: 404,
+      message: "Không tìm thấy công việc sửa chữa đang thực hiện.",
+    };
+  }
+  const records = issues.map((item) => ({
+    component_id: item.component_id,
+    task_id: task_id,
+    error_description: item.description,
+    note: note,
+  }));
+  const issuesRecords = await Issues.bulkCreate(records);
+  await notifyRole(
+    "RECEPTIONIST",
+    {
+      title: "Có lỗi phát sinh trong sửa chữa",
+      content: `Kỹ thuật viên vừa ghi nhận ${issuesRecords.length} lỗi phát sinh cần lập báo giá bổ sung.`,
+      notificationType: "ISSUE_REPORT",
+      referenceId: task.service_order_id,
+    },
+    "new_notification",
+    {
+      type: "ISSUE_REPORT",
+      serviceOrderId: task.service_order_id,
+    },
+  );
   return issuesRecords;
 };
 
@@ -474,4 +545,632 @@ module.exports.getIssuesReportHistory = async (technicianId) => {
   });
 
   return issues;
+};
+
+module.exports.startRescueTask = async (rescueId, technicianId, newStatus) => {
+  const rescue = await db.Rescue_Requests.findByPk(rescueId, {
+    include: [{ model: db.Customers, as: "customer" }],
+  });
+
+  if (!rescue) {
+    throw { status: 404, message: "Không tìm thấy yêu cầu cứu hộ" };
+  }
+
+  if (rescue.technician_id !== technicianId) {
+    throw {
+      status: 403,
+      message: "Bạn không được phân công yêu cầu cứu hộ này",
+    };
+  }
+
+  // Cho phép chuyển đổi linh hoạt: từ ASSIGNED -> ACCEPTED, từ ACCEPTED -> EN_ROUTE, ...
+  if (newStatus) {
+    rescue.status = newStatus;
+  } else {
+    // Mặc định nếu không truyền thì hiểu là Bắt đầu đi (EN_ROUTE) hoặc Nhận (ACCEPTED) tuỳ status hiện tại
+    if (rescue.status === "ASSIGNED") {
+      rescue.status = "ACCEPTED";
+    } else if (rescue.status === "ACCEPTED") {
+      rescue.status = "EN_ROUTE";
+    }
+  }
+
+  await rescue.save();
+
+  if (rescue.status === 'COMPLETED') {
+    const technician = await db.User.findByPk(technicianId);
+
+    // Clear customer coordinates
+    if (rescue.customer && rescue.customer.user_id) {
+      await db.User.update(
+        { latitude: null, longitude: null },
+        { where: { id: rescue.customer.user_id } }
+      );
+    }
+
+    await notifyRole('RECEPTIONIST', {
+      title: 'Cứu hộ hoàn tất',
+      content: `Kỹ thuật viên ${technician?.fullName || 'ẩn danh'} đã hoàn tất cứu hộ cho khách hàng ${rescue.customer?.name || 'ẩn danh'} và đưa xe về Gara thành công!`,
+      notificationType: 'SYSTEM',
+      priority: 'NORMAL',
+      link: '/reception/customers'
+    }, 'new_notification', { message: `Kỹ thuật viên ${technician?.fullName || ''} đã cứu hộ hoàn tất!` });
+  }
+
+  return rescue;
+};
+
+module.exports.getMyActiveRescue = async (technicianId) => {
+  const rescue = await db.Rescue_Requests.findOne({
+    where: {
+      technician_id: technicianId,
+      status: {
+        [db.Sequelize.Op.in]: [
+          "ASSIGNED",
+          "ACCEPTED",
+          "EN_ROUTE",
+          "ARRIVED",
+          "IN_PROGRESS",
+        ],
+      },
+    },
+    include: [
+      {
+        model: db.Customers,
+        as: "customer",
+        attributes: ["id", "name", "phone"],
+        include: [
+          {
+            model: db.User,
+            as: "user",
+            attributes: ["id", "fullName", "phoneNumber", "avatar"],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+
+  return rescue;
+};
+
+module.exports.getAllDiagnostics = async () => {
+  const rows = await Diagnostic_Knowledge.findAll({
+    attributes: ["id", "symptom", "possible_causes", "model_id", "make_id"],
+    include: [
+      { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+      { model: Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
+    ],
+    order: [["symptom", "ASC"]],
+  });
+  return rows;
+};
+
+module.exports.searchDiagnostics = async (keyword) => {
+  const where = {};
+  if (keyword && keyword.trim()) {
+    const kw = `%${keyword.trim()}%`;
+    where[Op.or] = [
+      { symptom: { [Op.iLike]: kw } },
+      { possible_causes: { [Op.iLike]: kw } },
+    ];
+  }
+  const rows = await db.Diagnostic_Knowledge.findAll({
+    where,
+    attributes: ["id", "symptom", "possible_causes", "model_id", "make_id"],
+    include: [
+      {
+        model: db.Vehicle_Models,
+        as: "model",
+        attributes: ["id", "model_name"],
+      },
+      { model: db.Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
+    ],
+    order: [["symptom", "ASC"]],
+  });
+  return rows;
+};
+
+module.exports.filterDiagnostics = async ({ makeId, modelId }) => {
+  let orClauses = null;
+  if (modelId) {
+    const model = await db.Vehicle_Models.findByPk(modelId, {
+      attributes: ["make_id"],
+    });
+    orClauses = [{ model_id: modelId }];
+    if (model?.make_id) {
+      orClauses.push({ make_id: model.make_id, model_id: null });
+    }
+  } else if (makeId) {
+    const models = await db.Vehicle_Models.findAll({
+      where: { make_id: makeId },
+      attributes: ["id"],
+    });
+    const modelIds = models.map((m) => m.id);
+    orClauses = [{ make_id: makeId }];
+    if (modelIds.length) {
+      orClauses.push({ model_id: { [Op.in]: modelIds } });
+    }
+  }
+  const rows = await db.Diagnostic_Knowledge.findAll({
+    where: orClauses ? { [Op.or]: orClauses } : {},
+    attributes: ["id", "symptom", "possible_causes", "model_id", "make_id"],
+    include: [
+      {
+        model: db.Vehicle_Models,
+        as: "model",
+        attributes: ["id", "model_name"],
+      },
+      { model: db.Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
+    ],
+    order: [["symptom", "ASC"]],
+  });
+  return rows;
+};
+
+module.exports.getMakes = async () => {
+  return await db.Vehicle_Makes.findAll({
+    attributes: ["id", "make_name"],
+    order: [["make_name", "ASC"]],
+  });
+};
+
+module.exports.getModels = async (makeId) => {
+  const where = {};
+  if (makeId) where.make_id = makeId;
+  return await db.Vehicle_Models.findAll({
+    where,
+    attributes: ["id", "make_id", "model_name"],
+    order: [["model_name", "ASC"]],
+  });
+};
+
+module.exports.aiSuggestCauses = async (symptom, modelName) => {
+  if (!symptom || !symptom.trim()) {
+    throw { status: 400, message: "Vui lòng nhập triệu chứng" };
+  }
+  const model = geminiClient.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const prompt = `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm.
+    Xe: ${modelName || "không xác định"}.
+    Triệu chứng: "${symptom.trim()}".
+    Liệt kê 3-5 nguyên nhân khả dĩ phổ biến nhất, sắp theo khả năng cao nhất trước.
+    Mỗi nguyên nhân một dòng ngắn gọn, kèm bộ phận cần kiểm tra.
+    Chỉ trả lời bằng tiếng Việt, không giải thích dài dòng.`;
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
+  return {
+    symptom: symptom.trim(),
+    ai_suggestion: text,
+    disclaimer: "Gợi ý từ AI, cần kỹ thuật viên kiểm chứng trước khi kết luận.",
+  };
+};
+
+module.exports.getRepairHistory = async () => {
+  return await Tasks.findAll({
+    where: { type: "REPAIR", status: "COMPLETED" },
+    attributes: ["id", "createdAt"],
+    include: [
+      {
+        model: Service_Catalog,
+        as: "catalog",
+        attributes: ["id", "service_name"],
+      },
+      {
+        model: db.Repair_Notes,
+        as: "repairNotes",
+        attributes: ["id", "content", "createdAt"],
+        required: false,
+      },
+      {
+        model: Task_Assignments,
+        as: "assignments",
+        attributes: ["id"],
+        include: [
+          { model: db.User, as: "technician", attributes: ["id", "fullName"] },
+        ],
+      },
+      {
+        model: Service_Order,
+        as: "serviceOrder",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Vehicles,
+            as: "vehicle",
+            attributes: ["id", "model_id"],
+            required: true,
+            include: [
+              {
+                model: Vehicle_Models,
+                as: "model",
+                attributes: ["id", "model_name"],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+  });
+};
+
+module.exports.searchRepairHistory = async (keyword) => {
+  const catalogWhere = {};
+  if (keyword && keyword.trim()) {
+    catalogWhere.service_name = { [Op.iLike]: `%${keyword.trim()}%` };
+  }
+
+  return await Tasks.findAll({
+    where: { type: "REPAIR", status: "COMPLETED" },
+    attributes: ["id", "createdAt"],
+    include: [
+      {
+        model: Service_Catalog,
+        as: "catalog",
+        attributes: ["id", "service_name"],
+        required: !!(keyword && keyword.trim()),
+        where: Object.keys(catalogWhere).length ? catalogWhere : undefined,
+      },
+      {
+        model: Repair_Notes,
+        as: "repairNotes",
+        attributes: ["id", "content", "createdAt"],
+        required: false,
+      },
+      {
+        model: Task_Assignments,
+        as: "assignments",
+        attributes: ["id"],
+        include: [
+          { model: db.User, as: "technician", attributes: ["id", "fullName"] },
+        ],
+      },
+      {
+        model: Service_Order,
+        as: "serviceOrder",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Vehicles,
+            as: "vehicle",
+            attributes: ["id", "license_plate", "model_id"],
+            required: true,
+            include: [
+              {
+                model: Vehicle_Models,
+                as: "model",
+                attributes: ["id", "model_name"],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+  });
+};
+
+module.exports.filterRepairHistory = async ({ makeId, modelId }) => {
+  const vehicleWhere = {};
+  if (modelId) vehicleWhere.model_id = modelId;
+
+  const modelInclude = {
+    model: Vehicle_Models,
+    as: "model",
+    attributes: ["id", "model_name", "make_id"],
+    required: !!makeId,
+    where: makeId ? { make_id: makeId } : undefined,
+    include: [
+      { model: Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
+    ],
+  };
+
+  return await Tasks.findAll({
+    where: { type: "REPAIR", status: "COMPLETED" },
+    attributes: ["id", "createdAt"],
+    include: [
+      {
+        model: Service_Catalog,
+        as: "catalog",
+        attributes: ["id", "service_name"],
+      },
+      {
+        model: db.Repair_Notes,
+        as: "repairNotes",
+        attributes: ["id", "content", "createdAt"],
+        required: false,
+        include: [
+          { model: db.User, as: "technician", attributes: ["id", "fullName"] },
+        ],
+      },
+      {
+        model: Service_Order,
+        as: "serviceOrder",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Vehicles,
+            as: "vehicle",
+            attributes: ["id", "license_plate", "model_id"],
+            required: true,
+            where: Object.keys(vehicleWhere).length ? vehicleWhere : undefined,
+            include: [modelInclude],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+  });
+};
+
+module.exports.getAllInspectionHistory = async () => {
+  return await Issues.findAll({
+    attributes: [
+      "id",
+      "error_description",
+      "note",
+      "component_id",
+      "createdAt",
+    ],
+    include: [
+      { model: Components, as: "component", attributes: ["id", "name"] },
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Service_Order,
+            as: "serviceOrder",
+            attributes: ["id", "symptoms"],
+            required: true,
+            include: [
+              {
+                model: Vehicles,
+                as: "vehicle",
+                attributes: ["id", "license_plate", "model_id"],
+                required: true,
+                include: [
+                  {
+                    model: Vehicle_Models,
+                    as: "model",
+                    attributes: ["id", "model_name", "make_id"],
+                    include: [
+                      {
+                        model: Vehicle_Makes,
+                        as: "make",
+                        attributes: ["id", "make_name"],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+  });
+};
+
+module.exports.searchInspectionHistory = async (keyword) => {
+  const kw = keyword && keyword.trim() ? `%${keyword.trim()}%` : null;
+
+  return await Issues.findAll({
+    attributes: [
+      "id",
+      "error_description",
+      "note",
+      "component_id",
+      "createdAt",
+    ],
+    where: kw
+      ? { "$task.serviceOrder.symptoms$": { [Op.iLike]: kw } }
+      : undefined,
+    include: [
+      { model: Components, as: "component", attributes: ["id", "name"] },
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Service_Order,
+            as: "serviceOrder",
+            attributes: ["id", "symptoms"],
+            required: true,
+            include: [
+              {
+                model: Vehicles,
+                as: "vehicle",
+                attributes: ["id", "license_plate", "model_id"],
+                required: true,
+                include: [
+                  {
+                    model: Vehicle_Models,
+                    as: "model",
+                    attributes: ["id", "model_name", "make_id"],
+                    include: [
+                      {
+                        model: Vehicle_Makes,
+                        as: "make",
+                        attributes: ["id", "make_name"],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+  });
+};
+
+module.exports.filterInspectionHistory = async ({ makeId, modelId }) => {
+  const vehicleWhere = {};
+  if (modelId) vehicleWhere.model_id = modelId;
+
+  const modelInclude = {
+    model: Vehicle_Models,
+    as: "model",
+    attributes: ["id", "model_name", "make_id"],
+    required: !!makeId,
+    where: makeId ? { make_id: makeId } : undefined,
+    include: [
+      { model: Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
+    ],
+  };
+  return await Issues.findAll({
+    attributes: [
+      "id",
+      "error_description",
+      "note",
+      "component_id",
+      "createdAt",
+    ],
+    include: [
+      { model: Components, as: "component", attributes: ["id", "name"] },
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Service_Order,
+            as: "serviceOrder",
+            attributes: ["id", "symptoms"],
+            required: true,
+            include: [
+              {
+                model: Vehicles,
+                as: "vehicle",
+                attributes: ["id", "license_plate", "model_id"],
+                required: true,
+                where: Object.keys(vehicleWhere).length
+                  ? vehicleWhere
+                  : undefined,
+                include: [modelInclude],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+  });
+};
+
+module.exports.getCompletedTasks = async (technicianId) => {
+  return await Task_Assignments.findAll({
+    where: { technician_id: technicianId, status: "COMPLETED" },
+    attributes: ["id", "status", "actual_start_time", "actual_end_time", "role_in_task"],
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id", "type", "status"],
+        required: true,
+        include: [
+          {
+            model: Service_Catalog,
+            as: "catalog",
+            attributes: ["id", "service_name"],
+          },
+          {
+            model: Service_Order,
+            as: "serviceOrder",
+            attributes: ["id", "status"],
+            required: true,
+            include: [
+              {
+                model: Vehicles,
+                as: "vehicle",
+                attributes: ["id", "license_plate", "color"],
+                include: [
+                  {
+                    model: Vehicle_Models,
+                    as: "model",
+                    attributes: ["id", "model_name"],
+                  },
+                  {
+                    model: Customers,
+                    as: "customer",
+                    attributes: ["id", "name", "phone"],
+                    include: [
+                      {
+                        model: Users,
+                        as: "user",
+                        attributes: ["id", "fullName", "phoneNumber"],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["actual_end_time", "DESC"]],
+    limit: 100,
+  });
+};
+
+
+module.exports.pauseTask = async (taskAssignmentId, technicianId, reason) => {
+  const taskAssignment = await Task_Assignments.findOne({
+    where: {
+      id: taskAssignmentId,
+      technician_id: technicianId,
+      status: "IN_PROGRESS",
+    },
+    include: [{ model: Tasks, as: "task" }],
+  });
+  if (!taskAssignment) {
+    throw { status: 404, message: "Không tìm thấy công việc đang thực hiện." };
+  }
+  await taskAssignment.update({
+    status: "PAUSED",
+    remarks: reason || null,
+  });
+  await taskAssignment.task.update({ status: "PAUSED" });
+
+  return taskAssignment;
+};
+
+
+module.exports.resumeTask = async (taskAssignmentId, technicianId) => {
+  const taskAssignment = await Task_Assignments.findOne({
+    where: {
+      id: taskAssignmentId,
+      technician_id: technicianId,
+      status: "PAUSED",
+    },
+    include: [{ model: Tasks, as: "task" }],
+  });
+  if (!taskAssignment) {
+    throw { status: 404, message: "Không tìm thấy công việc đang tạm dừng." };
+  }
+  await taskAssignment.update({
+    status: "IN_PROGRESS",
+  });
+  await taskAssignment.task.update({ status: "IN_PROGRESS" });
+
+  return taskAssignment;
 };

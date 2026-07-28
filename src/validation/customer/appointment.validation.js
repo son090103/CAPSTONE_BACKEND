@@ -60,6 +60,7 @@ const createAppointmentSchema = z.object({
     .optional()
     .nullable(),
   vehicle_color: z.string().max(50, "Màu sắc không được dài quá 50 ký tự").optional().nullable(),
+  payment_amount: z.number().optional().nullable(),
 });
 
 module.exports = { createAppointmentSchema };

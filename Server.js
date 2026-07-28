@@ -10,9 +10,11 @@ const configureGoogle = require("././src/config/google.config");
 const whitelist = [
   "http://localhost:3000",
   "http://localhost:5173",
-  'http://192.168.1.18:5173',
   "https://agm-garage.id.vn",
-  "https://www.agm-garage.id.vn"
+  "https://www.agm-garage.id.vn",
+  "192.168.0.191:8081",
+  "https://7fd2-2405-4802-e682-2ac0-e8fe-f026-452b-f047.ngrok-free.app",
+  "https://6f23-2405-4802-e682-2ac0-e8fe-f026-452b-f047.ngrok-free.app "
 ];
 app.use(
   cors({
@@ -61,6 +63,26 @@ io.on('connection', (socket) => {
   socket.on('end-video-call', (data) => {
     socket.broadcast.emit('end-video-call', data);
   });
+
+  // test ở lễ tân ( thực chất đây là technician )
+  // Cho phép Client tham gia vào một Room cụ thể (vd: room theo ID người dùng)
+  socket.on('join-room', (roomId) => {
+    socket.join(roomId);
+  });
+
+  // Lễ tân điều phối xe cứu hộ
+  socket.on('dispatch-rescue-vehicle', (data) => {
+    // Phát tọa độ xe cứu hộ CHỈ RIÊNG cho Khách hàng đó thông qua Room (Bảo mật vị trí)
+    io.to(`customer_${data.customerId}`).emit('rescue-vehicle-dispatched', data);
+    // Đồng thời phát cho Kỹ thuật viên để họ nhận thông báo
+    io.to(`technician_${data.technicianId}`).emit('incoming-rescue-task', data);
+  });
+  socket.on('join-role', (roleCode) => {
+    socket.join(`role-${roleCode}`);
+  });
+  socket.on('join-user', (userId) => {
+    socket.join(`user-${userId}`);
+  });
 });
 const ROUTES = require("./src/router/registry.routes");
 require("./src/jobs/pricingRule.job");
@@ -85,6 +107,6 @@ ROUTES.forEach((route) => {
   }
 });
 
-server.listen(port, '0.0.0.0', () => {
+server.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });

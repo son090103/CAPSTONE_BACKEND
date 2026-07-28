@@ -72,47 +72,12 @@ module.exports.getAppointments = async (userId) => {
 
 module.exports.createAppointment = async (userId, data) => {
     // Kiểm tra sức chứa của gara
-    const capacity = await getGarageCapacity();
+    const capacityData = await getGarageCapacity();
+    const capacity = capacityData.maxCapacity;
+
     if (capacity === 0) {
         throw { status: 400, message: "Garage hiện tại không có khả năng tiếp nhận thêm xe (thiếu nhân sự hoặc khoang sửa chữa)." };
     }
-
-    // Đếm số lượng lịch hẹn trong cùng khung giờ (mỗi giờ)
-    const targetDate = new Date(data.scheduled_time);
-    const startOfHour = new Date(targetDate);
-    startOfHour.setUTCMinutes(0, 0, 0);
-    const endOfHour = new Date(targetDate);
-    endOfHour.setUTCMinutes(59, 59, 999);
-
-    const currentAppointmentsCount = await db.Appointments.count({
-        where: {
-            scheduled_time: {
-                [Op.between]: [startOfHour, endOfHour]
-            },
-            status: {
-                [Op.in]: ['PENDING', 'CONFIRMED']
-            }
-        }
-    });
-    console.log("count is: ", currentAppointmentsCount)
-    if (currentAppointmentsCount >= capacity) {
-        throw { status: 400, message: "Garage đã đạt sức chứa tối đa cho khung giờ này. Vui lòng chọn thời gian khác." };
-    }
-
-    let customer = await db.Customers.findOne({ where: { user_id: userId } });
-    if (!customer) {
-        const user = await db.User.findByPk(userId);
-        if (!user) {
-            throw { status: 404, message: "Hồ sơ khách hàng không tồn tại" };
-        }
-        customer = await db.Customers.create({
-            user_id: userId,
-            phone: user.phoneNumber || '0000000000',
-            membership_tier: 'BRONZE',
-            loyalty_points: 0
-        });
-    }
-
 
     const allDetails = [];
     if (data.details && data.details.length > 0) {
@@ -144,6 +109,51 @@ module.exports.createAppointment = async (userId, data) => {
                 }
             }
         }
+    }
+
+    // Kiểm tra lấn giờ (Overlap Validation)
+    const { calculateAppointmentTime } = require("../../util/calculateAppointmentTime.util");
+    const garageConfigService = require("../common/garage_configurations.service");
+
+    const targetDate = new Date(data.scheduled_time);
+    const y = targetDate.getFullYear();
+    const m = String(targetDate.getMonth() + 1).padStart(2, '0');
+    const d = String(targetDate.getDate()).padStart(2, '0');
+    const dateStr = `${y}-${m}-${d}`;
+
+    const availability = await garageConfigService.getAvailability(dateStr);
+    const bookedCounts = availability.bookedCounts || {};
+
+    const { endTime } = await calculateAppointmentTime(allDetails, targetDate);
+    const startHour = targetDate.getUTCHours();
+    let endHour = endTime.getUTCHours();
+
+    if (endHour < startHour) {
+        endHour += 24;
+    }
+    if (endTime.getMinutes() === 0 && endHour > startHour) {
+        endHour -= 1;
+    }
+
+    for (let h = startHour; h <= endHour; h++) {
+        const hourKey = h % 24;
+        if ((bookedCounts[hourKey] || 0) >= capacity) {
+            throw { status: 400, message: `Khung giờ này không đủ thời gian trống liền mạch cho các dịch vụ bạn đã chọn. Vui lòng chọn giờ khác!` };
+        }
+    }
+
+    let customer = await db.Customers.findOne({ where: { user_id: userId } });
+    if (!customer) {
+        const user = await db.User.findByPk(userId);
+        if (!user) {
+            throw { status: 404, message: "Hồ sơ khách hàng không tồn tại" };
+        }
+        customer = await db.Customers.create({
+            user_id: userId,
+            phone: user.phoneNumber || '0000000000',
+            membership_tier: 'BRONZE',
+            loyalty_points: 0
+        });
     }
 
     const transaction = await db.sequelize.transaction();
@@ -261,14 +271,15 @@ module.exports.createAppointment = async (userId, data) => {
                 bay_id: bayId,
                 current_odo: 0,
                 status: 'INSPECTING',
-                entry_time: new Date()
+                entry_time: appointment.scheduled_time,
+                symptoms: "Chưa cập nhật"
             }, { transaction });
 
-            const techRole = await db.Role.findOne({ where: { roleCode: 'TECHNICIAN' }, transaction });
+            const { findAvailableTechnicians } = require("../../util/findAvailableTechnicians.util");
             let technicianId = 1;
-            if (techRole) {
-                const technicians = await db.User.findAll({ where: { roleId: techRole.id, status: 'ACTIVE' }, transaction });
-                if (technicians.length > 0) {
+
+            const technicians = await findAvailableTechnicians(data.scheduled_time, transaction);
+            if (technicians.length > 0) {
                     const technicianTasksCount = await Promise.all(technicians.map(async (tech) => {
                         const count = await db.Task_Assignment.count({
                             where: {
@@ -282,7 +293,6 @@ module.exports.createAppointment = async (userId, data) => {
                     technicianTasksCount.sort((a, b) => a.count - b.count);
                     technicianId = technicianTasksCount[0].id;
                 }
-            }
 
             const taskCatalogs = [];
             for (const d of allDetails) {
@@ -338,8 +348,18 @@ module.exports.createAppointment = async (userId, data) => {
                     }, { transaction });
                 }
             }
-        }
 
+            if (data.payment_amount && Number(data.payment_amount) > 0) {
+                await db.Booking_Payments.create({
+                    order_id: serviceOrder.id,
+                    payment_method: 'ONLINE',
+                    payment_gateway: 'BANK',
+                    amount: Number(data.payment_amount),
+                    currency: 'VND',
+                    payment_status: 'PENDING'
+                }, { transaction });
+            }
+        }
 
         await transaction.commit();
 
@@ -394,6 +414,11 @@ module.exports.createAppointment = async (userId, data) => {
                             attributes: ['id', 'combo_name', 'description']
                         }
                     ]
+                },
+                {
+                    model: db.Service_Orders,
+                    as: 'serviceOrder',
+                    attributes: ['id', 'status']
                 }
             ]
         });

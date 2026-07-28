@@ -11,19 +11,42 @@ module.exports.getConfigurations = async () => {
 };
 
 module.exports.getAvailability = async (dateStr) => {
-    const shifts = await db.Garage_Shifts.findAll({
+    const shifts = await db.Shift_Slots.findAll({
         where: { is_active: true },
-        attributes: ['id', 'shift_name', 'start_time', 'end_time', 'is_active', 'createdAt', 'updatedAt'],
+        attributes: ['id', ['slot_name', 'shift_name'], 'start_time', 'end_time', 'is_active', 'createdAt', 'updatedAt'],
         order: [['start_time', 'ASC']]
     });
 
-    const capacity = await getGarageCapacity();
+    const capacityData = await getGarageCapacity();
+    const capacity = capacityData.maxCapacity;
 
     let bookedCounts = {};
     if (dateStr) {
         const startOfDay = new Date(`${dateStr}T00:00:00Z`);
-        const endOfDay = new Date(`${dateStr}T23:59:59Z`);
+        const endOfDay = new Date(`${dateStr}T23:59:59.999Z`);
 
+        // Helper tính toán các giờ bị trùng chỉ trong 1 ngày cụ thể (dateStr)
+        const getOccupiedHours = (startTime, endTime) => {
+            if (endTime <= startOfDay || startTime >= endOfDay) return [];
+            
+            const effectiveStart = startTime < startOfDay ? startOfDay : startTime;
+            const effectiveEnd = endTime > endOfDay ? endOfDay : endTime;
+            
+            const startHour = effectiveStart.getUTCHours();
+            let endHour = effectiveEnd.getUTCHours();
+            
+            if (effectiveEnd.getMinutes() === 0 && effectiveEnd.getSeconds() === 0 && endHour > startHour) {
+                endHour -= 1;
+            }
+            
+            const hours = [];
+            for (let h = startHour; h <= endHour; h++) {
+                hours.push(h);
+            }
+            return hours;
+        };
+
+        // 1. Check tương lai (Appointments)
         const appointments = await db.Appointments.findAll({
             where: {
                 scheduled_time: {
@@ -33,12 +56,48 @@ module.exports.getAvailability = async (dateStr) => {
                     [Op.in]: ['PENDING', 'CONFIRMED']
                 }
             },
-            attributes: ['scheduled_time']
+            attributes: ['id', 'scheduled_time'],
+            include: [
+                {
+                    model: db.Appointment_Details,
+                    as: 'appointmentDetails',
+                    attributes: ['catalog_id', 'combo_id']
+                }
+            ]
         });
 
-        appointments.forEach(app => {
-            const h = app.scheduled_time.getHours();
-            bookedCounts[h] = (bookedCounts[h] || 0) + 1;
+        const { calculateAppointmentTime } = require("../../util/calculateAppointmentTime.util");
+
+        await Promise.all(appointments.map(async (app) => {
+            const { endTime } = await calculateAppointmentTime(app.appointmentDetails, app.scheduled_time);
+            const occupiedHours = getOccupiedHours(app.scheduled_time, endTime);
+            occupiedHours.forEach(h => {
+                bookedCounts[h] = (bookedCounts[h] || 0) + 1;
+            });
+        }));
+
+        // 2. Check hiện tại (Service_Orders đang sửa chữa)
+        const activeOrders = await db.Service_Orders.findAll({
+            where: {
+                status: {
+                    [Op.in]: ['INSPECTING', 'IN_PROGRESS', 'WAITING_FOR_PARTS']
+                },
+                estimated_finish_time: {
+                    [Op.ne]: null,
+                    [Op.gt]: startOfDay
+                },
+                entry_time: {
+                    [Op.lt]: endOfDay
+                }
+            },
+            attributes: ['entry_time', 'estimated_finish_time']
+        });
+
+        activeOrders.forEach(order => {
+            const occupiedHours = getOccupiedHours(order.entry_time, order.estimated_finish_time);
+            occupiedHours.forEach(h => {
+                bookedCounts[h] = (bookedCounts[h] || 0) + 1;
+            });
         });
     }
 

@@ -18,4 +18,6 @@ router.get("/garage-configurations/:key", configController.getConfigurationByKey
 router.get("/availability", configController.getAvailability);
 
 
+router.get("/check-license-plate", guestController.checkLicensePlate);
+
 module.exports = router;

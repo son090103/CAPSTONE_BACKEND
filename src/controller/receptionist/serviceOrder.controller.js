@@ -35,7 +35,23 @@ module.exports.createServiceOrder = async (req, res) => {
 module.exports.getServiceOrders = async (req, res) => {
     try {
         const result = await serviceOrderService.getServiceOrders();
-        
+
+        return res.status(200).json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+module.exports.getServiceOrdersAwaitingPayment = async (req, res) => {
+    try {
+        const result = await serviceOrderService.getServiceOrdersAwaitingPayment();
+
         return res.status(200).json({
             success: true,
             data: result
@@ -68,7 +84,7 @@ module.exports.getServiceOrderById = async (req, res) => {
 module.exports.updateServiceOrderOdo = async (req, res) => {
     try {
         const { id } = req.params;
-        const { current_odo } = req.body;
+        const { current_odo, symptoms } = req.body;
 
         if (current_odo === undefined || current_odo === null) {
             return res.status(400).json({
@@ -77,7 +93,7 @@ module.exports.updateServiceOrderOdo = async (req, res) => {
             });
         }
 
-        const result = await serviceOrderService.updateServiceOrderOdo(id, current_odo);
+        const result = await serviceOrderService.updateServiceOrderOdo(id, current_odo, symptoms);
         
         return res.status(200).json({
             success: true,
@@ -91,3 +107,15 @@ module.exports.updateServiceOrderOdo = async (req, res) => {
         });
     }
 };
+
+module.exports.getCompleteServiceOrder = async (req,res) => {
+    try {
+        const result = await serviceOrderService.getCompleteServiceOrder();
+        return res.status(200).json({success: true, data: result});
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+}

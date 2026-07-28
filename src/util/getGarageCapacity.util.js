@@ -46,15 +46,22 @@ const getGarageCapacity = async () => {
 
     // Sức chứa hiện tại là số nhỏ hơn giữa số thợ rảnh và số cầu nâng rảnh
     const availableCapacity = Math.min(
-      idleBays > 0 ? idleBays : 0, 
+      idleBays > 0 ? idleBays : 0,
       idleTechnicians > 0 ? idleTechnicians : 0
     );
 
+    // Sức chứa TỐI ĐA vật lý của Gara (dành cho việc tính toán kín lịch trong tương lai)
+    const maxCapacity = Math.min(bayCount, technicianCount);
+
     console.log(`Cầu nâng: Tổng ${bayCount}, Bận ${busyBays}, Rảnh ${idleBays}`);
     console.log(`Thợ: Tổng ${technicianCount}, Bận ${busyTechnicians}, Rảnh ${idleTechnicians}`);
-    console.log(`=> Sức chứa khả dụng trả về: ${availableCapacity}`);
+    console.log(`=> Sức chứa tối đa: ${maxCapacity}, Sức chứa hiện tại: ${availableCapacity}`);
     
-    return availableCapacity;
+    // Trả về cả sức chứa tối đa và sức chứa hiện tại
+    return {
+      availableCapacity,
+      maxCapacity: maxCapacity > 0 ? maxCapacity : 1
+    };
   } catch (error) {
     console.error("Lỗi khi tính toán sức chứa garage:", error);
     throw error;

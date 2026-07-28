@@ -70,8 +70,12 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: "PENDING",
         validate: {
-          isIn: [["PENDING", "EXPORTED"]],
+          isIn: [["PENDING", "EXPORTED", "WAITING_DEPOSIT", "WAITING_STOCK"]],
         },
+      },
+      custom_item_name: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
       },
     },
     {

@@ -20,6 +20,16 @@ module.exports = (sequelize, DataTypes) => {
         otherKey: 'combo_id',
         as: 'combos'
       });
+      this.belongsTo(models.Spare_Parts, {
+        foreignKey: 'spare_part_id',
+        as: 'sparePart'
+      });
+      if (models.Service_Catalog_Translations) {
+        this.hasMany(models.Service_Catalog_Translations, {
+          foreignKey: 'serviceCatalogId',
+          as: 'translations'
+        });
+      }
     }
   }
   Service_Catalog.init({
@@ -50,6 +60,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: false
+    },
+    spare_part_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true // Co the null neu dich vu ko co phu tung
     }
   }, {
     sequelize,

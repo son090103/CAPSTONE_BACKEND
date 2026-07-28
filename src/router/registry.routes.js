@@ -8,6 +8,9 @@ const checkClient = require("../middleware/auth.middleware.js");
 const receptionistRoutes = require("./../router/receptionist/receptionist.routes.js");
 const technicianRoutes = require("./../router/technician/technician.routes.js");
 const technicianLeaderRoutes = require("./../router/technicianLeader/technicianLeader.routes.js");
+const paymentRoutes = require("./../router/payment/payment.routes")
+
+const chatbotRoutes = require("./chatbot/chatbot.routes.js");
 
 module.exports = [
   {
@@ -17,6 +20,10 @@ module.exports = [
   {
     prefix: "/api/guest",
     router: guestRoutes,
+  },
+  {
+    prefix: "/api/chatbot",
+    router: chatbotRoutes,
   },
 
   {
@@ -37,7 +44,7 @@ module.exports = [
   },
   {
     prefix: "/api/inventory",
-      middlewares: [
+    middlewares: [
       checkClient.authenticate,
       checkClient.authorizeRoles(ROLES.INVENTORY_MANAGER),
     ],
@@ -58,6 +65,10 @@ module.exports = [
       checkClient.authorizeRoles(ROLES.TECHNICIAN),
     ],
     router: technicianRoutes,
+  },
+  {
+    prefix: "/api/payment",
+    router: paymentRoutes,
   },
   {
     prefix: "/api/head-technician",

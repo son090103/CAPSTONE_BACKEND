@@ -27,6 +27,16 @@ module.exports.getCustomerInfoByPhone = async (phone) => {
                                 attributes: ['id', 'make_name']
                             }
                         ]
+                    },
+                    {
+                        model: db.Service_Orders,
+                        as: 'serviceOrders',
+                        where: {
+                            status: {
+                                [Op.notIn]: ['COMPLETED', 'CANCELLED', 'PAID']
+                            }
+                        },
+                        required: false
                     }
                 ]
             }
@@ -59,12 +69,18 @@ module.exports.getCustomerInfoByPhone = async (phone) => {
                         include: [{ model: db.Vehicle_Makes, as: 'make' }]
                     }
                 ]
+            },
+            {
+                model: db.Service_Orders,
+                as: 'serviceOrder',
+                required: false
             }
         ],
         where: {
             status: {
                 [Op.in]: ['PENDING', 'CONFIRMED', 'ARRIVED']
-            }
+            },
+            '$serviceOrder.id$': null
         },
         order: [['scheduled_time', 'DESC']]
     });
@@ -82,7 +98,8 @@ module.exports.getCustomerInfoByPhone = async (phone) => {
             license_plate: v.license_plate,
             vin_number: v.vin_number,
             brand: v.model?.make?.make_name || '',
-            model: v.model?.model_name || ''
+            model: v.model?.model_name || '',
+            isInGarage: v.serviceOrders && v.serviceOrders.length > 0
         })) : []
     } : null;
 

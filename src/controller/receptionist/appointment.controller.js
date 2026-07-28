@@ -22,6 +22,20 @@ module.exports.getAppointment = async (req, res) => {
     }
 };
 
+module.exports.getCustomer = async (req, res) => {
+    try {
+        const { search } = req.query;
+        const result = await appointmentService.getCustomer(search);
+        
+        return res.status(200).json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        return res.status(500).json({ success: false, message: "Lỗi Server", error: error.message });
+    }
+};
+
 module.exports.getAppointmentByKey = async (req, res) => {
     try {
         const requestUser = res.locals.user;

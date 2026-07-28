@@ -17,7 +17,9 @@ const createServiceOrderSchema = z.object({
     estimated_finish_time: z.string().optional(),
     service_ids: z.array(z.number()).optional(),
     combo_ids: z.array(z.number()).optional(),
-    notes: z.string().optional()
+    notes: z.string().optional(),
+    symptoms: z.string().optional(),
+    rescue_id: z.number().positive("ID cứu hộ không hợp lệ").nullable().optional()
 }).refine(data => data.vehicle_id || data.walk_in, {
     message: "Phải cung cấp ID xe hoặc thông tin khách vãng lai",
     path: ["vehicle_id"]

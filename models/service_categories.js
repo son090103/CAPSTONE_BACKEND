@@ -16,6 +16,12 @@ module.exports = (sequelize, DataTypes) => {
           as: 'services'
         });
       }
+      if (models.Service_Category_Translations) {
+        this.hasMany(models.Service_Category_Translations, {
+          foreignKey: 'serviceCategoryId',
+          as: 'translations'
+        });
+      }
     }
   }
   Service_Categories.init({
