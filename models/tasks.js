@@ -66,7 +66,7 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: "PENDING",
         validate: {
-          isIn: [["PENDING", "IN_PROGRESS", "COMPLETED"]],
+          isIn: [["PENDING", "IN_PROGRESS", "PAUSED", "COMPLETED"]],
         },
       },
     },

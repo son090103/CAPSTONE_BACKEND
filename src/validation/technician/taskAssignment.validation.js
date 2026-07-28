@@ -15,4 +15,18 @@ const createIssueReportSchema = z.object({
   technicianId: z.number(),
 });
 
-module.exports = { createIssueReportSchema };
+const createAdditionalIssueSchema = z.object({
+  task_id: z.number(),
+  issues: z
+    .array(
+      z.object({
+        component_id: z.number(),
+        description: z.string().min(1, "Mô tả lỗi không được để trống"),
+      }),
+    )
+    .min(1, "Phải có ít nhất một lỗi"),
+  note: z.string().optional(),
+  technicianId: z.number(),
+});
+
+module.exports = { createIssueReportSchema, createAdditionalIssueSchema };

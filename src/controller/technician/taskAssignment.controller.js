@@ -1,6 +1,6 @@
 const { success } = require("zod");
 const taskAssignmentService = require("../../service/technician/taskAssignment.service");
-const { createIssueReportSchema } = require("../../validation/technician/taskAssignment.validation");
+const { createIssueReportSchema, createAdditionalIssueSchema } = require("../../validation/technician/taskAssignment.validation");
 
 module.exports.getTaskAssignment = async (req, res) => {
   try {
@@ -165,6 +165,30 @@ module.exports.createIssuesReport = async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "Tạo báo cáo kiểm tra thành công",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi.",
+    });
+  }
+};
+
+module.exports.reportAdditionalIssue = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const { task_id, note, issues } = req.body;
+    const validation = createAdditionalIssueSchema.safeParse({ task_id, issues, note, technicianId });
+    if (!validation.success) {
+      return res.status(400).json({
+        message: validation.error.issues[0].message,
+      });
+    };
+    const result = await taskAssignmentService.reportAdditionalIssue(task_id, issues, note, technicianId);
+    return res.status(201).json({
+      success: true,
+      message: "Ghi nhận lỗi phát sinh thành công",
       data: result,
     });
   } catch (error) {
@@ -350,5 +374,33 @@ module.exports.getMyCompletedTasks = async (req, res) => {
     return res.status(error.status || 500).json({
       message: error.message || "Internal server error",
     });
+  }
+};
+
+module.exports.pauseTask = async (req, res) => {
+  try {
+    const { taskAssignmentId, reason } = req.body;
+    const technicianId = res.locals.user.id;
+    if (!taskAssignmentId) {
+      return res.status(400).json({ message: "Vui lòng truyền taskAssignmentId vào body." });
+    }
+    const result = await taskAssignmentService.pauseTask(taskAssignmentId, technicianId, reason);
+    return res.status(200).json({ message: "Đã tạm dừng công việc.", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({ message: error.message || "Internal server error" });
+  }
+};
+
+module.exports.resumeTask = async (req, res) => {
+  try {
+    const { taskAssignmentId } = req.body;
+    const technicianId = res.locals.user.id;
+    if (!taskAssignmentId) {
+      return res.status(400).json({ message: "Vui lòng truyền taskAssignmentId vào body." });
+    }
+    const result = await taskAssignmentService.resumeTask(taskAssignmentId, technicianId);
+    return res.status(200).json({ message: "Đã tiếp tục công việc.", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({ message: error.message || "Internal server error" });
   }
 };

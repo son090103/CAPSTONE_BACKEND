@@ -91,10 +91,29 @@ module.exports.getTaskAssignment = async (technicianId) => {
             as: "catalog",
             attributes: ["id", "service_name", "estimated_duration"],
           },
+             {
+            model: db.Quotation_Details,
+            as: "quotationItem",
+            attributes: ["id", "quantity"],
+            include: [
+              {
+                model: db.Vehicle_Issues,
+                as: "issue",
+                attributes: ["id", "error_description", "note"],
+                include: [
+                  {
+                    model: db.Vehicle_Components,
+                    as: "component",
+                    attributes: ["id", "name"],
+                  },
+                ],
+              },
+            ],
+          },
         ],
       },
     ],
-    order: [["createdAt", "DESC"]],
+    order: [["createdAt", "ASC"]],
   });
   return serviceOrders;
 };
@@ -353,6 +372,7 @@ module.exports.createIssueReports = async (
   const task = await Tasks.findOne({
     where: {
       id: task_id,
+      type: "INSPECTION",
       status: "IN_PROGRESS",
     },
   });
@@ -364,7 +384,10 @@ module.exports.createIssueReports = async (
     },
   });
   if (!task || !taskAssignment) {
-    throw { status: 404, message: "Không tìm thấy công việc đang thực hiện." };
+    throw {
+      status: 404,
+      message: "Không tìm thấy công việc kiểm tra đang thực hiện.",
+    };
   }
   const records = issues.map((item) => ({
     component_id: item.component_id,
@@ -397,6 +420,56 @@ module.exports.createIssueReports = async (
     type: "INSPECTION_DONE",
     serviceOrderId: task.service_order_id,
   });
+  return issuesRecords;
+};
+
+module.exports.reportAdditionalIssue = async (
+  task_id,
+  issues,
+  note,
+  technicianId,
+) => {
+  const task = await Tasks.findOne({
+    where: {
+      id: task_id,
+      type: "REPAIR",
+      status: "IN_PROGRESS",
+    },
+  });
+  const taskAssignment = await Task_Assignments.findOne({
+    where: {
+      task_id: task_id,
+      technician_id: technicianId,
+      status: "IN_PROGRESS",
+    },
+  });
+  if (!task || !taskAssignment) {
+    throw {
+      status: 404,
+      message: "Không tìm thấy công việc sửa chữa đang thực hiện.",
+    };
+  }
+  const records = issues.map((item) => ({
+    component_id: item.component_id,
+    task_id: task_id,
+    error_description: item.description,
+    note: note,
+  }));
+  const issuesRecords = await Issues.bulkCreate(records);
+  await notifyRole(
+    "RECEPTIONIST",
+    {
+      title: "Có lỗi phát sinh trong sửa chữa",
+      content: `Kỹ thuật viên vừa ghi nhận ${issuesRecords.length} lỗi phát sinh cần lập báo giá bổ sung.`,
+      notificationType: "ISSUE_REPORT",
+      referenceId: task.service_order_id,
+    },
+    "new_notification",
+    {
+      type: "ISSUE_REPORT",
+      serviceOrderId: task.service_order_id,
+    },
+  );
   return issuesRecords;
 };
 
@@ -1059,3 +1132,45 @@ module.exports.getCompletedTasks = async (technicianId) => {
   });
 };
 
+
+module.exports.pauseTask = async (taskAssignmentId, technicianId, reason) => {
+  const taskAssignment = await Task_Assignments.findOne({
+    where: {
+      id: taskAssignmentId,
+      technician_id: technicianId,
+      status: "IN_PROGRESS",
+    },
+    include: [{ model: Tasks, as: "task" }],
+  });
+  if (!taskAssignment) {
+    throw { status: 404, message: "Không tìm thấy công việc đang thực hiện." };
+  }
+  await taskAssignment.update({
+    status: "PAUSED",
+    remarks: reason || null,
+  });
+  await taskAssignment.task.update({ status: "PAUSED" });
+
+  return taskAssignment;
+};
+
+
+module.exports.resumeTask = async (taskAssignmentId, technicianId) => {
+  const taskAssignment = await Task_Assignments.findOne({
+    where: {
+      id: taskAssignmentId,
+      technician_id: technicianId,
+      status: "PAUSED",
+    },
+    include: [{ model: Tasks, as: "task" }],
+  });
+  if (!taskAssignment) {
+    throw { status: 404, message: "Không tìm thấy công việc đang tạm dừng." };
+  }
+  await taskAssignment.update({
+    status: "IN_PROGRESS",
+  });
+  await taskAssignment.task.update({ status: "IN_PROGRESS" });
+
+  return taskAssignment;
+};
