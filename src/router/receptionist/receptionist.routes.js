@@ -8,9 +8,11 @@ const quoteManagementController = require("./../../controller/receptionist/quote
 const technicianController = require("../../controller/receptionist/technician.controller");
 
 router.get("/issues", quoteManagementController.getIssueReports);
+router.get("/issues/additional", quoteManagementController.getAdditionalIssueReports);
 router.post("/quote", quoteManagementController.createQuotation);
 router.patch("/quote/:id", quoteManagementController.updateQuotation);
 router.get("/quote", quoteManagementController.getQuoteHistory);
+router.get("/quote/service-order/:serviceOrderId/payment-summary",quoteManagementController.getPaymentSummary);
 router.get("/spare-parts", quoteManagementController.getSpareParts);
 router.get("/services", quoteManagementController.getAllService);
 
@@ -24,6 +26,7 @@ router.post("/customer-info-by-phone", searchController.getCustomerInfoByPhone);
 router.get("/customers", appointmentController.getCustomer);
 
 router.get("/service-orders/complete", serviceOrderController.getCompleteServiceOrder)
+router.get("/service-orders/awaiting-payment", serviceOrderController.getServiceOrdersAwaitingPayment)
 router.post("/service-order", serviceOrderController.createServiceOrder)
 router.get("/service-orders", serviceOrderController.getServiceOrders)
 router.get("/service-order/:id", serviceOrderController.getServiceOrderById)

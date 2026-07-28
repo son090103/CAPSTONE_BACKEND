@@ -35,7 +35,23 @@ module.exports.createServiceOrder = async (req, res) => {
 module.exports.getServiceOrders = async (req, res) => {
     try {
         const result = await serviceOrderService.getServiceOrders();
-        
+
+        return res.status(200).json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+module.exports.getServiceOrdersAwaitingPayment = async (req, res) => {
+    try {
+        const result = await serviceOrderService.getServiceOrdersAwaitingPayment();
+
         return res.status(200).json({
             success: true,
             data: result

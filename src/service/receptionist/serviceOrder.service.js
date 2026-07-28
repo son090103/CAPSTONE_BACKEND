@@ -495,6 +495,68 @@ module.exports.getServiceOrders = async () => {
   return filteredOrders;
 };
 
+module.exports.getServiceOrdersAwaitingPayment = async () => {
+  const completedOrders = await db.Service_Orders.findAll({
+    where: { status: "COMPLETED" },
+    include: [
+      {
+        model: db.Vehicles,
+        as: "vehicle",
+        attributes: ["id", "license_plate", "vin_number"],
+        include: [
+          {
+            model: db.Vehicle_Models,
+            as: "model",
+            attributes: ["id", "model_name"],
+          },
+          {
+            model: db.Customers,
+            as: "customer",
+            attributes: ["id", "name", "phone"],
+          },
+        ],
+      },
+    ],
+    order: [["actual_finish_time", "ASC"]],
+  });
+
+  const result = [];
+  for (const order of completedOrders) {
+    const quotations = await Quotation.findAll({
+      attributes: ["id", "total_amount", "deposit_amount"],
+      where: { status: "APPROVED" },
+      include: [
+        {
+          model: Tasks,
+          as: "task",
+          attributes: [],
+          where: { service_order_id: order.id },
+          required: true,
+        },
+      ],
+    });
+    const grandTotal = quotations.reduce(
+      (sum, q) => sum + Number(q.total_amount),
+      0,
+    );
+    const totalDeposit = quotations.reduce(
+      (sum, q) => sum + Number(q.deposit_amount || 0),
+      0,
+    );
+    const remainingAmount = grandTotal - totalDeposit;
+    if (remainingAmount > 0) {
+      result.push({
+        serviceOrder: order,
+        grandTotal,
+        totalDeposit,
+        remainingAmount,
+      });
+    }
+  }
+
+  return result;
+};
+
 module.exports.getServiceOrderById = async (id) => {
   const serviceOrder = await db.Service_Orders.findByPk(id, {
     include: [

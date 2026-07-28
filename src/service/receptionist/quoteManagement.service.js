@@ -103,6 +103,84 @@ module.exports.getIssuesReports = async () => {
   return issues;
 };
 
+module.exports.getAdditionalIssuesReports = async () => {
+  const issues = await Issues.findAll({
+    attributes: ["id", "error_description", "note", "createdAt"],
+    where: {
+      id: {
+        [Op.notIn]: db.sequelize.literal(`(
+              SELECT qd.issue_id
+              FROM "Quotation_Details" qd
+              JOIN "Quotations" q ON q.id = qd.quotation_id
+              WHERE qd.issue_id IS NOT NULL
+                AND q.status != 'REJECTED'
+            )`),
+      },
+    },
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id", "service_order_id"],
+        where: { type: "REPAIR", status: "IN_PROGRESS" },
+        required: true,
+        include: [
+          {
+            model: Service_Order,
+            as: "serviceOrder",
+            attributes: ["id"],
+            include: [
+              {
+                model: Vehicles,
+                as: "vehicle",
+                attributes: ["id", "color", "license_plate"],
+                include: [
+                  {
+                    model: Vehicle_Models,
+                    as: "model",
+                    attributes: ["id", "model_name"],
+                  },
+                  {
+                    model: Customers,
+                    as: "customer",
+                    attributes: ["id", "name", "phone"],
+                    include: [
+                      {
+                        model: Users,
+                        as: "user",
+                        attributes: ["id", "fullName", "phoneNumber"],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        model: Components,
+        as: "component",
+        attributes: ["id", "name", "parent_id"],
+        include: [
+          {
+            model: Components,
+            as: "parent",
+            attributes: ["id", "name"],
+          },
+          {
+            model: Components,
+            as: "children",
+            attributes: ["id", "name"],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+  return issues;
+};
+
 module.exports.getSpareParts = async () => {
   const parts = await SparePart.findAll({
     attributes: [
@@ -354,6 +432,47 @@ module.exports.updateQuotation = async (id, data, receptionistId) => {
 
     return quotation;
   });
+};
+
+module.exports.getPaymentSummaryByServiceOrder = async (serviceOrderId) => {
+  const quotations = await Quotation.findAll({
+    attributes: [
+      "id",
+      "total_amount",
+      "deposit_amount",
+      "deposit_paid_at",
+      "approved_at",
+      "createdAt",
+    ],
+    where: { status: "APPROVED" },
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id"],
+        where: { service_order_id: serviceOrderId },
+        required: true,
+      },
+    ],
+    order: [["createdAt", "ASC"]],
+  });
+
+  const grandTotal = quotations.reduce(
+    (sum, q) => sum + Number(q.total_amount),
+    0,
+  );
+  const totalDeposit = quotations.reduce(
+    (sum, q) => sum + Number(q.deposit_amount || 0),
+    0,
+  );
+
+  return {
+    serviceOrderId,
+    quotations,
+    grandTotal,
+    totalDeposit,
+    remainingAmount: grandTotal - totalDeposit,
+  };
 };
 
 module.exports.getQuoteHistory = async () => {
