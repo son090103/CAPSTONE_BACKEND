@@ -2,6 +2,7 @@ const ImportAndExportManagement = require("../../service/inventory/importAndExpo
 const {
   importReceiptSchema,
   approveExportSchema,
+  importForOrderReceiptSchema,
 } = require("../../validation/inventory/importAndExportManagement.validation");
 const scanInvoiceService = require("../../service/inventory/importAndExportManagement.service");
 
@@ -162,6 +163,36 @@ module.exports.getWaitingStockItems = async (req, res) => {
   } catch (error) {
     return res.status(error.status || 500).json({
       message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.importSparePartForOrderItem = async (req, res) => {
+  try {
+    const manager_id = res.locals.user.id;
+    const { supplier_id, items } = req.body;
+    const validation = importForOrderReceiptSchema.safeParse({
+      supplier_id,
+      items,
+    });
+    if (!validation.success) {
+      return res.status(400).json({
+        message: validation.error.issues[0].message,
+      });
+    }
+    const result = await ImportAndExportManagement.importSparePartForOrderItem(
+      manager_id,
+      supplier_id,
+      items,
+    );
+    return res.status(201).json({
+      message: "Nhập kho cho đơn đặt riêng thành công",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+      part: error.part,
     });
   }
 };
