@@ -2,6 +2,7 @@ const db = require("../../../models");
 const Quotation = db.Quotations;
 const QuotationDetail = db.Quotation_Details;
 const Task = db.Task;
+const { notifyRole } = require("../../util/notification.util");
 
 const getQuotationInclude = (customerId) => [
   {
@@ -27,6 +28,11 @@ const getQuotationInclude = (customerId) => [
                 model: db.Vehicle_Models,
                 as: "model",
                 attributes: ["id", "model_name"],
+              },
+              {
+                model: db.Customers,
+                as: "customer",
+                attributes: ["id", "name", "phone"],
               },
             ],
           },
@@ -76,12 +82,13 @@ const getCustomerOrThrow = async (userId) => {
 module.exports.getPendingQuotations = async (userId) => {
   const customer = await getCustomerOrThrow(userId);
 
-  const quotations = await db.Quotations.findAll({
+  const quotations = await Quotation.findAll({
     attributes: [
       "id",
       "total_amount",
       "deposit_amount",
       "note",
+      "status",
       "createdAt",
     ],
     where: { status: "PENDING" },
@@ -168,10 +175,72 @@ module.exports.approveQuotation = async (userId, quotationId) => {
   });
 };
 
+module.exports.rejectQuotation = async (userId, quotationId, reason) => {
+  const customer = await getCustomerOrThrow(userId);
+  if (!reason || !reason.trim()) {
+    throw { status: 400, message: "Vui lòng nhập lý do từ chối báo giá" };
+  }
+  const quotation = await Quotation.findByPk(quotationId, {
+    include: [
+      {
+        model: Task,
+        as: "task",
+        attributes: ["id", "service_order_id"],
+        include: [
+          {
+            model: db.Service_Orders,
+            as: "serviceOrder",
+            attributes: ["id"],
+            include: [
+              {
+                model: db.Vehicles,
+                as: "vehicle",
+                attributes: ["id", "customer_id"],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  if (!quotation) {
+    throw { status: 404, message: "Báo giá không tồn tại" };
+  }
+  const ownerId = quotation.task?.serviceOrder?.vehicle?.customer_id;
+  if (ownerId !== customer.id) {
+    throw { status: 403, message: "Bạn không có quyền từ chối báo giá này" };
+  }
+  if (quotation.status !== "PENDING") {
+    throw {
+      status: 400,
+      message: "Báo giá đã được xử lý, không thể thay đổi",
+    };
+  }
+  await quotation.update({ status: "REJECTED", note: reason.trim() });
+
+  const serviceOrderId = quotation.task.service_order_id;
+  await notifyRole(
+    "RECEPTIONIST",
+    {
+      title: "Khách hàng từ chối báo giá",
+      content: `Khách hàng đã từ chối báo giá #${quotation.id}. Lý do: ${reason.trim()}`,
+      notificationType: "QUOTATION_REJECTED",
+      referenceId: serviceOrderId,
+    },
+    "new_notification",
+    {
+      type: "QUOTATION_REJECTED",
+      serviceOrderId,
+      quotationId: quotation.id,
+    },
+  );
+
+  return quotation;
+};
+
 module.exports.getQuotationHistory = async (userId) => {
   const customer = await getCustomerOrThrow(userId);
-
-  const quotations = await db.Quotations.findAll({
+  const quotations = await Quotation.findAll({
     attributes: [
       "id",
       "total_amount",

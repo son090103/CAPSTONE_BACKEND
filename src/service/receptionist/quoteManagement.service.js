@@ -434,6 +434,7 @@ module.exports.updateQuotation = async (id, data, receptionistId) => {
   });
 };
 
+// Hàm lấy tổng tiền thanh toán dịch vụ 
 module.exports.getPaymentSummaryByServiceOrder = async (serviceOrderId) => {
   const quotations = await Quotation.findAll({
     attributes: [

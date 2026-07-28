@@ -15,6 +15,7 @@ router.get("/repair-progress", serviceHistoryAndTrackingController.getRepairProg
 router.get("/quotations/pending", quoteManagementController.getPendingQuotations);
 router.get("/quotations/history", quoteManagementController.getQuotationHistory);
 router.patch("/quotations/:id/approve", quoteManagementController.approveQuotation);
+router.patch("/quotations/:id/reject", quoteManagementController.rejectQuotation);
 
 router.get("/profile", profileController.getProfile);
 router.put("/profile", upload.single("avatar"), profileController.updateProfile);

@@ -373,14 +373,14 @@ module.exports.createIssueReports = async (
     where: {
       id: task_id,
       type: "INSPECTION",
-      status: "IN_PROGRESS",
+      status: ["IN_PROGRESS","COMPLETED"],
     },
   });
   const taskAssignment = await Task_Assignments.findOne({
     where: {
       task_id: task_id,
       technician_id: technicianId,
-      status: "IN_PROGRESS",
+      status: ["IN_PROGRESS","COMPLETED"],
     },
   });
   if (!task || !taskAssignment) {
