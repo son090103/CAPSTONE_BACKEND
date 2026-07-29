@@ -695,6 +695,35 @@ module.exports.getServiceOrderById = async (id) => {
   }
 
   const rawServiceOrder = serviceOrder.toJSON();
+
+  // Fetch associated Quotation with items (both services and spare parts)
+  const taskIds = rawServiceOrder.tasks ? rawServiceOrder.tasks.map(t => t.id) : [];
+  let quotation = null;
+  if (taskIds.length > 0) {
+    quotation = await db.Quotations.findOne({
+      where: { 
+        task_id: { [db.Sequelize.Op.in]: taskIds }
+      },
+      include: [{
+        model: db.Quotation_Details,
+        as: "items",
+        include: [
+          {
+            model: db.Spare_Parts,
+            as: "sparePart",
+            attributes: ["id", "name", "retail_price"],
+          },
+          {
+            model: db.Service_Catalog,
+            as: "service_catalog",
+            attributes: ["id", "service_name", "labor_price"],
+          }
+        ]
+      }]
+    });
+  }
+  rawServiceOrder.quotation = quotation ? quotation.toJSON() : null;
+
   if (rawServiceOrder.tasks) {
     rawServiceOrder.tasks = rawServiceOrder.tasks.map(task => {
       if (task.quotationItem) {

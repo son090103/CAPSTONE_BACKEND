@@ -53,7 +53,7 @@ const handleSepayTransaction = async (paymentData) => {
                             bookingPayment = await db.Booking_Payments.create({
                                 order_id: serviceOrderId,
                                 amount: transferAmount,
-                                payment_status: 'PAID',
+                                payment_status: 'DEPOSITED',
                                 payment_method: 'VIETQR',
                                 payment_gateway: gateway || 'BANK',
                                 transaction_code: code,
@@ -61,7 +61,7 @@ const handleSepayTransaction = async (paymentData) => {
                             });
                         } else {
                             await bookingPayment.update({
-                                payment_status: 'PAID',
+                                payment_status: 'DEPOSITED',
                                 amount: transferAmount,
                                 transaction_code: code,
                                 paid_at: transactionDate ? new Date(transactionDate) : new Date()
@@ -166,7 +166,7 @@ const handleSepayTransaction = async (paymentData) => {
                         bookingPayment = await db.Booking_Payments.create({
                             order_id: serviceOrderId,
                             amount: transferAmount,
-                            payment_status: 'PAID',
+                            payment_status: 'DEPOSITED',
                             payment_method: 'VIETQR',
                             payment_gateway: gateway || 'BANK',
                             transaction_code: code,
@@ -174,7 +174,7 @@ const handleSepayTransaction = async (paymentData) => {
                         });
                     } else {
                         await bookingPayment.update({
-                            payment_status: 'PAID',
+                            payment_status: 'DEPOSITED',
                             amount: transferAmount,
                             transaction_code: code,
                             paid_at: transactionDate ? new Date(transactionDate) : new Date()
