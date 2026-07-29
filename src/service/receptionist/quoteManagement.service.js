@@ -18,6 +18,7 @@ const Vehicle_Models = db.Vehicle_Models;
 const Service_Catalog = db.Service_Catalog;
 const admin = require("../../config/firebase.config");
 const { normalizeVnPhone } = require("../../util/phone.util");
+const { notifyRole, notifyUser } = require("../../util/notification.util");
 
 const transporter = require("../../config/mailer.config");
 const {
@@ -216,15 +217,36 @@ module.exports.getAllService = async () => {
 };
 
 module.exports.createQuotation = async (data, receptionistId) => {
+  let customerUserId = null;
   const quotation = await db.sequelize.transaction(async (t) => {
     let totalAmount = 0;
-    const task = await Task.findByPk(data.task_id, { transaction: t });
+    const task = await Task.findByPk(data.task_id, {
+      include: [
+        {
+          model: Service_Order,
+          as: "serviceOrder",
+          attributes: ["id"],
+          include: [
+            {
+              model: Vehicles,
+              as: "vehicle",
+              attributes: ["id"],
+              include: [
+                { model: Customers, as: "customer", attributes: ["id", "user_id"] },
+              ],
+            },
+          ],
+        },
+      ],
+      transaction: t,
+    });
     if (!task) {
       throw {
         status: 404,
         message: `Công việc #${data.task_id} không tồn tại`,
       };
     }
+    customerUserId = task.serviceOrder?.vehicle?.customer?.user_id ?? null;
     const issueIds = [
       ...new Set(data.items.map((item) => item.issue_id).filter(Boolean)),
     ];
@@ -318,15 +340,59 @@ module.exports.createQuotation = async (data, receptionistId) => {
     await QuotationDetail.bulkCreate(details, { transaction: t });
     return quotation;
   });
+  if (customerUserId) {
+    await notifyUser(
+      customerUserId,
+      {
+        title: "Có báo giá mới cần duyệt",
+        content: `Xưởng đã lập báo giá #${quotation.id} cho xe của bạn, vui lòng kiểm tra và duyệt.`,
+        notificationType: "SERVICE_ORDER",
+        referenceId: quotation.id,
+      },
+      "new_notification",
+      {
+        type: "QUOTATION_CREATED",
+        quotationId: quotation.id,
+      },
+    );
+  }
   return quotation;
 };
 
 module.exports.updateQuotation = async (id, data, receptionistId) => {
-  return await db.sequelize.transaction(async (t) => {
-    const quotation = await Quotation.findByPk(id, { transaction: t });
+  let customerUserId = null;
+  const quotation = await db.sequelize.transaction(async (t) => {
+    const quotation = await Quotation.findByPk(id, {
+      include: [
+        {
+          model: Task,
+          as: "task",
+          attributes: ["id"],
+          include: [
+            {
+              model: Service_Order,
+              as: "serviceOrder",
+              attributes: ["id"],
+              include: [
+                {
+                  model: Vehicles,
+                  as: "vehicle",
+                  attributes: ["id"],
+                  include: [
+                    { model: Customers, as: "customer", attributes: ["id", "user_id"] },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      transaction: t,
+    });
     if (!quotation) {
       throw { status: 404, message: "Không tìm thấy báo giá" };
     }
+    customerUserId = quotation.task?.serviceOrder?.vehicle?.customer?.user_id ?? null;
     if (!["PENDING", "REJECTED"].includes(quotation.status)) {
       throw {
         status: 400,
@@ -432,9 +498,26 @@ module.exports.updateQuotation = async (id, data, receptionistId) => {
 
     return quotation;
   });
+  if (customerUserId) {
+    await notifyUser(
+      customerUserId,
+      {
+        title: "Báo giá đã được cập nhật",
+        content: `Xưởng vừa cập nhật lại báo giá #${quotation.id} cho xe của bạn, vui lòng kiểm tra và duyệt.`,
+        notificationType: "SERVICE_ORDER",
+        referenceId: quotation.id,
+      },
+      "new_notification",
+      {
+        type: "QUOTATION_UPDATED",
+        quotationId: quotation.id,
+      },
+    );
+  }
+  return quotation;
 };
 
-// Hàm lấy tổng tiền thanh toán dịch vụ 
+// Hàm lấy tổng tiền thanh toán dịch vụ
 module.exports.getPaymentSummaryByServiceOrder = async (serviceOrderId) => {
   const quotations = await Quotation.findAll({
     attributes: [
@@ -698,6 +781,22 @@ module.exports.approveQuotationByOTP = async (id, idToken) => {
         approved_phone: verifiedPhone,
       },
       { transaction: t },
+    );
+    return quotation;
+  }).then(async (quotation) => {
+    await notifyRole(
+      "INVENTORY_MANAGER",
+      {
+        title: "Có báo giá cần xuất phụ tùng",
+        content: `Báo giá #${quotation.id} đã được duyệt (OTP), cần chuẩn bị xuất phụ tùng.`,
+        notificationType: "SERVICE_ORDER",
+        referenceId: quotation.id,
+      },
+      "new_notification",
+      {
+        type: "QUOTATION_APPROVED",
+        quotationId: quotation.id,
+      },
     );
     return quotation;
   });

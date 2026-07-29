@@ -405,6 +405,20 @@ module.exports.completeTask = async (
           { status: "PENDING_FINAL_QC" },
           { where: { id: serviceOrderId } },
         );
+        await notifyRole(
+          "TECHNICIAN_LEADER",
+          {
+            title: "Có lệnh sửa chữa chờ nghiệm thu",
+            content: "Tất cả công việc sửa chữa đã hoàn tất, cần nghiệm thu tổng thể trước khi giao xe.",
+            notificationType: "SERVICE_ORDER",
+            referenceId: serviceOrderId,
+          },
+          "new_notification",
+          {
+            type: "PENDING_FINAL_QC",
+            serviceOrderId,
+          },
+        );
       }
       if (content && content.trim()) {
         await Repair_Notes.create({
@@ -478,6 +492,20 @@ module.exports.createIssueReports = async (
       serviceOrderId: task.service_order_id,
     },
   );
+  await notifyRole(
+    "TECHNICIAN_LEADER",
+    {
+      title: "Kiểm tra xong, có lỗi cần báo giá",
+      content: `Kỹ thuật viên vừa hoàn tất kiểm tra và ghi nhận ${issuesRecords.length} lỗi.`,
+      notificationType: "ISSUE_REPORT",
+      referenceId: task.service_order_id,
+    },
+    "new_notification",
+    {
+      type: "ISSUE_REPORT",
+      serviceOrderId: task.service_order_id,
+    },
+  );
   emitProgress(task.service_order_id, {
     type: "INSPECTION_DONE",
     serviceOrderId: task.service_order_id,
@@ -523,6 +551,20 @@ module.exports.reportAdditionalIssue = async (
     {
       title: "Có lỗi phát sinh trong sửa chữa",
       content: `Kỹ thuật viên vừa ghi nhận ${issuesRecords.length} lỗi phát sinh cần lập báo giá bổ sung.`,
+      notificationType: "ISSUE_REPORT",
+      referenceId: task.service_order_id,
+    },
+    "new_notification",
+    {
+      type: "ISSUE_REPORT",
+      serviceOrderId: task.service_order_id,
+    },
+  );
+  await notifyRole(
+    "TECHNICIAN_LEADER",
+    {
+      title: "Lỗi phát sinh trong sửa chữa",
+      content: `Kỹ thuật viên vừa ghi nhận ${issuesRecords.length} lỗi phát sinh trong quá trình sửa chữa.`,
       notificationType: "ISSUE_REPORT",
       referenceId: task.service_order_id,
     },

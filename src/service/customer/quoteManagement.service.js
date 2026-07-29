@@ -183,6 +183,36 @@ module.exports.approveQuotation = async (userId, quotationId) => {
       { transaction: t },
     );
     return quotation;
+  }).then(async (quotation) => {
+    await notifyRole(
+      "INVENTORY_MANAGER",
+      {
+        title: "Có báo giá cần xuất phụ tùng",
+        content: `Báo giá #${quotation.id} đã được khách hàng duyệt, cần chuẩn bị xuất phụ tùng.`,
+        notificationType: "SERVICE_ORDER",
+        referenceId: quotation.id,
+      },
+      "new_notification",
+      {
+        type: "QUOTATION_APPROVED",
+        quotationId: quotation.id,
+      },
+    );
+    await notifyRole(
+      "RECEPTIONIST",
+      {
+        title: "Khách hàng đã duyệt báo giá",
+        content: `Khách hàng đã duyệt báo giá #${quotation.id}.`,
+        notificationType: "SERVICE_ORDER",
+        referenceId: quotation.id,
+      },
+      "new_notification",
+      {
+        type: "QUOTATION_APPROVED",
+        quotationId: quotation.id,
+      },
+    );
+    return quotation;
   });
 };
 

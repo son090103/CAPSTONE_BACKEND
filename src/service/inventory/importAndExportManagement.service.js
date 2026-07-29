@@ -15,6 +15,7 @@ const Service_Orders = db.Service_Orders;
 const Vehicles = db.Vehicles;
 const Vehicle_Models = db.Vehicle_Models;
 const Customers = db.Customers;
+const { notifyUser } = require("../../util/notification.util");
 
 const normalizeName = (str) =>
   (str || "")
@@ -453,7 +454,43 @@ module.exports.approveExportByQuotation = async (serviceOrderId, detailIds, mana
       });
     }
     await InventoryLog.bulkCreate(logsData, { transaction: t });
-    return { receipt_code, exported_count: logsData.length };
+
+    const assignments = await db.Task_Assignment.findAll({
+      attributes: ["technician_id"],
+      include: [
+        {
+          model: Task,
+          as: "task",
+          attributes: [],
+          where: { service_order_id: serviceOrderId },
+          required: true,
+        },
+      ],
+      transaction: t,
+    });
+    const technicianIds = [
+      ...new Set(assignments.map((a) => a.technician_id)),
+    ];
+
+    return { receipt_code, exported_count: logsData.length, technicianIds };
+  }).then(async (result) => {
+    for (const technicianId of result.technicianIds) {
+      await notifyUser(
+        technicianId,
+        {
+          title: "Phụ tùng đã xuất kho",
+          content: `Kho đã xuất ${result.exported_count} phụ tùng cho lệnh sửa chữa #${serviceOrderId}, bạn có thể đến nhận.`,
+          notificationType: "SERVICE_ORDER",
+          referenceId: serviceOrderId,
+        },
+        "new_notification",
+        { type: "PARTS_EXPORTED", serviceOrderId },
+      );
+    }
+    return {
+      receipt_code: result.receipt_code,
+      exported_count: result.exported_count,
+    };
   });
 };
 
@@ -761,10 +798,70 @@ module.exports.importSparePartForOrderItem = async (manager_id, supplier_id, ite
       part,
       importLog: logs[index],
     }));
+
+    const issueIds = [
+      ...new Set(linkedDetails.map((d) => d.issue_id).filter(Boolean)),
+    ];
+    let serviceOrderIds = [];
+    if (issueIds.length > 0) {
+      const issues = await db.Vehicle_Issues.findAll({
+        where: { id: issueIds },
+        attributes: ["id", "task_id"],
+        transaction: t,
+      });
+      const taskIds = [...new Set(issues.map((i) => i.task_id).filter(Boolean))];
+      if (taskIds.length > 0) {
+        const relatedTasks = await Task.findAll({
+          where: { id: taskIds },
+          attributes: ["id", "service_order_id"],
+          transaction: t,
+        });
+        serviceOrderIds = [
+          ...new Set(relatedTasks.map((tsk) => tsk.service_order_id)),
+        ];
+      }
+    }
+
     return {
       receipt_code,
       items: results,
-      linkedDetails, 
+      linkedDetails,
+      serviceOrderIds,
+    };
+  }).then(async (result) => {
+    if (result.serviceOrderIds.length > 0) {
+      const assignments = await db.Task_Assignment.findAll({
+        attributes: ["technician_id"],
+        include: [
+          {
+            model: Task,
+            as: "task",
+            attributes: [],
+            where: { service_order_id: result.serviceOrderIds },
+            required: true,
+          },
+        ],
+      });
+      const technicianIds = [
+        ...new Set(assignments.map((a) => a.technician_id)),
+      ];
+      for (const technicianId of technicianIds) {
+        await notifyUser(
+          technicianId,
+          {
+            title: "Phụ tùng đặt riêng đã về kho",
+            content: "Phụ tùng đặt riêng bạn đang chờ đã nhập kho, kho sẽ sớm xuất cho bạn.",
+            notificationType: "SERVICE_ORDER",
+          },
+          "new_notification",
+          { type: "PARTS_IMPORTED" },
+        );
+      }
+    }
+    return {
+      receipt_code: result.receipt_code,
+      items: result.items,
+      linkedDetails: result.linkedDetails,
     };
   });
 };

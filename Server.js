@@ -83,6 +83,14 @@ io.on('connection', (socket) => {
   socket.on('join-user', (userId) => {
     socket.join(`user-${userId}`);
   });
+
+  // Khách hàng theo dõi tiến độ sửa chữa realtime (emitProgress dùng room này)
+  socket.on('join-vehicle-tracking', (serviceOrderId) => {
+    socket.join(`service-order-${serviceOrderId}`);
+  });
+  socket.on('leave-vehicle-tracking', (serviceOrderId) => {
+    socket.leave(`service-order-${serviceOrderId}`);
+  });
 });
 const ROUTES = require("./src/router/registry.routes");
 require("./src/jobs/pricingRule.job");

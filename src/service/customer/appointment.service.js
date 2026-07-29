@@ -1,7 +1,7 @@
 const db = require("../../../models");
 const { Op } = require("sequelize");
 const getGarageCapacity = require("../../util/getGarageCapacity.util");
-const { notifyRole } = require("../../util/notification.util");
+const { notifyRole, notifyUser } = require("../../util/notification.util");
 
 module.exports.getAppointments = async (userId) => {
     let customer = await db.Customers.findOne({ where: { user_id: userId } });
@@ -242,6 +242,8 @@ module.exports.createAppointment = async (userId, data) => {
         }
 
         const needsServiceOrder = ['CUSTOMER_SPECIFIC', 'RECEPTIONIST_SPECIFIC', 'CUSTOMER_REPAIR', 'RECEPTIONIST_REPAIR'].includes(data.booking_type);
+        let serviceOrder = null;
+        let technicianId = null;
         if (needsServiceOrder) {
             const recRole = await db.Role.findOne({ where: { roleCode: 'RECEPTIONIST' }, transaction });
             let receptionistId = 1;
@@ -264,7 +266,7 @@ module.exports.createAppointment = async (userId, data) => {
                 bayId = bayUsageCount[0].id;
             }
 
-            const serviceOrder = await db.Service_Orders.create({
+            serviceOrder = await db.Service_Orders.create({
                 appointment_id: appointment.id,
                 vehicle_id: resolvedVehicleId,
                 receptionist_id: receptionistId,
@@ -276,7 +278,7 @@ module.exports.createAppointment = async (userId, data) => {
             }, { transaction });
 
             const { findAvailableTechnicians } = require("../../util/findAvailableTechnicians.util");
-            let technicianId = 1;
+            technicianId = 1;
 
             const technicians = await findAvailableTechnicians(data.scheduled_time, transaction);
             if (technicians.length > 0) {
@@ -376,6 +378,17 @@ module.exports.createAppointment = async (userId, data) => {
             appointmentId: appointment.id,
             type: "APPOINTMENT"
         });
+        if (needsServiceOrder && technicianId) {
+            await notifyUser(technicianId, {
+                title: "Bạn được giao công việc mới",
+                content: "Bạn vừa được hệ thống tự động phân công tiếp nhận một xe mới.",
+                notificationType: "SERVICE_ORDER",
+                referenceId: serviceOrder.id
+            }, 'new_notification', {
+                type: "TASK_ASSIGNED",
+                serviceOrderId: serviceOrder.id
+            });
+        }
         // --- Kết thúc xử lý thông báo ---
 
         return await db.Appointments.findByPk(appointment.id, {

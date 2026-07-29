@@ -1,4 +1,53 @@
 const db = require("../../../models");
+const { notifyUser, notifyRole } = require("../../util/notification.util");
+
+const notifyDepositPaid = async (quotationId) => {
+    try {
+        const quotation = await db.Quotations.findByPk(quotationId, {
+            include: [
+                {
+                    model: db.Task,
+                    as: "task",
+                    attributes: ["id", "service_order_id"],
+                    include: [
+                        {
+                            model: db.Service_Orders,
+                            as: "serviceOrder",
+                            attributes: ["id"],
+                            include: [
+                                {
+                                    model: db.Vehicles,
+                                    as: "vehicle",
+                                    attributes: ["id"],
+                                    include: [
+                                        { model: db.Customers, as: "customer", attributes: ["id", "user_id"] },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        });
+        const customerUserId = quotation?.task?.serviceOrder?.vehicle?.customer?.user_id;
+        if (customerUserId) {
+            await notifyUser(customerUserId, {
+                title: "Đã nhận tiền cọc",
+                content: `Xưởng đã nhận được tiền cọc cho báo giá #${quotationId}.`,
+                notificationType: "SERVICE_ORDER",
+                referenceId: quotationId,
+            }, "new_notification", { type: "DEPOSIT_PAID", quotationId });
+        }
+        await notifyRole("RECEPTIONIST", {
+            title: "Khách hàng đã cọc tiền",
+            content: `Khách hàng đã thanh toán tiền cọc cho báo giá #${quotationId}.`,
+            notificationType: "SERVICE_ORDER",
+            referenceId: quotationId,
+        }, "new_notification", { type: "DEPOSIT_PAID", quotationId });
+    } catch (error) {
+        console.error(`Lỗi khi gửi thông báo đã cọc cho báo giá ${quotationId}:`, error);
+    }
+};
 
 
 const handleSepayTransaction = async (paymentData) => {
@@ -88,6 +137,7 @@ const handleSepayTransaction = async (paymentData) => {
                     );
 
                     console.log(`🎉 [Sepay Deposit] Cập nhật cọc deposit_paid_at và Quotation_Details (WAITING_STOCK) thành công cho Báo giá #${quotationId}`);
+                    await notifyDepositPaid(quotationId);
                 } else {
                     console.warn(`⚠️ [Sepay Deposit] Số tiền chuyển (${transferAmount} VND) nhỏ hơn số tiền cọc (${quotation.deposit_amount} VND)`);
                 }
@@ -180,6 +230,7 @@ const handleSepayTransaction = async (paymentData) => {
                     }
                     console.log(`✅ [Sepay Fallback] Đã lưu bản ghi Booking_Payments cho ServiceOrder #${serviceOrderId}`);
                 }
+                await notifyDepositPaid(pendingQuotation.id);
             } else {
                 // Fallback 2: Kiểm tra đơn Booking_Payments
                 bookingPayment = await db.Booking_Payments.findOne({

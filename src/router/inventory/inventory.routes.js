@@ -6,6 +6,7 @@ const sparePartManagementController = require("../../controller/inventory/spareP
 const sparePartCategoryManagementController = require("../../controller/inventory/sparePartCategoryManagement.controller");
 const supplierManagementController = require("../../controller/inventory/supplierManagement.controller");
 const importAndExportManagementController = require("../../controller/inventory/importAndExportManagement.controller");
+const notificationController = require("../../controller/inventory/notification.controller");
 
 
 router.post("/import/scan-invoice", upload.array("invoices"), importAndExportManagementController.scanInvoice);
@@ -31,5 +32,10 @@ router.post("/supplier", supplierManagementController.createSupplier);
 router.patch("/supplier/:id", supplierManagementController.updateSupplier);
 
 router.get("/inventory/waiting-stock", importAndExportManagementController.getWaitingStockItems);
+
+router.get("/notifications", notificationController.getNotifications);
+router.get("/notifications/unread-count", notificationController.getUnreadCount);
+router.put("/notifications/read-all", notificationController.markAllAsRead);
+router.put("/notifications/:id/read", notificationController.markAsRead);
 
 module.exports = router;

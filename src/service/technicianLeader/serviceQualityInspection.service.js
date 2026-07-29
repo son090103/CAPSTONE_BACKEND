@@ -76,6 +76,16 @@ module.exports.approveFinalInspection = async (serviceOrderId) => {
   const serviceOrder = await db.sequelize.transaction(async (t) => {
     const serviceOrder = await Service_Order.findByPk(serviceOrderId, {
       attributes: ["id", "status", "appointment_id"],
+      include: [
+        {
+          model: Vehicles,
+          as: "vehicle",
+          attributes: ["id"],
+          include: [
+            { model: Customers, as: "customer", attributes: ["id", "user_id"] },
+          ],
+        },
+      ],
       transaction: t,
     });
     if (!serviceOrder) {
@@ -118,12 +128,26 @@ module.exports.approveFinalInspection = async (serviceOrderId) => {
     {
       title: "Xe sẵn sàng giao",
       content: `Lệnh sửa chữa #${serviceOrderId} đã nghiệm thu, có thể gọi khách nhận xe.`,
-      notificationType: "READY_FOR_DELIVERY",
+      notificationType: "SERVICE_ORDER",
       referenceId: serviceOrderId,
     },
     "new_notification",
     { type: "READY_FOR_DELIVERY", serviceOrderId },
   );
+  const customerUserId = serviceOrder.vehicle?.customer?.user_id;
+  if (customerUserId) {
+    await notifyUser(
+      customerUserId,
+      {
+        title: "Xe của bạn đã sẵn sàng",
+        content: `Xe của bạn đã hoàn tất sửa chữa và nghiệm thu, bạn có thể đến nhận xe.`,
+        notificationType: "SERVICE_ORDER",
+        referenceId: serviceOrderId,
+      },
+      "new_notification",
+      { type: "READY_FOR_DELIVERY", serviceOrderId },
+    );
+  }
   emitProgress(serviceOrderId, {
     type: "READY_FOR_DELIVERY",
     serviceOrderId,
@@ -194,7 +218,7 @@ module.exports.rejectFinalInspection = async (
         content: reason
           ? `Nghiệm thu không đạt: ${reason}`
           : "Công việc của bạn chưa đạt nghiệm thu, cần kiểm tra lại.",
-        notificationType: "QC_REJECTED",
+        notificationType: "SERVICE_ORDER",
         referenceId: serviceOrderId,
       },
       "new_notification",

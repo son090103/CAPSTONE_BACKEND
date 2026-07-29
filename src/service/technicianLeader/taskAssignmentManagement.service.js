@@ -155,20 +155,21 @@ module.exports.assignTask = async (data) => {
       { transaction: t },
     );
     return assignments;
+  }).then(async (assignments) => {
+    await notifyUser(
+      data.technician_id,
+      {
+        title: "Bạn được giao công việc mới",
+        content: `Bạn vừa được phân công ${data.task_ids.length} công việc.`,
+        notificationType: "SERVICE_ORDER",
+      },
+      "new_notification",
+      {
+        type: "TASK_ASSIGNED",
+      },
+    );
+    return assignments;
   });
-  await notifyUser(
-    data.technician_id,
-    {
-      title: "Bạn được giao công việc mới",
-      content: `Bạn vừa được phân công ${data.task_ids.length} công việc.`,
-      notificationType: "TASK_ASSIGNED",
-    },
-    "new_notification",
-    {
-      type: "TASK_ASSIGNED",
-    },
-  );
-  return assignments;
 };
 
 module.exports.getAssignmentHistory = async () => {
@@ -344,7 +345,7 @@ module.exports.updateAssignment = async (assignmentId, technicianId) => {
     {
       title: "Bạn được giao công việc mới",
       content: "Bạn vừa được chuyển giao một công việc.",
-      notificationType: "TASK_ASSIGNED",
+      notificationType: "SERVICE_ORDER",
     },
     "new_notification",
     { type: "TASK_ASSIGNED" },
@@ -356,7 +357,7 @@ module.exports.updateAssignment = async (assignmentId, technicianId) => {
       {
         title: "Công việc đã chuyển cho người khác",
         content: "Một công việc của bạn vừa được chuyển giao.",
-        notificationType: "TASK_UNASSIGNED",
+        notificationType: "SERVICE_ORDER",
       },
       "new_notification",
       { type: "TASK_UNASSIGNED" },
