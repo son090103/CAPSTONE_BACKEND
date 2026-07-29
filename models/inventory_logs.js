@@ -25,6 +25,10 @@ module.exports = (sequelize, DataTypes) => {
           foreignKey: 'manager_id',
           as: 'manager'
         });
+        this.belongsTo(models.User, {
+          foreignKey: 'received_by',
+          as: 'receiver'
+        });
       // 3. Một dòng log import bắt buộc thuộc 1 nhà cung cấp
         this.belongsTo(models.Suppliers, {
         foreignKey: 'supplier_id',
@@ -68,6 +72,18 @@ module.exports = (sequelize, DataTypes) => {
     manager_id: {
       type: DataTypes.INTEGER,
       allowNull: false
+    },
+    received_by: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    received_at: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    proof_image_url: {
+      type: DataTypes.STRING(500),
+      allowNull: true
     }
   }, {
     sequelize,

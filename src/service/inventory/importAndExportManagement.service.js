@@ -316,67 +316,105 @@ module.exports.importSparePart = async (manager_id, supplier_id, items) => {
 };
 
 module.exports.getApprovedQuotesWithParts = async () => {
-  const result = await Quotation.findAll({
-    where: { status: "APPROVED" },
-    attributes: ["id", "total_amount", "status","approved_at", "note", "createdAt"],
+  const result = await Service_Orders.findAll({
+    attributes: ["id", "status", "createdAt"],
     include: [
       {
-        model: QuotationDetail,
-        as: "items",
-        where: {
-          spare_part_id: { [Op.ne]: null },
-          status: "PENDING",
-        },
-        attributes: ["id", "spare_part_id", "quantity", "unit_price", "amount"],
+        model: Vehicles,
+        as: "vehicle",
+        attributes: ["id", "license_plate"],
         include: [
           {
-            model: SparePart,
-            as: "sparePart",
-            attributes: ["id", "name", "sku", "stock_quantity"],
+            model: Vehicle_Models,
+            as: "model",
+            attributes: ["id", "model_name"],
+          },
+          {
+            model: Customers,
+            as: "customer",
+            attributes: ["id", "name", "phone"],
           },
         ],
       },
       {
-        model: User,
-        as: "creator",
-        attributes: ["id", "fullName"],
-      }
+        model: Task,
+        as: "tasks",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Quotation,
+            as: "quotations",
+            attributes: ["id", "approved_at", "note", "createdAt"],
+            required: true,
+            where: { status: "APPROVED" },
+            include: [
+              {
+                model: QuotationDetail,
+                as: "items",
+                where: {
+                  spare_part_id: { [Op.ne]: null },
+                  status: "PENDING",
+                },
+                required: true,
+                attributes: ["id", "spare_part_id", "quantity", "unit_price", "amount"],
+                include: [
+                  {
+                    model: SparePart,
+                    as: "sparePart",
+                    attributes: ["id", "name", "sku", "stock_quantity"],
+                  },
+                ],
+              },
+              {
+                model: User,
+                as: "creator",
+                attributes: ["id", "fullName"],
+              },
+            ],
+          },
+        ],
+      },
     ],
-    order: [["approved_at", "DESC"]],
+    order: [["createdAt", "DESC"]],
   });
   return result;
 };
 
-module.exports.approveExportByQuotation = async (quotationId, detailIds, managerId) => {
+module.exports.approveExportByQuotation = async (serviceOrderId, detailIds, managerId) => {
   return await db.sequelize.transaction(async (t) => {
-    const quotation = await Quotation.findByPk(quotationId, {
+    const items = await QuotationDetail.findAll({
+      where: {
+        id: detailIds,
+        spare_part_id: { [Op.ne]: null },
+        status: "PENDING",
+      },
       include: [
+        { model: SparePart, as: "sparePart" },
         {
-          model: Task,
-          as: "task",
-          attributes: ["id", "service_order_id"],
-        },
-        {
-          model: QuotationDetail,
-          as: "items",
-          where: {
-            id: detailIds,
-            spare_part_id: { [Op.ne]: null },
-            status: "PENDING",
-          },
-          include: [{ model: SparePart, as: "sparePart" }],
+          model: Quotation,
+          as: "quotation",
+          attributes: ["id", "status"],
+          required: true,
+          where: { status: "APPROVED" },
+          include: [
+            {
+              model: Task,
+              as: "task",
+              attributes: ["id", "service_order_id"],
+              required: true,
+              where: { service_order_id: serviceOrderId },
+            },
+          ],
         },
       ],
       transaction: t,
     });
-    if (!quotation) {
-      throw { status: 404, message: "Không tìm thấy báo giá" };
-    }
-    if (quotation.status !== "APPROVED") {
-      throw { status: 400, message: "Chỉ có thể xuất kho cho báo giá đã được khách duyệt" };
-    }
-    if (quotation.items.length !== detailIds.length) {
-      throw { status: 400, message: "Có dòng không hợp lệ hoặc đã được xuất kho" };
+    if (items.length !== detailIds.length) {
+      throw {
+        status: 400,
+        message: "Có dòng không hợp lệ, đã xuất kho, hoặc không thuộc lệnh sửa chữa này",
+      };
     }
     const now = new Date();
     const day = String(now.getDate()).padStart(2, "0");
@@ -394,7 +432,7 @@ module.exports.approveExportByQuotation = async (quotationId, detailIds, manager
     const receipt_code = `${prefix}${String(next).padStart(4, "0")}`;
 
     const logsData = [];
-    for (const item of quotation.items) {
+    for (const item of items) {
       const part = item.sparePart;
       if (part.stock_quantity < item.quantity) {
         throw {
@@ -407,7 +445,7 @@ module.exports.approveExportByQuotation = async (quotationId, detailIds, manager
       logsData.push({
         receipt_code,
         part_id: part.id,
-        service_order_id: quotation.task?.service_order_id || null,
+        service_order_id: serviceOrderId,
         type: "OUT",
         quantity: item.quantity,
         unit_price: item.unit_price,

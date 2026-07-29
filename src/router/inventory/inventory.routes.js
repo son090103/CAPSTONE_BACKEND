@@ -10,7 +10,7 @@ const importAndExportManagementController = require("../../controller/inventory/
 
 router.post("/import/scan-invoice", upload.array("invoices"), importAndExportManagementController.scanInvoice);
 router.get("/approved-quote", importAndExportManagementController.getApprovedQuotesWithParts);
-router.post("/export/:quotationId/approve", importAndExportManagementController.approveExportByQuotation);
+router.post("/export/:serviceOrderId/approve", importAndExportManagementController.approveExportByQuotation);
 router.get("/export", importAndExportManagementController.viewExportHistory);
 router.get("/export/:receiptCode", importAndExportManagementController.viewExportDetail);
 

@@ -17,6 +17,7 @@ const Vehicle_Makes = db.Vehicle_Makes;
 const Diagnostic_Knowledge = db.Diagnostic_Knowledge;
 const Repair_Notes = db.Repair_Notes;
 const Service_Catalog = db.Service_Catalog;
+const { uploadToCloudinary } = require("../../helper/uploadToCloudinary.helper");
 
 module.exports.getTaskAssignment = async (technicianId) => {
   const serviceOrders = await db.Service_Orders.findAll({
@@ -71,7 +72,7 @@ module.exports.getTaskAssignment = async (technicianId) => {
         model: db.Task,
         as: "tasks",
         required: true,
-        where: { status: ["PENDING", "IN_PROGRESS"] },
+        where: { status: ["PENDING", "IN_PROGRESS", "PAUSED", "WAITING_STOCK","COMPLETED"] },
         include: [
           {
             model: db.Task_Assignment,
@@ -94,7 +95,7 @@ module.exports.getTaskAssignment = async (technicianId) => {
              {
             model: db.Quotation_Details,
             as: "quotationItem",
-            attributes: ["id", "quantity"],
+            attributes: ["id", "quantity", "status"],
             include: [
               {
                 model: db.Vehicle_Issues,
@@ -105,6 +106,30 @@ module.exports.getTaskAssignment = async (technicianId) => {
                     model: db.Vehicle_Components,
                     as: "component",
                     attributes: ["id", "name"],
+                  },
+                  {
+                    model: db.Quotation_Details,
+                    as: "quotationDetails",
+                    attributes: [
+                      "id",
+                      "quantity",
+                      "custom_item_name",
+                      "status",
+                    ],
+                    where: {
+                      [Op.or]: [
+                        { spare_part_id: { [Op.ne]: null } },
+                        { custom_item_name: { [Op.ne]: null } },
+                      ],
+                    },
+                    required: false,
+                    include: [
+                      {
+                        model: db.Spare_Parts,
+                        as: "sparePart",
+                        attributes: ["id", "name", "sku"],
+                      },
+                    ],
                   },
                 ],
               },
@@ -201,6 +226,31 @@ module.exports.getServiceOrderDetail = async (serviceOrderId, technicianId) => {
   return serviceOrder;
 };
 
+const resolveStartStatus = async (task) => {
+  if (!task.quotation_item_id) {
+    return "IN_PROGRESS";
+  }
+  const quotationItem = await db.Quotation_Details.findByPk(
+    task.quotation_item_id,
+    { attributes: ["id", "issue_id"] },
+  );
+  if (!quotationItem || !quotationItem.issue_id) {
+    return "IN_PROGRESS";
+  }
+  const needsPart = await db.Quotation_Details.findOne({
+    where: {
+      issue_id: quotationItem.issue_id,
+      status: { [Op.ne]: "RECEIVED" },
+      [Op.or]: [
+        { spare_part_id: { [Op.ne]: null } },
+        { custom_item_name: { [Op.ne]: null } },
+      ],
+    },
+    attributes: ["id"],
+  });
+  return needsPart ? "WAITING_STOCK" : "IN_PROGRESS";
+};
+
 module.exports.startTask = async (taskAssignmentId, technicianId) => {
   // 1. Tìm assignment gốc để lấy thông tin Service Order và Appointment
   const assignment = await db.Task_Assignment.findOne({
@@ -259,15 +309,20 @@ module.exports.startTask = async (taskAssignmentId, technicianId) => {
         where: { task_id: task.id },
       });
 
+      const startStatus = await resolveStartStatus(task);
+      let assignmentStatus = "IN_PROGRESS";
+
       if (totalAssignments <= 1) {
         // Chỉ có 1 người làm
-        task.status = "IN_PROGRESS";
+        task.status = startStatus;
         await task.save();
+        assignmentStatus = startStatus;
       } else {
         // Có nhiều người làm
         if (asg.role_in_task === "LEAD") {
-          task.status = "IN_PROGRESS";
+          task.status = startStatus;
           await task.save();
+          assignmentStatus = startStatus;
         } else {
           // Nếu là thợ phụ, chỉ start assignment, task giữ nguyên trừ khi task đã IN_PROGRESS
           if (task.status !== "IN_PROGRESS") {
@@ -279,7 +334,7 @@ module.exports.startTask = async (taskAssignmentId, technicianId) => {
         }
       }
 
-      asg.status = "IN_PROGRESS";
+      asg.status = assignmentStatus;
       if (!asg.actual_start_time) {
         asg.actual_start_time = new Date();
       }
@@ -318,11 +373,18 @@ module.exports.completeTask = async (
   if (!taskAssignment) {
     throw { status: 404, message: "Không tìm thấy công việc đang thực hiện." };
   }
+  const task = taskAssignment.task;
+  const startStatus = await resolveStartStatus(task);
+  if (startStatus === "WAITING_STOCK") {
+    throw {
+      status: 409,
+      message: "Còn phụ tùng chưa nhận đủ, chưa thể hoàn thành công việc.",
+    };
+  }
   await taskAssignment.update({
     status: "COMPLETED",
     actual_end_time: new Date(),
   });
-  const task = taskAssignment.task;
   const taskId = task.id;
   const serviceOrderId = task.service_order_id;
   const remainingAsg = await Task_Assignments.count({
@@ -756,6 +818,22 @@ module.exports.getRepairHistory = async () => {
         attributes: ["id", "service_name"],
       },
       {
+        model: db.Quotation_Details,
+        as: "quotationItem",
+        attributes: ["id"],
+        required: false,
+        include: [
+          {
+            model: Issues,
+            as: "issue",
+            attributes: ["id", "error_description"],
+            include: [
+              { model: Components, as: "component", attributes: ["id", "name"] },
+            ],
+          },
+        ],
+      },
+      {
         model: db.Repair_Notes,
         as: "repairNotes",
         attributes: ["id", "content", "createdAt"],
@@ -877,6 +955,22 @@ module.exports.filterRepairHistory = async ({ makeId, modelId }) => {
         model: Service_Catalog,
         as: "catalog",
         attributes: ["id", "service_name"],
+      },
+      {
+        model: db.Quotation_Details,
+        as: "quotationItem",
+        attributes: ["id"],
+        required: false,
+        include: [
+          {
+            model: Issues,
+            as: "issue",
+            attributes: ["id", "error_description"],
+            include: [
+              { model: Components, as: "component", attributes: ["id", "name"] },
+            ],
+          },
+        ],
       },
       {
         model: db.Repair_Notes,
@@ -1133,7 +1227,129 @@ module.exports.getCompletedTasks = async (technicianId) => {
 };
 
 
-module.exports.pauseTask = async (taskAssignmentId, technicianId, reason) => {
+module.exports.confirmReceivedParts = async (
+  serviceOrderId,
+  technicianId,
+  fileBuffer,
+) => {
+  if (!fileBuffer) {
+    throw { status: 400, message: "Vui lòng chụp ảnh phụ tùng khi nhận hàng." };
+  }
+
+  const assignment = await Task_Assignments.findOne({
+    where: { technician_id: technicianId },
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id"],
+        where: { service_order_id: serviceOrderId },
+      },
+    ],
+  });
+  if (!assignment) {
+    throw {
+      status: 403,
+      message: "Bạn không phụ trách công việc thuộc lệnh sửa chữa này.",
+    };
+  }
+
+  const logs = await db.Inventory_Logs.findAll({
+    where: {
+      service_order_id: serviceOrderId,
+      type: "OUT",
+      received_by: null,
+    },
+  });
+  if (logs.length === 0) {
+    throw {
+      status: 404,
+      message: "Không có phụ tùng nào đang chờ xác nhận nhận hàng.",
+    };
+  }
+
+  const uploadResult = await uploadToCloudinary(fileBuffer, "inventory-receipts");
+  const now = new Date();
+  const receiptCodes = [...new Set(logs.map((log) => log.receipt_code))];
+  await db.Inventory_Logs.update(
+    {
+      received_by: technicianId,
+      received_at: now,
+      proof_image_url: uploadResult.secure_url,
+    },
+    {
+      where: {
+        service_order_id: serviceOrderId,
+        type: "OUT",
+        received_by: null,
+      },
+    },
+  );
+
+  const partIds = [...new Set(logs.map((log) => log.part_id))];
+  const detailsToReceive = await db.Quotation_Details.findAll({
+    where: { spare_part_id: partIds, status: "EXPORTED" },
+    include: [
+      {
+        model: db.Quotations,
+        as: "quotation",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Tasks,
+            as: "task",
+            attributes: ["id"],
+            required: true,
+            where: { service_order_id: serviceOrderId },
+          },
+        ],
+      },
+    ],
+  });
+  await db.Quotation_Details.update(
+    { status: "RECEIVED" },
+    { where: { id: detailsToReceive.map((d) => d.id) } },
+  );
+
+  const waitingTasks = await Tasks.findAll({
+    where: { service_order_id: serviceOrderId, status: "WAITING_STOCK" },
+    include: [{ model: Task_Assignments, as: "assignments" }],
+  });
+  for (const task of waitingTasks) {
+    const startStatus = await resolveStartStatus(task);
+    if (startStatus === "IN_PROGRESS") {
+      task.status = "IN_PROGRESS";
+      await task.save();
+      for (const asg of task.assignments || []) {
+        if (asg.status === "WAITING_STOCK") {
+          asg.status = "IN_PROGRESS";
+          if (!asg.actual_start_time) {
+            asg.actual_start_time = now;
+          }
+          await asg.save();
+        }
+      }
+    }
+  }
+
+  return {
+    receipt_codes: receiptCodes,
+    received_at: now,
+    proof_image_url: uploadResult.secure_url,
+  };
+};
+
+const PAUSE_STATUSES = ["PAUSED", "WAITING_STOCK"];
+module.exports.pauseTask = async (
+  taskAssignmentId,
+  technicianId,
+  reason,
+  status = "PAUSED",
+) => {
+  if (!PAUSE_STATUSES.includes(status)) {
+    throw { status: 400, message: "Trạng thái tạm dừng không hợp lệ." };
+  }
   const taskAssignment = await Task_Assignments.findOne({
     where: {
       id: taskAssignmentId,
@@ -1146,11 +1362,10 @@ module.exports.pauseTask = async (taskAssignmentId, technicianId, reason) => {
     throw { status: 404, message: "Không tìm thấy công việc đang thực hiện." };
   }
   await taskAssignment.update({
-    status: "PAUSED",
+    status,
     remarks: reason || null,
   });
-  await taskAssignment.task.update({ status: "PAUSED" });
-
+  await taskAssignment.task.update({ status });
   return taskAssignment;
 };
 
@@ -1160,7 +1375,7 @@ module.exports.resumeTask = async (taskAssignmentId, technicianId) => {
     where: {
       id: taskAssignmentId,
       technician_id: technicianId,
-      status: "PAUSED",
+      status: PAUSE_STATUSES,
     },
     include: [{ model: Tasks, as: "task" }],
   });

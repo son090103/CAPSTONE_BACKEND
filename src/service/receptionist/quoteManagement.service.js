@@ -537,7 +537,7 @@ module.exports.getQuoteHistory = async () => {
       {
         model: QuotationDetail,
         as: "items",
-        attributes: ["id", "quantity", "unit_price", "repair_price", "amount", "custom_item_name",
+        attributes: ["id", "quantity", "unit_price", "repair_price", "amount", "custom_item_name", "status",
         ],
         include: [
           {
