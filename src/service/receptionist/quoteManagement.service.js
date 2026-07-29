@@ -504,7 +504,7 @@ module.exports.getQuoteHistory = async () => {
           {
             model: Service_Order,
             as: "serviceOrder",
-            attributes: ["id"],
+            attributes: ["id", "symptoms"],
             include: [
               {
                 model: Vehicles,

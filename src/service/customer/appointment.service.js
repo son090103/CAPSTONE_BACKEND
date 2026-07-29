@@ -47,7 +47,14 @@ module.exports.getAppointments = async (userId) => {
                     {
                         model: db.Service_Catalog,
                         as: 'catalog',
-                        attributes: ['id', 'service_name', 'estimated_duration', 'description']
+                        attributes: ['id', 'service_name', 'estimated_duration', 'description', 'labor_price', 'spare_part_id'],
+                        include: [
+                            {
+                                model: db.Spare_Parts,
+                                as: 'sparePart',
+                                attributes: ['id', 'retail_price']
+                            }
+                        ]
                     },
                     {
                         model: db.Service_Combo,
@@ -57,7 +64,14 @@ module.exports.getAppointments = async (userId) => {
                             {
                                 model: db.Service_Catalog,
                                 as: 'catalogs',
-                                attributes: ['id', 'service_name']
+                                attributes: ['id', 'service_name', 'labor_price', 'spare_part_id'],
+                                include: [
+                                    {
+                                        model: db.Spare_Parts,
+                                        as: 'sparePart',
+                                        attributes: ['id', 'retail_price']
+                                    }
+                                ]
                             }
                         ]
                     }
@@ -406,12 +420,33 @@ module.exports.createAppointment = async (userId, data) => {
                         {
                             model: db.Service_Catalog,
                             as: 'catalog',
-                            attributes: ['id', 'service_name', 'estimated_duration', 'description']
+                            attributes: ['id', 'service_name', 'estimated_duration', 'description', 'labor_price', 'spare_part_id'],
+                            include: [
+                                {
+                                    model: db.Spare_Parts,
+                                    as: 'sparePart',
+                                    attributes: ['id', 'retail_price']
+                                }
+                            ]
                         },
                         {
                             model: db.Service_Combo,
                             as: 'combo',
-                            attributes: ['id', 'combo_name', 'description']
+                            attributes: ['id', 'combo_name', 'description'],
+                            include: [
+                                {
+                                    model: db.Service_Catalog,
+                                    as: 'catalogs',
+                                    attributes: ['id', 'service_name', 'labor_price', 'spare_part_id'],
+                                    include: [
+                                        {
+                                            model: db.Spare_Parts,
+                                            as: 'sparePart',
+                                            attributes: ['id', 'retail_price']
+                                        }
+                                    ]
+                                }
+                            ]
                         }
                     ]
                 },

@@ -654,6 +654,22 @@ module.exports.getServiceOrderById = async (id) => {
             ]
           },
           {
+            model: db.Quotation_Details,
+            as: "quotationItem",
+            include: [
+              {
+                model: db.Spare_Parts,
+                as: "sparePart",
+                attributes: ["id", "name", "retail_price"],
+              },
+              {
+                model: db.Service_Catalog,
+                as: "service_catalog",
+                attributes: ["id", "service_name"],
+              }
+            ]
+          },
+          {
             model: db.Task_Assignment,
             as: "assignments",
             include: [
@@ -681,7 +697,37 @@ module.exports.getServiceOrderById = async (id) => {
   const rawServiceOrder = serviceOrder.toJSON();
   if (rawServiceOrder.tasks) {
     rawServiceOrder.tasks = rawServiceOrder.tasks.map(task => {
-      if (task.catalog) {
+      if (task.quotationItem) {
+        // If it's a repair task from quotation, calculate the exact quoted price: spare_part + repair_price
+        const repairPrice = Number(task.quotationItem.repair_price || 0);
+        let partPrice = Number(task.quotationItem.unit_price || 0) * Number(task.quotationItem.quantity || 1);
+        
+        // If the quotation detail line doesn't specify unit_price, check if the service catalog itself has an associated spare part
+        if (partPrice === 0 && task.catalog && task.catalog.sparePart) {
+          partPrice = Number(task.catalog.sparePart.retail_price || 0);
+        }
+        
+        const totalTaskPrice = repairPrice + partPrice;
+        
+        // Define service name from quotationItem details
+        let serviceName = task.quotationItem.custom_item_name;
+        if (!serviceName && task.quotationItem.service_catalog) {
+          serviceName = task.quotationItem.service_catalog.service_name;
+        }
+        if (!serviceName && task.quotationItem.sparePart) {
+          serviceName = `Thay thế ${task.quotationItem.sparePart.name}`;
+        }
+        if (!serviceName) {
+          serviceName = task.catalog?.service_name || 'Dịch vụ sửa chữa';
+        }
+
+        task.catalog = {
+          ...(task.catalog || {}),
+          service_name: serviceName,
+          total_price: totalTaskPrice,
+          estimated_duration: task.catalog?.estimated_duration || 30
+        };
+      } else if (task.catalog) {
         task.catalog.total_price = calculateTotalServicePrice(task.catalog);
       }
       return task;

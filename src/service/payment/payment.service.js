@@ -11,6 +11,8 @@ const handleSepayTransaction = async (paymentData) => {
             transactionDate,
             accountNumber,
             subAccount,
+
+
             code,
             accumulated,
             referenceCode
@@ -37,7 +39,7 @@ const handleSepayTransaction = async (paymentData) => {
 
             if (quotation) {
                 console.log(`💰 [Sepay Deposit] Yêu cầu cọc: ${quotation.deposit_amount} VND | Thực chuyển: ${transferAmount} VND`);
-                
+
                 // Kiểm tra số tiền chuyển đến có khớp/lớn hơn hoặc bằng số tiền cọc hay không
                 if (Number(transferAmount) >= Number(quotation.deposit_amount)) {
                     const serviceOrderId = quotation.task ? quotation.task.service_order_id : null;
@@ -290,10 +292,60 @@ const initPayment = async (orderId, amount, paymentMethod = 'VIETQR') => {
     }
 };
 
+const confirmPayment = async (orderId, amount, paymentMethod = 'VIETQR') => {
+    try {
+        const numericOrderId = parseInt(String(orderId).replace(/\D/g, ''), 10);
+        if (isNaN(numericOrderId)) {
+            throw new Error("Invalid orderId");
+        }
 
+        let bookingPayment = await db.Booking_Payments.findOne({
+            where: { order_id: numericOrderId }
+        });
+
+        if (!bookingPayment) {
+            bookingPayment = await db.Booking_Payments.create({
+                order_id: numericOrderId,
+                amount: amount,
+                payment_status: 'PAID',
+                payment_method: paymentMethod,
+                payment_gateway: 'BANK',
+                paid_at: new Date()
+            });
+        } else {
+            await bookingPayment.update({
+                payment_status: 'PAID',
+                payment_method: paymentMethod,
+                amount: amount,
+                paid_at: new Date()
+            });
+        }
+
+        // Save transaction log
+        await db.Payment_Transactions.create({
+            payment_id: bookingPayment.id,
+            gateway: 'BANK',
+            transaction_date: new Date(),
+            account_number: paymentMethod === 'CASH' ? 'CASH' : 'ONLINE',
+            sub_account: paymentMethod === 'CASH' ? 'CASH' : 'ONLINE',
+            amount_in: amount,
+            amount_out: 0,
+            accumulated: amount,
+            code: `${paymentMethod}-${Date.now()}`,
+            transaction_content: `Thanh toán ${paymentMethod === 'CASH' ? 'tiền mặt' : 'chuyển khoản'} cho SO-${numericOrderId}`,
+            raw_body: JSON.stringify({ orderId, amount, paymentMethod })
+        });
+
+        return { success: true, bookingPayment };
+    } catch (error) {
+        console.error("❌ Lỗi trong service confirmPayment:", error);
+        throw error;
+    }
+};
 
 module.exports = {
     handleSepayTransaction,
     checkPaymentStatus,
     initPayment,
+    confirmPayment,
 };
