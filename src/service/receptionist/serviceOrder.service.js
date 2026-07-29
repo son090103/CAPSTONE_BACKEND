@@ -1,6 +1,7 @@
 const db = require("../../../models");
 const { Op } = require("sequelize");
 const { calculateTotalServicePrice } = require("../../util/calculateServicePrice.util");
+const { notifyUser } = require("../../util/notification.util");
 const Quotation = db.Quotations;
 const QuotationDetail = db.Quotation_Details;
 const SparePart = db.Spare_Parts;
@@ -318,6 +319,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         technicianId = technicianTasksCount[0].id;
       }
     }
+    console.log("[createServiceOrder] techRole:", techRole?.id, "technicianId chọn được:", technicianId);
 
     // 6. Tạo Tasks cho các dịch vụ được chọn và gán thợ
     const taskCatalogs = [];
@@ -392,6 +394,24 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
     }
 
     await transaction.commit();
+    console.log("[createServiceOrder] transaction commit xong, serviceOrder.id:", serviceOrder.id, "technicianId:", technicianId);
+    if (technicianId) {
+      console.log("[createServiceOrder] Gửi notifyUser cho technicianId:", technicianId);
+      await notifyUser(
+        technicianId,
+        {
+          title: "Bạn được giao công việc mới",
+          content: "Bạn vừa được hệ thống tự động phân công tiếp nhận một xe mới.",
+          notificationType: "SERVICE_ORDER",
+          referenceId: serviceOrder.id,
+        },
+        "new_notification",
+        { type: "TASK_ASSIGNED", serviceOrderId: serviceOrder.id },
+      );
+      console.log("[createServiceOrder] notifyUser đã gọi xong (không lỗi)");
+    } else {
+      console.log("[createServiceOrder] KHÔNG gửi notify vì technicianId là null/undefined");
+    }
     return serviceOrder;
   } catch (error) {
     await transaction.rollback();

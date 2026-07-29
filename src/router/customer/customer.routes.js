@@ -9,6 +9,7 @@ const feedbackController = require("../../controller/customer/feedback.controlle
 const waitingTimeController = require("../../controller/customer/waiting-time.controller");
 const serviceHistoryAndTrackingController = require("../../controller/customer/serviceHistoryAndTracking.controller");
 const quoteManagementController = require("../../controller/customer/quoteManagement.controller");
+const notificationController = require("../../controller/customer/notification.controller");
 
 router.get("/repair-progress", serviceHistoryAndTrackingController.getRepairProgress);
 
@@ -35,5 +36,10 @@ router.get("/feedback", feedbackController.getMyFeedbacks);
 
 router.get("/waiting-time", waitingTimeController.getWaitingTime)
 router.get("/appointment-vehicle", appointmentController.getAppointmentVehicle);
+
+router.get("/notifications", notificationController.getNotifications);
+router.get("/notifications/unread-count", notificationController.getUnreadCount);
+router.put("/notifications/read-all", notificationController.markAllAsRead);
+router.put("/notifications/:id/read", notificationController.markAsRead);
 
 module.exports = router;

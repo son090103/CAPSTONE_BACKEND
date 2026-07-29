@@ -31,14 +31,26 @@ module.exports.getRepairProgress = async (userId) => {
       {
         model: db.Task,
         as: "tasks",
-        attributes: ["id", "status"],
+        attributes: ["id", "status", "type"],
         required: false,
         include: [
+          {
+            model: db.Service_Catalog,
+            as: "catalog",
+            attributes: ["id", "service_name", "estimated_duration"],
+          },
           {
             model: db.Task_Assignment,
             as: "assignments",
             attributes: ["id", "status"],
             required: false,
+            include: [
+              {
+                model: db.User,
+                as: "technician",
+                attributes: ["id", "fullName"],
+              },
+            ],
           },
         ],
       },

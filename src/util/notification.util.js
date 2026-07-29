@@ -54,8 +54,13 @@ const notifyUser = async (userId, notificationData, socketEvent = 'new_notificat
             priority: notificationData.priority || 'NORMAL'
         });
 
+        console.log(`[notifyUser] Đã tạo Notification DB cho user ${userId}`);
+
         if (global._io) {
             global._io.to(`user-${userId}`).emit(socketEvent, socketPayload);
+            console.log(`[notifyUser] Đã emit socket '${socketEvent}' tới room user-${userId}`);
+        } else {
+            console.log(`[notifyUser] global._io KHÔNG tồn tại, không emit được socket`);
         }
     } catch (error) {
         console.error(`Lỗi khi tạo thông báo cho user ${userId}:`, error);
