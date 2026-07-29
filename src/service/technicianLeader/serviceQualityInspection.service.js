@@ -45,7 +45,7 @@ module.exports.getServiceOrdersPendingFinalQC = async () => {
       {
         model: Tasks,
         as: "tasks",
-        attributes: ["id", "status"],
+        attributes: ["id", "status", "type"],
         include: [
           {
             model: Service_Catalog,
@@ -90,6 +90,7 @@ module.exports.approveFinalInspection = async (serviceOrderId) => {
     const remaining = await Tasks.count({
       where: {
         service_order_id: serviceOrderId,
+        type: "REPAIR",
         status: { [Op.ne]: "COMPLETED" },
       },
       transaction: t,

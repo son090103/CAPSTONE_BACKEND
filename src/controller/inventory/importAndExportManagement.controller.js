@@ -78,12 +78,11 @@ module.exports.getApprovedQuotesWithParts = async (req, res) => {
 module.exports.approveExportByQuotation = async (req, res) => {
   try {
     const manager_id = res.locals.user.id;
-    const { quotationId } = req.params;
+    const { serviceOrderId } = req.params;
     const { detailIds } = req.body;
-        console.log("params:", req.params, "body:", req.body);
 
     const validation = approveExportSchema.safeParse({
-      quotationId: Number(quotationId),
+      serviceOrderId: Number(serviceOrderId),
     });
     if (!validation.success) {
       return res.status(400).json({
@@ -91,7 +90,7 @@ module.exports.approveExportByQuotation = async (req, res) => {
       });
     }
     const result = await ImportAndExportManagement.approveExportByQuotation(
-      Number(quotationId),
+      Number(serviceOrderId),
       detailIds,
       manager_id,
     );

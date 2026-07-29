@@ -50,6 +50,7 @@ const getQuotationInclude = (customerId) => [
       "repair_price",
       "amount",
       "custom_item_name",
+      "status",
     ],
     include: [
       {
@@ -165,6 +166,16 @@ module.exports.approveQuotation = async (userId, quotationId) => {
           status: "PENDING",
         })),
         { transaction: t },
+      );
+      await db.Service_Orders.update(
+        { status: "IN_PROGRESS" },
+        {
+          where: {
+            id: inspectionTask.service_order_id,
+            status: "PENDING_QUOTATION",
+          },
+          transaction: t,
+        },
       );
     }
     await quotation.update(

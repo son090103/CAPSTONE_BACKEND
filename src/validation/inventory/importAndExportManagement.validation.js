@@ -89,13 +89,15 @@ const importReceiptSchema = z.object({
 });
 
 const approveExportSchema = z.object({
-  quotationId: z
+  serviceOrderId: z
     .number({
       error: (issue) =>
-        issue.input == null ? "Báo giá là bắt buộc" : "Báo giá phải là số",
+        issue.input == null
+          ? "Lệnh sửa chữa là bắt buộc"
+          : "Lệnh sửa chữa phải là số",
     })
-    .int("Báo giá không hợp lệ")
-    .positive("Báo giá không hợp lệ"),
+    .int("Lệnh sửa chữa không hợp lệ")
+    .positive("Lệnh sửa chữa không hợp lệ"),
 });
 
 const importForOrderItemSchema = z

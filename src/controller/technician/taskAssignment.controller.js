@@ -175,6 +175,31 @@ module.exports.createIssuesReport = async (req, res) => {
   }
 };
 
+module.exports.confirmReceivedParts = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const { serviceOrderId } = req.params;
+    if (!req.file) {
+      return res.status(400).json({ message: "Vui lòng chụp ảnh phụ tùng khi nhận hàng." });
+    }
+    const result = await taskAssignmentService.confirmReceivedParts(
+      serviceOrderId,
+      technicianId,
+      req.file.buffer,
+    );
+    return res.status(200).json({
+      success: true,
+      message: "Xác nhận nhận hàng thành công",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi.",
+    });
+  }
+};
+
 module.exports.reportAdditionalIssue = async (req, res) => {
   try {
     const technicianId = res.locals.user.id;
@@ -379,12 +404,12 @@ module.exports.getMyCompletedTasks = async (req, res) => {
 
 module.exports.pauseTask = async (req, res) => {
   try {
-    const { taskAssignmentId, reason } = req.body;
+    const { taskAssignmentId, reason, status } = req.body;
     const technicianId = res.locals.user.id;
     if (!taskAssignmentId) {
       return res.status(400).json({ message: "Vui lòng truyền taskAssignmentId vào body." });
     }
-    const result = await taskAssignmentService.pauseTask(taskAssignmentId, technicianId, reason);
+    const result = await taskAssignmentService.pauseTask(taskAssignmentId, technicianId, reason, status);
     return res.status(200).json({ message: "Đã tạm dừng công việc.", data: result });
   } catch (error) {
     return res.status(error.status || 500).json({ message: error.message || "Internal server error" });
