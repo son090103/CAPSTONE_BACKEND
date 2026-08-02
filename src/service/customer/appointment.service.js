@@ -19,7 +19,10 @@ module.exports.getAppointments = async (userId) => {
     }
 
     const appointments = await db.Appointments.findAll({
-        where: { customer_id: customer.id },
+        where: {
+            customer_id: customer.id,
+            status: { [Op.ne]: 'PENDING' }
+        },
         include: [
             {
                 model: db.Vehicles,
@@ -237,13 +240,18 @@ module.exports.createAppointment = async (userId, data) => {
             }
         }
 
+        let initialStatus = 'CONFIRMED';
+        if (data.payment_amount && Number(data.payment_amount) > 0) {
+            initialStatus = 'PENDING';
+        }
+
         const appointment = await db.Appointments.create({
             customer_id: customer.id,
             vehicle_id: resolvedVehicleId,
             booking_type: data.booking_type,
             scheduled_time: new Date(data.scheduled_time),
             notes: data.notes || null,
-            status: 'CONFIRMED'
+            status: initialStatus
         }, { transaction });
 
         if (allDetails.length > 0) {
@@ -296,19 +304,19 @@ module.exports.createAppointment = async (userId, data) => {
 
             const technicians = await findAvailableTechnicians(data.scheduled_time, transaction);
             if (technicians.length > 0) {
-                    const technicianTasksCount = await Promise.all(technicians.map(async (tech) => {
-                        const count = await db.Task_Assignment.count({
-                            where: {
-                                technician_id: tech.id,
-                                status: { [Op.in]: ['ASSIGNED', 'IN_PROGRESS'] }
-                            },
-                            transaction
-                        });
-                        return { id: tech.id, count };
-                    }));
-                    technicianTasksCount.sort((a, b) => a.count - b.count);
-                    technicianId = technicianTasksCount[0].id;
-                }
+                const technicianTasksCount = await Promise.all(technicians.map(async (tech) => {
+                    const count = await db.Task_Assignment.count({
+                        where: {
+                            technician_id: tech.id,
+                            status: { [Op.in]: ['ASSIGNED', 'IN_PROGRESS'] }
+                        },
+                        transaction
+                    });
+                    return { id: tech.id, count };
+                }));
+                technicianTasksCount.sort((a, b) => a.count - b.count);
+                technicianId = technicianTasksCount[0].id;
+            }
 
             const taskCatalogs = [];
             for (const d of allDetails) {

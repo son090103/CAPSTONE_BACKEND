@@ -2,6 +2,9 @@ const db = require("../../../models");
 
 module.exports.getAppointment = async () => {
     const appointments = await db.Appointments.findAll({
+        where: {
+            status: { [db.Sequelize.Op.ne]: 'PENDING' }
+        },
         include: [
             {
                 model: db.Customers,
