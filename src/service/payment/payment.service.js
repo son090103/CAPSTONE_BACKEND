@@ -60,6 +60,8 @@ const handleSepayTransaction = async (paymentData) => {
             transactionDate,
             accountNumber,
             subAccount,
+
+
             code,
             accumulated,
             referenceCode
@@ -75,6 +77,7 @@ const handleSepayTransaction = async (paymentData) => {
         // 1. Phân tích nội dung chuyển khoản (content) để tìm Mã Báo Giá Cọc (BG-xxx)
         let bookingCode = null;
         let bookingPayment = null;
+        let isDeposit = false;
 
         const bgMatch = content?.match(/BG[- ]?(\d+)/i);
         if (bgMatch) {
@@ -85,8 +88,9 @@ const handleSepayTransaction = async (paymentData) => {
             });
 
             if (quotation) {
+                isDeposit = true;
                 console.log(`💰 [Sepay Deposit] Yêu cầu cọc: ${quotation.deposit_amount} VND | Thực chuyển: ${transferAmount} VND`);
-                
+
                 // Kiểm tra số tiền chuyển đến có khớp/lớn hơn hoặc bằng số tiền cọc hay không
                 if (Number(transferAmount) >= Number(quotation.deposit_amount)) {
                     const serviceOrderId = quotation.task ? quotation.task.service_order_id : null;
@@ -100,7 +104,7 @@ const handleSepayTransaction = async (paymentData) => {
                             bookingPayment = await db.Booking_Payments.create({
                                 order_id: serviceOrderId,
                                 amount: transferAmount,
-                                payment_status: 'PAID',
+                                payment_status: 'DEPOSITED',
                                 payment_method: 'VIETQR',
                                 payment_gateway: gateway || 'BANK',
                                 transaction_code: code,
@@ -108,7 +112,7 @@ const handleSepayTransaction = async (paymentData) => {
                             });
                         } else {
                             await bookingPayment.update({
-                                payment_status: 'PAID',
+                                payment_status: 'DEPOSITED',
                                 amount: transferAmount,
                                 transaction_code: code,
                                 paid_at: transactionDate ? new Date(transactionDate) : new Date()
@@ -151,7 +155,10 @@ const handleSepayTransaction = async (paymentData) => {
             bookingCode = match[1];
             console.log(`✅ [Sepay] Tìm thấy mã đơn/lịch hẹn: ${bookingCode}`);
             bookingPayment = await db.Booking_Payments.findOne({
-                where: { order_id: parseInt(bookingCode, 10), payment_status: 'PENDING' }
+                where: {
+                    order_id: parseInt(bookingCode, 10),
+                    payment_status: { [db.Sequelize.Op.in]: ['PENDING', 'DEPOSITED'] }
+                }
             });
 
             // Nếu chưa có bản ghi Booking_Payments cho đơn này, tự động khởi tạo nếu Service_Order tồn tại
@@ -185,6 +192,7 @@ const handleSepayTransaction = async (paymentData) => {
             });
 
             if (pendingQuotation) {
+                isDeposit = true;
                 console.log(`✅ [Sepay Fallback] Khớp số tiền cọc ${transferAmount} VND với Báo giá #${pendingQuotation.id}`);
                 await pendingQuotation.update({
                     deposit_paid_at: transactionDate ? new Date(transactionDate) : new Date()
@@ -214,7 +222,7 @@ const handleSepayTransaction = async (paymentData) => {
                         bookingPayment = await db.Booking_Payments.create({
                             order_id: serviceOrderId,
                             amount: transferAmount,
-                            payment_status: 'PAID',
+                            payment_status: 'DEPOSITED',
                             payment_method: 'VIETQR',
                             payment_gateway: gateway || 'BANK',
                             transaction_code: code,
@@ -222,7 +230,7 @@ const handleSepayTransaction = async (paymentData) => {
                         });
                     } else {
                         await bookingPayment.update({
-                            payment_status: 'PAID',
+                            payment_status: 'DEPOSITED',
                             amount: transferAmount,
                             transaction_code: code,
                             paid_at: transactionDate ? new Date(transactionDate) : new Date()
@@ -244,6 +252,46 @@ const handleSepayTransaction = async (paymentData) => {
                     order: [['created_at', 'DESC']]
                 });
 
+                if (!bookingPayment) {
+                    const depositedPayments = await db.Booking_Payments.findAll({
+                        where: {
+                            payment_status: 'DEPOSITED',
+                            created_at: {
+                                [Op.gte]: new Date(Date.now() - 120 * 60 * 1000) // Trong vòng 2 tiếng
+                            }
+                        },
+                        order: [['updated_at', 'DESC']]
+                    });
+
+                    for (const payment of depositedPayments) {
+                        const serviceOrderId = payment.order_id;
+                        const serviceOrder = await db.Service_Orders.findByPk(serviceOrderId);
+                        if (serviceOrder) {
+                            const tasks = await db.Task.findAll({
+                                where: { service_order_id: serviceOrderId },
+                                attributes: ['id']
+                            });
+                            const taskIds = tasks.map(t => t.id);
+                            const quotation = await db.Quotations.findOne({
+                                where: { task_id: taskIds },
+                                include: [{ model: db.Quotation_Details, as: 'items' }]
+                            });
+                            if (quotation && Array.isArray(quotation.items)) {
+                                const total = quotation.items.reduce((sum, item) => {
+                                    return sum + (parseFloat(item.amount) || 0);
+                                }, 0);
+                                const deposit = parseFloat(payment.amount) || 0;
+                                const remaining = Math.max(0, total - deposit);
+                                if (Math.abs(remaining - transferAmount) < 2) {
+                                    bookingPayment = payment;
+                                    console.log(`✅ [Sepay Fallback 2.1] Khớp thành công số tiền còn lại (${remaining} VND) với ServiceOrder #${serviceOrderId}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if (bookingPayment) {
                     console.log(`✅ [Sepay Fallback] Đã tự động map với đơn hàng ID: ${bookingPayment.order_id} do khớp số tiền.`);
                 } else {
@@ -254,12 +302,15 @@ const handleSepayTransaction = async (paymentData) => {
 
         // Cập nhật trạng thái nếu tìm thấy
         if (bookingPayment) {
-            await bookingPayment.update({
-                payment_status: 'PAID',
+            const updateFields = {
                 transaction_code: code,
                 paid_at: transactionDate ? new Date(transactionDate) : new Date(),
-            });
-            console.log(`✅ [Sepay] Đã cập nhật Booking_Payments (ID: ${bookingPayment.id}) thành PAID`);
+            };
+            if (!isDeposit) {
+                updateFields.payment_status = 'PAID';
+            }
+            await bookingPayment.update(updateFields);
+            console.log(`✅ [Sepay] Đã cập nhật Booking_Payments (ID: ${bookingPayment.id}) ${isDeposit ? 'cho đặt cọc (DEPOSITED)' : 'thành PAID'}`);
         }
 
         // 3. Luôn luôn lưu giao dịch vào Payment_Transactions để backup/đối soát
@@ -331,7 +382,7 @@ const initPayment = async (orderId, amount, paymentMethod = 'VIETQR') => {
                 payment_gateway: 'BANK'
             }
         });
-        if (!created && payment.payment_status !== 'PAID') {
+        if (!created && payment.payment_status !== 'PAID' && payment.payment_status !== 'DEPOSITED') {
             await payment.update({ amount: amount, payment_status: 'PENDING' });
         }
         return payment;
@@ -341,10 +392,60 @@ const initPayment = async (orderId, amount, paymentMethod = 'VIETQR') => {
     }
 };
 
+const confirmPayment = async (orderId, amount, paymentMethod = 'VIETQR') => {
+    try {
+        const numericOrderId = parseInt(String(orderId).replace(/\D/g, ''), 10);
+        if (isNaN(numericOrderId)) {
+            throw new Error("Invalid orderId");
+        }
 
+        let bookingPayment = await db.Booking_Payments.findOne({
+            where: { order_id: numericOrderId }
+        });
+
+        if (!bookingPayment) {
+            bookingPayment = await db.Booking_Payments.create({
+                order_id: numericOrderId,
+                amount: amount,
+                payment_status: 'PAID',
+                payment_method: paymentMethod,
+                payment_gateway: 'BANK',
+                paid_at: new Date()
+            });
+        } else {
+            await bookingPayment.update({
+                payment_status: 'PAID',
+                payment_method: paymentMethod,
+                amount: amount,
+                paid_at: new Date()
+            });
+        }
+
+        // Save transaction log
+        await db.Payment_Transactions.create({
+            payment_id: bookingPayment.id,
+            gateway: 'BANK',
+            transaction_date: new Date(),
+            account_number: paymentMethod === 'CASH' ? 'CASH' : 'ONLINE',
+            sub_account: paymentMethod === 'CASH' ? 'CASH' : 'ONLINE',
+            amount_in: amount,
+            amount_out: 0,
+            accumulated: amount,
+            code: `${paymentMethod}-${Date.now()}`,
+            transaction_content: `Thanh toán ${paymentMethod === 'CASH' ? 'tiền mặt' : 'chuyển khoản'} cho SO-${numericOrderId}`,
+            raw_body: JSON.stringify({ orderId, amount, paymentMethod })
+        });
+
+        return { success: true, bookingPayment };
+    } catch (error) {
+        console.error("❌ Lỗi trong service confirmPayment:", error);
+        throw error;
+    }
+};
 
 module.exports = {
     handleSepayTransaction,
     checkPaymentStatus,
     initPayment,
+    confirmPayment,
 };

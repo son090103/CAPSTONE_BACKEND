@@ -70,7 +70,7 @@ module.exports = (sequelize, DataTypes) => {
     modelName: 'Appointments',
     tableName: 'Appointments',
     timestamps: true,
-    createdAt: 'createdAt',
+    createdAt: 'created_at',
     updatedAt: 'updatedAt'
   });
   return Appointments;

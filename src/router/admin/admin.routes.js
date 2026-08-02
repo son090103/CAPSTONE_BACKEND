@@ -10,6 +10,7 @@ const warrantyController = require("../../controller/admin/warrantyPolicies.cont
 const warrantyUpload = require("../../util/warrantyUpload.util");
 const manageCustomer = require("./../../controller/admin/manageCustomer.controller");
 const shiftController = require('../../controller/admin/shift.controller');
+const statisticsController = require("../../controller/admin/statistics.controller");
 
 router.get("/role", staffController.getRoles);
 router.get("/staff", staffController.getStaffList);
@@ -61,5 +62,9 @@ router.get("/shift/templates", shiftController.getShiftTemplates);
 router.post("/shift/templates/assign", shiftController.assignShift);
 router.post("/shift/templates/auto-generate", shiftController.autoGenerateSchedule);
 router.post("/shift/templates/confirm", shiftController.confirmSchedule);
+
+// Thống kê báo cáo doanh thu
+router.get("/statistics/advanced", statisticsController.getAdvancedStats);
+router.get("/statistics", statisticsController.getDashboardStats);
 
 module.exports = router;
