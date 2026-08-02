@@ -4,7 +4,6 @@ const router = express.Router();
 const taskAssignment = require("./../../controller/technician/taskAssignment.controller");
 const notificationController = require("./../../controller/technician/notification.controller");
 const techShiftController = require("./../../controller/technician/shift.controller")
-const upload = require("../../util/upload.util");
 
 router.get("/vehicle-makes", taskAssignment.getMakes);
 router.get("/vehicle-models", taskAssignment.getModels);
@@ -20,11 +19,8 @@ router.put("/task-assignments/start", taskAssignment.startTask);
 router.patch("/task-assignments/complete", taskAssignment.completeTask);
 router.put("/task-assignments/pause", taskAssignment.pauseTask);
 router.put("/task-assignments/resume", taskAssignment.resumeTask);
-router.post(
-  "/service-orders/:serviceOrderId/confirm-received-parts",
-  upload.single("image"),
-  taskAssignment.confirmReceivedParts,
-);
+router.get("/service-orders/:serviceOrderId/requestable-parts", taskAssignment.getRequestableParts);
+router.post("/service-orders/:serviceOrderId/request-export", taskAssignment.requestExportParts);
 
 router.get("/diagnostics", taskAssignment.getAllDiagnostics);
 router.get("/diagnostics/search", taskAssignment.searchDiagnostics);

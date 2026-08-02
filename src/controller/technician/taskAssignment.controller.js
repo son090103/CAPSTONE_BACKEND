@@ -175,21 +175,32 @@ module.exports.createIssuesReport = async (req, res) => {
   }
 };
 
-module.exports.confirmReceivedParts = async (req, res) => {
+module.exports.getRequestableParts = async (req, res) => {
   try {
     const technicianId = res.locals.user.id;
     const { serviceOrderId } = req.params;
-    if (!req.file) {
-      return res.status(400).json({ message: "Vui lòng chụp ảnh phụ tùng khi nhận hàng." });
+    const result = await taskAssignmentService.getRequestablePartsForServiceOrder(serviceOrderId, technicianId);
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi.",
+    });
+  }
+};
+
+module.exports.requestExportParts = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const { serviceOrderId } = req.params;
+    const { detailIds } = req.body;
+    if (!Array.isArray(detailIds) || detailIds.length === 0) {
+      return res.status(400).json({ success: false, message: "Vui lòng chọn ít nhất 1 phụ tùng cần xuất." });
     }
-    const result = await taskAssignmentService.confirmReceivedParts(
-      serviceOrderId,
-      technicianId,
-      req.file.buffer,
-    );
+    const result = await taskAssignmentService.requestExportParts(serviceOrderId, technicianId, detailIds);
     return res.status(200).json({
       success: true,
-      message: "Xác nhận nhận hàng thành công",
+      message: "Đã gửi yêu cầu xuất kho",
       data: result,
     });
   } catch (error) {

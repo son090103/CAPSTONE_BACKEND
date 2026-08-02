@@ -16,6 +16,7 @@ const Vehicles = db.Vehicles;
 const Vehicle_Models = db.Vehicle_Models;
 const Customers = db.Customers;
 const { notifyUser } = require("../../util/notification.util");
+const { uploadToCloudinary } = require("../../helper/uploadToCloudinary.helper");
 
 const normalizeName = (str) =>
   (str || "")
@@ -316,97 +317,81 @@ module.exports.importSparePart = async (manager_id, supplier_id, items) => {
   });
 };
 
-module.exports.getApprovedQuotesWithParts = async () => {
-  const result = await Service_Orders.findAll({
-    attributes: ["id", "status", "createdAt"],
+const generateReceiptCode = async (t) => {
+  const now = new Date();
+  const day = String(now.getDate()).padStart(2, "0");
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const year = now.getFullYear();
+  const prefix = `PX-${year}${month}${day}-`;
+  const last = await InventoryLog.findOne({
+    where: { receipt_code: { [Op.like]: `${prefix}%` } },
+    order: [["receipt_code", "DESC"]],
+    transaction: t,
+  });
+  const next = last?.receipt_code
+    ? parseInt(last.receipt_code.slice(prefix.length), 10) + 1
+    : 1;
+  return `${prefix}${String(next).padStart(4, "0")}`;
+};
+
+// Danh sách các dòng phụ tùng đang chờ thủ kho duyệt xuất (kỹ thuật viên đã yêu cầu
+// từ màn "Tiến độ công việc"). Gộp theo requested_by để thủ kho biết KTV nào cần.
+module.exports.getExportRequests = async () => {
+  return await QuotationDetail.findAll({
+    where: { status: "REQUESTED", spare_part_id: { [Op.ne]: null } },
+    attributes: ["id", "quantity", "unit_price", "amount", "requested_by", "createdAt"],
     include: [
+      { model: SparePart, as: "sparePart", attributes: ["id", "sku", "name", "brand", "stock_quantity"] },
+      { model: User, as: "requestedByUser", attributes: ["id", "fullName"] },
       {
-        model: Vehicles,
-        as: "vehicle",
-        attributes: ["id", "license_plate"],
-        include: [
-          {
-            model: Vehicle_Models,
-            as: "model",
-            attributes: ["id", "model_name"],
-          },
-          {
-            model: Customers,
-            as: "customer",
-            attributes: ["id", "name", "phone"],
-          },
-        ],
-      },
-      {
-        model: Task,
-        as: "tasks",
+        model: Quotation,
+        as: "quotation",
         attributes: ["id"],
         required: true,
         include: [
           {
-            model: Quotation,
-            as: "quotations",
-            attributes: ["id", "approved_at", "note", "createdAt"],
+            model: Task,
+            as: "task",
+            attributes: ["id", "service_order_id"],
             required: true,
-            where: { status: "APPROVED" },
             include: [
               {
-                model: QuotationDetail,
-                as: "items",
-                where: {
-                  spare_part_id: { [Op.ne]: null },
-                  status: "PENDING",
-                },
+                model: Service_Orders,
+                as: "serviceOrder",
+                attributes: ["id"],
                 required: true,
-                attributes: ["id", "spare_part_id", "quantity", "unit_price", "amount"],
                 include: [
                   {
-                    model: SparePart,
-                    as: "sparePart",
-                    attributes: ["id", "name", "sku", "stock_quantity"],
+                    model: Vehicles,
+                    as: "vehicle",
+                    attributes: ["id", "license_plate", "color"],
+                    include: [{ model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] }],
                   },
                 ],
-              },
-              {
-                model: User,
-                as: "creator",
-                attributes: ["id", "fullName"],
               },
             ],
           },
         ],
       },
     ],
-    order: [["createdAt", "DESC"]],
+    order: [["createdAt", "ASC"]],
   });
-  return result;
 };
 
-module.exports.approveExportByQuotation = async (serviceOrderId, detailIds, managerId) => {
+// Thủ kho duyệt yêu cầu xuất kho của kỹ thuật viên. Mỗi yêu cầu vốn đã gắn với đúng 1 KTV
+// (requested_by ghi từ lúc KTV gửi yêu cầu), nên không cần suy luận lại qua Task_Assignment.
+module.exports.approveExportRequest = async (detailIds, managerId) => {
   return await db.sequelize.transaction(async (t) => {
     const items = await QuotationDetail.findAll({
-      where: {
-        id: detailIds,
-        spare_part_id: { [Op.ne]: null },
-        status: "PENDING",
-      },
+      where: { id: detailIds, spare_part_id: { [Op.ne]: null }, status: "REQUESTED" },
       include: [
         { model: SparePart, as: "sparePart" },
         {
           model: Quotation,
           as: "quotation",
-          attributes: ["id", "status"],
+          attributes: ["id"],
           required: true,
-          where: { status: "APPROVED" },
-          include: [
-            {
-              model: Task,
-              as: "task",
-              attributes: ["id", "service_order_id"],
-              required: true,
-              where: { service_order_id: serviceOrderId },
-            },
-          ],
+          include: [{ model: Task, as: "task", attributes: ["id", "service_order_id"], required: true }],
         },
       ],
       transaction: t,
@@ -414,23 +399,23 @@ module.exports.approveExportByQuotation = async (serviceOrderId, detailIds, mana
     if (items.length !== detailIds.length) {
       throw {
         status: 400,
-        message: "Có dòng không hợp lệ, đã xuất kho, hoặc không thuộc lệnh sửa chữa này",
+        message: "Có dòng không hợp lệ hoặc không còn ở trạng thái chờ duyệt",
       };
     }
-    const now = new Date();
-    const day = String(now.getDate()).padStart(2, "0");
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const year = now.getFullYear();
-    const prefix = `PX-${year}${month}${day}-`;
-    const last = await InventoryLog.findOne({
-      where: { receipt_code: { [Op.like]: `${prefix}%` } },
-      order: [["receipt_code", "DESC"]],
-      transaction: t,
-    });
-    let next = last?.receipt_code
-      ? parseInt(last.receipt_code.slice(prefix.length), 10) + 1
-      : 1;
-    const receipt_code = `${prefix}${String(next).padStart(4, "0")}`;
+    const technicianIds = [...new Set(items.map((item) => item.requested_by))];
+    if (technicianIds.length > 1) {
+      throw {
+        status: 400,
+        message: "Các dòng đã chọn thuộc nhiều kỹ thuật viên khác nhau. Vui lòng duyệt riêng theo từng yêu cầu.",
+      };
+    }
+    const technicianId = technicianIds[0];
+    if (!technicianId) {
+      throw { status: 400, message: "Không xác định được kỹ thuật viên đã yêu cầu" };
+    }
+    const serviceOrderId = items[0].quotation.task.service_order_id;
+
+    const receipt_code = await generateReceiptCode(t);
 
     const logsData = [];
     for (const item of items) {
@@ -442,7 +427,8 @@ module.exports.approveExportByQuotation = async (serviceOrderId, detailIds, mana
         };
       }
       await part.decrement("stock_quantity", { by: item.quantity, transaction: t });
-      await item.update({ status: "EXPORTED" }, { transaction: t });
+      // Chưa EXPORTED ngay - chờ KTV ký tên xác nhận tại quầy (xem signExportReceipt)
+      await item.update({ status: "WAITING_SIGNATURE" }, { transaction: t });
       logsData.push({
         receipt_code,
         part_id: part.id,
@@ -451,46 +437,173 @@ module.exports.approveExportByQuotation = async (serviceOrderId, detailIds, mana
         quantity: item.quantity,
         unit_price: item.unit_price,
         manager_id: managerId,
+        requested_technician_id: technicianId,
       });
     }
     await InventoryLog.bulkCreate(logsData, { transaction: t });
 
-    const assignments = await db.Task_Assignment.findAll({
-      attributes: ["technician_id"],
-      include: [
-        {
-          model: Task,
-          as: "task",
-          attributes: [],
-          where: { service_order_id: serviceOrderId },
-          required: true,
-        },
-      ],
-      transaction: t,
-    });
-    const technicianIds = [
-      ...new Set(assignments.map((a) => a.technician_id)),
-    ];
-
-    return { receipt_code, exported_count: logsData.length, technicianIds };
+    return { receipt_code, exported_count: logsData.length, technicianId, serviceOrderId };
   }).then(async (result) => {
-    for (const technicianId of result.technicianIds) {
-      await notifyUser(
-        technicianId,
-        {
-          title: "Phụ tùng đã xuất kho",
-          content: `Kho đã xuất ${result.exported_count} phụ tùng cho lệnh sửa chữa #${serviceOrderId}, bạn có thể đến nhận.`,
-          notificationType: "SERVICE_ORDER",
-          referenceId: serviceOrderId,
-        },
-        "new_notification",
-        { type: "PARTS_EXPORTED", serviceOrderId },
-      );
-    }
+    await notifyUser(
+      result.technicianId,
+      {
+        title: "Phụ tùng đã xuất kho - cần ký xác nhận",
+        content: `Kho đã chuẩn bị ${result.exported_count} phụ tùng (phiếu ${result.receipt_code}). Vui lòng ký tên tại quầy kho để hoàn tất.`,
+        notificationType: "SERVICE_ORDER",
+        referenceId: result.serviceOrderId,
+      },
+      "new_notification",
+      { type: "PARTS_EXPORTED_WAITING_SIGNATURE", serviceOrderId: result.serviceOrderId, receiptCode: result.receipt_code },
+    );
     return {
       receipt_code: result.receipt_code,
       exported_count: result.exported_count,
+      technicianId: result.technicianId,
     };
+  });
+};
+
+// Thủ kho từ chối yêu cầu xuất kho (vd hết hàng) - trả về PENDING để KTV biết và gửi lại sau
+module.exports.rejectExportRequest = async (detailIds, reason) => {
+  const items = await QuotationDetail.findAll({
+    where: { id: detailIds, status: "REQUESTED" },
+  });
+  if (items.length === 0) {
+    throw { status: 404, message: "Không tìm thấy yêu cầu xuất kho này" };
+  }
+  const technicianId = items[0].requested_by;
+  await QuotationDetail.update(
+    { status: "PENDING", requested_by: null },
+    { where: { id: detailIds, status: "REQUESTED" } },
+  );
+  if (technicianId) {
+    await notifyUser(
+      technicianId,
+      {
+        title: "Yêu cầu xuất kho bị từ chối",
+        content: reason
+          ? `Kho từ chối yêu cầu xuất phụ tùng. Lý do: ${reason}`
+          : "Kho từ chối yêu cầu xuất phụ tùng, vui lòng liên hệ thủ kho để biết thêm chi tiết.",
+        notificationType: "SERVICE_ORDER",
+      },
+      "new_notification",
+      { type: "PARTS_EXPORT_REJECTED" },
+    );
+  }
+  return { rejected_count: items.length };
+};
+
+// Dữ liệu đầy đủ cho phiếu xuất kho (để FE tự dựng PDF in ra ký tay lưu hồ sơ giấy)
+module.exports.getExportReceiptDetail = async (receiptCode) => {
+  const logs = await InventoryLog.findAll({
+    where: { receipt_code: receiptCode, type: "OUT" },
+    attributes: ["id", "quantity", "unit_price", "createdAt", "requested_technician_id"],
+    include: [
+      { model: SparePart, as: "part", attributes: ["id", "sku", "name", "brand"] },
+      { model: User, as: "manager", attributes: ["id", "fullName"] },
+      {
+        model: Service_Orders,
+        as: "serviceOrder",
+        attributes: ["id"],
+        include: [
+          {
+            model: Vehicles,
+            as: "vehicle",
+            attributes: ["id", "license_plate", "color"],
+            include: [
+              { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+              {
+                model: Customers,
+                as: "customer",
+                attributes: ["id", "name", "phone"],
+                include: [{ model: User, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["id", "ASC"]],
+  });
+  if (logs.length === 0) {
+    throw { status: 404, message: "Không tìm thấy phiếu xuất kho này" };
+  }
+  const technicianId = logs[0].requested_technician_id;
+  const technician = technicianId ? await User.findByPk(technicianId, { attributes: ["id", "fullName"] }) : null;
+  return { receipt_code: receiptCode, logs, technician };
+};
+
+// Kỹ thuật viên vẽ chữ ký tay ngay trên màn hình thủ kho để xác nhận đã nhận phụ tùng.
+// Đây là bước hoàn tất cuối cùng - không cần thao tác gì thêm sau đó (không có bước
+// "xác nhận nhận hàng" riêng như luồng cũ).
+module.exports.signExportReceipt = async (receiptCode, signatureBuffer) => {
+  if (!signatureBuffer) {
+    throw { status: 400, message: "Vui lòng ký tên để xác nhận nhận phụ tùng" };
+  }
+  return await db.sequelize.transaction(async (t) => {
+    const logs = await InventoryLog.findAll({
+      where: { receipt_code: receiptCode, type: "OUT" },
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    if (logs.length === 0) {
+      throw { status: 404, message: "Không tìm thấy phiếu xuất kho này" };
+    }
+    const firstLog = logs[0];
+    if (firstLog.received_by) {
+      throw { status: 400, message: "Phiếu xuất kho này đã được ký nhận" };
+    }
+    const technicianId = firstLog.requested_technician_id;
+    if (!technicianId) {
+      throw { status: 400, message: "Không xác định được kỹ thuật viên nhận phiếu này" };
+    }
+    const serviceOrderId = firstLog.service_order_id;
+    const partIds = logs.map((log) => log.part_id);
+
+    const uploadResult = await uploadToCloudinary(signatureBuffer, "inventory-signatures");
+    const now = new Date();
+    await InventoryLog.update(
+      {
+        received_by: technicianId,
+        received_at: now,
+        signature_method: "SIGNATURE",
+        proof_image_url: uploadResult.secure_url,
+      },
+      { where: { receipt_code: receiptCode, type: "OUT" }, transaction: t },
+    );
+
+    await QuotationDetail.update(
+      { status: "EXPORTED" },
+      { where: { spare_part_id: partIds, status: "WAITING_SIGNATURE" }, transaction: t },
+    );
+
+    // Chỉ resume công việc SAU KHI đã ký xong - đúng tinh thần "ký nhận mới coi là đã nhận hàng"
+    const waitingAssignments = await db.Task_Assignment.findAll({
+      where: { technician_id: technicianId, status: "WAITING_STOCK" },
+      include: [
+        { model: Task, as: "task", attributes: ["id"], where: { service_order_id: serviceOrderId }, required: true },
+      ],
+      transaction: t,
+    });
+    for (const assignment of waitingAssignments) {
+      await assignment.update({ status: "IN_PROGRESS" }, { transaction: t });
+      await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
+    }
+
+    return { receipt_code: receiptCode, technicianId, part_count: logs.length, serviceOrderId };
+  }).then(async (result) => {
+    await notifyUser(
+      result.technicianId,
+      {
+        title: "Đã ký nhận phụ tùng thành công",
+        content: `Bạn đã ký nhận ${result.part_count} phụ tùng theo phiếu ${result.receipt_code}.`,
+        notificationType: "SERVICE_ORDER",
+        referenceId: result.serviceOrderId,
+      },
+      "new_notification",
+      { type: "PARTS_EXPORT_SIGNED", serviceOrderId: result.serviceOrderId },
+    );
+    return { receipt_code: result.receipt_code, part_count: result.part_count };
   });
 };
 
@@ -534,9 +647,13 @@ module.exports.viewExportHistory = async () => {
       [db.sequelize.fn("COUNT", db.sequelize.col("Inventory_Logs.id")), "item_count"],
       [db.sequelize.fn("SUM", db.sequelize.literal("quantity * unit_price")), "total_amount"],
       [db.sequelize.fn("MAX", db.sequelize.col("manager.fullName")), "manager_name"],
+      [db.sequelize.fn("MAX", db.sequelize.col("receiver.fullName")), "technician_name"],
+      [db.sequelize.fn("MAX", db.sequelize.col("Inventory_Logs.signature_method")), "signature_method"],
+      [db.sequelize.fn("MAX", db.sequelize.col("Inventory_Logs.received_at")), "signed_at"],
     ],
     include: [
       { model: User, as: "manager", attributes: [] },
+      { model: User, as: "receiver", attributes: [] },
     ],
     group: ["Inventory_Logs.receipt_code"],
     order: [[db.sequelize.fn("MAX", db.sequelize.col("Inventory_Logs.createdAt")), "DESC"]],
@@ -549,9 +666,20 @@ module.exports.viewExportHistory = async () => {
 module.exports.viewExportDetail = async (receiptCode) => {
   const result = await InventoryLog.findAll({
     where: { type: "OUT", receipt_code: receiptCode },
-    attributes: ["id", "receipt_code", "createdAt", "quantity", "unit_price"],
+    attributes: [
+      "id",
+      "receipt_code",
+      "createdAt",
+      "quantity",
+      "unit_price",
+      "signature_method",
+      "proof_image_url",
+      "received_at",
+    ],
     include: [
       { model: SparePart, as: "part", attributes: ["sku", "name"] },
+      { model: User, as: "receiver", attributes: ["id", "fullName"] },
+      { model: User, as: "manager", attributes: ["id", "fullName"] },
     ],
     order: [["id", "ASC"]],
   });

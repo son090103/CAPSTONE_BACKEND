@@ -47,7 +47,7 @@ module.exports.getAppointments = async (userId) => {
                     {
                         model: db.Service_Catalog,
                         as: 'catalog',
-                        attributes: ['id', 'service_name', 'estimated_duration', 'description']
+                        attributes: ['id', 'service_name', 'estimated_duration', 'description', 'labor_price']
                     },
                     {
                         model: db.Service_Combo,
@@ -57,7 +57,7 @@ module.exports.getAppointments = async (userId) => {
                             {
                                 model: db.Service_Catalog,
                                 as: 'catalogs',
-                                attributes: ['id', 'service_name']
+                                attributes: ['id', 'service_name', 'labor_price']
                             }
                         ]
                     }
