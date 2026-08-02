@@ -26,6 +26,20 @@ module.exports.getQuotationHistory = async (req, res) => {
   }
 };
 
+module.exports.getQuotationById = async (req, res) => {
+  try {
+    const userId = res.locals.user.id;
+    const { id } = req.params;
+    const result = await quoteManagementService.getQuotationById(userId, id);
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
 module.exports.approveQuotation = async (req, res) => {
   try {
     const userId = res.locals.user.id;

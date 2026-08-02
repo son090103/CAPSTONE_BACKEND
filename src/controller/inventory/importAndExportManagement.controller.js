@@ -1,7 +1,6 @@
 const ImportAndExportManagement = require("../../service/inventory/importAndExportManagement.service");
 const {
   importReceiptSchema,
-  approveExportSchema,
   importForOrderReceiptSchema,
 } = require("../../validation/inventory/importAndExportManagement.validation");
 const scanInvoiceService = require("../../service/inventory/importAndExportManagement.service");
@@ -62,10 +61,27 @@ module.exports.importSparePart = async (req, res) => {
   }
 };
 
-module.exports.getApprovedQuotesWithParts = async (req, res) => {
+module.exports.getExportRequests = async (req, res) => {
   try {
-    const result = await ImportAndExportManagement.getApprovedQuotesWithParts();
+    const result = await ImportAndExportManagement.getExportRequests();
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.approveExportRequest = async (req, res) => {
+  try {
+    const manager_id = res.locals.user.id;
+    const { detailIds } = req.body;
+    if (!Array.isArray(detailIds) || detailIds.length === 0) {
+      return res.status(400).json({ message: "Vui lòng chọn ít nhất 1 dòng phụ tùng để duyệt." });
+    }
+    const result = await ImportAndExportManagement.approveExportRequest(detailIds, manager_id);
     return res.status(200).json({
+      message: "Xuất kho thành công",
       data: result,
     });
   } catch (error) {
@@ -75,27 +91,49 @@ module.exports.getApprovedQuotesWithParts = async (req, res) => {
   }
 };
 
-module.exports.approveExportByQuotation = async (req, res) => {
+module.exports.rejectExportRequest = async (req, res) => {
   try {
-    const manager_id = res.locals.user.id;
-    const { serviceOrderId } = req.params;
-    const { detailIds } = req.body;
-
-    const validation = approveExportSchema.safeParse({
-      serviceOrderId: Number(serviceOrderId),
-    });
-    if (!validation.success) {
-      return res.status(400).json({
-        message: validation.error.issues[0].message,
-      });
+    const { detailIds, reason } = req.body;
+    if (!Array.isArray(detailIds) || detailIds.length === 0) {
+      return res.status(400).json({ message: "Vui lòng chọn ít nhất 1 dòng phụ tùng để từ chối." });
     }
-    const result = await ImportAndExportManagement.approveExportByQuotation(
-      Number(serviceOrderId),
-      detailIds,
-      manager_id,
-    );
+    const result = await ImportAndExportManagement.rejectExportRequest(detailIds, reason);
     return res.status(200).json({
-      message: "Xuất kho thành công",
+      message: "Đã từ chối yêu cầu xuất kho",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getExportReceiptDetail = async (req, res) => {
+  try {
+    const { receiptCode } = req.params;
+    const result = await ImportAndExportManagement.getExportReceiptDetail(receiptCode);
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.signExportReceipt = async (req, res) => {
+  try {
+    const { receiptCode } = req.params;
+    const { signatureImage } = req.body;
+    if (!signatureImage || typeof signatureImage !== "string") {
+      return res.status(400).json({ message: "Vui lòng ký tên để xác nhận nhận phụ tùng" });
+    }
+    const base64Data = signatureImage.replace(/^data:image\/\w+;base64,/, "");
+    const signatureBuffer = Buffer.from(base64Data, "base64");
+    const result = await ImportAndExportManagement.signExportReceipt(receiptCode, signatureBuffer);
+    return res.status(200).json({
+      success: true,
+      message: "Ký nhận phụ tùng thành công",
       data: result,
     });
   } catch (error) {

@@ -10,13 +10,16 @@ const waitingTimeController = require("../../controller/customer/waiting-time.co
 const serviceHistoryAndTrackingController = require("../../controller/customer/serviceHistoryAndTracking.controller");
 const quoteManagementController = require("../../controller/customer/quoteManagement.controller");
 const notificationController = require("../../controller/customer/notification.controller");
+const chatController = require("../../controller/chat/chat.controller");
 
 router.get("/repair-progress", serviceHistoryAndTrackingController.getRepairProgress);
+router.get("/service-history", serviceHistoryAndTrackingController.getServiceHistory);
 
 router.get("/quotations/pending", quoteManagementController.getPendingQuotations);
 router.get("/quotations/history", quoteManagementController.getQuotationHistory);
 router.patch("/quotations/:id/approve", quoteManagementController.approveQuotation);
 router.patch("/quotations/:id/reject", quoteManagementController.rejectQuotation);
+router.get("/quotations/:id", quoteManagementController.getQuotationById);
 
 router.get("/profile", profileController.getProfile);
 router.put("/profile", upload.single("avatar"), profileController.updateProfile);
@@ -41,5 +44,10 @@ router.get("/notifications", notificationController.getNotifications);
 router.get("/notifications/unread-count", notificationController.getUnreadCount);
 router.put("/notifications/read-all", notificationController.markAllAsRead);
 router.put("/notifications/:id/read", notificationController.markAsRead);
+
+router.get("/chat/conversation", chatController.getMyConversation);
+router.post("/chat/conversation/message", chatController.sendMessageAsCustomer);
+router.post("/chat/conversation/quote-reference", chatController.sendQuoteReferenceMessage);
+router.get("/chat/unread-count", chatController.getUnreadCountForCustomer);
 
 module.exports = router;

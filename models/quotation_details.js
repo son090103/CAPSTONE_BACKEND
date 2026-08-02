@@ -26,6 +26,12 @@ module.exports = (sequelize, DataTypes) => {
           as: "issue",
         });
       }
+      if (models.User) {
+        this.belongsTo(models.User, {
+          foreignKey: "requested_by",
+          as: "requestedByUser",
+        });
+      }
     }
   }
   Quotation_Details.init(
@@ -70,11 +76,23 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: "PENDING",
         validate: {
-          isIn: [["PENDING", "EXPORTED", "RECEIVED", "WAITING_DEPOSIT", "WAITING_STOCK"]],
+          isIn: [[
+            "PENDING",
+            "REQUESTED",
+            "WAITING_SIGNATURE",
+            "EXPORTED",
+            "RECEIVED",
+            "WAITING_DEPOSIT",
+            "WAITING_STOCK",
+          ]],
         },
       },
       custom_item_name: {
         type: DataTypes.STRING(255),
+        allowNull: true,
+      },
+      requested_by: {
+        type: DataTypes.INTEGER,
         allowNull: true,
       },
     },
