@@ -530,17 +530,101 @@ module.exports.getAdminDashboardStats = async (query) => {
   };
 };
 
-module.exports.getAdvancedAnalysisStats = async () => {
+module.exports.getAdvancedAnalysisStats = async ({ generateAi } = {}) => {
   try {
     const pythonServiceUrl = process.env.PYTHON_MICROSERVICE_URL || 'http://127.0.0.1:5000';
-    console.log("bắt đầu phân tích ")
+    console.log("bắt đầu phân tích ");
     const response = await fetch(`${pythonServiceUrl}/api/analyze`);
     if (!response.ok) {
       throw new Error(`Python Microservice returned status ${response.status}`);
     }
     const data = await response.json();
     if (data && data.success) {
-      return data.data;
+      const reportData = data.data;
+
+      // Chỉ gọi Gemini API khi người dùng yêu cầu phân tích kế hoạch (generateAi = true)
+      if (generateAi) {
+        const geminiKey = process.env.GEMINI_API_KEY_STATIC;
+        console.log("gemini key là : ", geminiKey)
+        if (geminiKey) {
+          try {
+            console.log("Đang gửi yêu cầu phân tích tới Gemini API từ Node.js...");
+            const summary = reportData.summary || {};
+            const growingSvcs = (reportData.yoy_service_drivers?.growing || []).map(s => `- ${s.service_name}: Năm nay đạt ${(s.this_year_rev / 1e6).toFixed(1)} Tr.đ (tăng ${(s.growth_amount / 1e6).toFixed(1)} Tr.đ vs năm ngoái)`).join('\n');
+            const decliningSvcs = (reportData.yoy_service_drivers?.declining || []).map(s => `- ${s.service_name}: Năm nay đạt ${(s.this_year_rev / 1e6).toFixed(1)} Tr.đ (giảm ${Math.abs(s.growth_amount / 1e6).toFixed(1)} Tr.đ vs năm ngoái)`).join('\n');
+            const growingParts = (reportData.yoy_part_drivers?.growing || []).map(p => `- ${p.name}: Tiêu thụ ${p.this_year_qty} cái (tăng +${p.growth_qty} cái vs năm ngoái)`).join('\n');
+            const decliningParts = (reportData.yoy_part_drivers?.declining || []).map(p => `- ${p.name}: Tiêu thụ ${p.this_year_qty} cái (giảm ${p.growth_qty} cái vs năm ngoái)`).join('\n');
+            const lowSvcs = (reportData.ai_planner?.low_demand_plans || []).map(p => `- ${p.service_name}: Cả năm ngoái làm ${p.annual_count} lượt (chiếm tỷ trọng ${p.share_pct}%)`).join('\n');
+            const combos = (reportData.ai_planner?.top_combos || []).map(c => `- ${c.combo_name}: ${c.service_name} + ${c.part_name} (Có ${c.co_occurrence} lượt xe làm chung năm ngoái)`).join('\n');
+
+            const prompt = `
+Bạn là một chuyên gia cố vấn chiến lược và marketing cho Gara Sửa chữa Ô tô.
+Dựa trên dữ liệu phân tích doanh thu của Gara dưới đây, hãy lập một KẾ HOẠCH KINH DOANH CHI TIẾT nhưng cực kỳ NGẮN GỌN, SÚC TÍCH (đi thẳng vào vấn đề, không dông dài mở bài, chào hỏi hoặc kết bài) để tăng doanh thu và tối ưu hóa vận hành cho năm tới.
+
+DỮ LIỆU HOẠT ĐỘNG:
+- Doanh thu năm nay: ${summary.total_this_year?.toLocaleString('vi-VN')} đ (Lượt xe: ${summary.this_year_orders} đơn, Hóa đơn trung bình: ${summary.this_year_avg_ticket?.toLocaleString('vi-VN')} đ)
+- Doanh thu năm ngoái: ${summary.total_last_year?.toLocaleString('vi-VN')} đ (Lượt xe: ${summary.last_year_orders} đơn, Hóa đơn trung bình: ${summary.last_year_avg_ticket?.toLocaleString('vi-VN')} đ)
+- Tăng trưởng doanh thu: ${summary.yoy_growth_pct}%
+- Đóng góp từ lượng xe (Volume Effect): ${summary.volume_effect?.toLocaleString('vi-VN')} đ
+- Đóng góp từ hóa đơn (Ticket Effect): ${summary.ticket_effect?.toLocaleString('vi-VN')} đ
+
+DỊCH VỤ SỬA CHỮA TĂNG TRƯỞNG MẠNH NHẤT:
+${growingSvcs || "Chưa ghi nhận dịch vụ tăng trưởng đáng kể."}
+
+DỊCH VỤ SỬA CHỮA BÌ SỤT GIẢM MẠNH NHẤT:
+${decliningSvcs || "Không có dịch vụ nào sụt giảm nhiều."}
+
+LINH KIỆN TIÊU THỤ TĂNG CAO NHẤT:
+${growingParts || "Chưa ghi nhận linh kiện tăng mạnh."}
+
+LINH KIỆN TIÊU THỤ GIẢM SÚT NHẤT:
+${decliningParts || "Không có linh kiện nào giảm nhiều."}
+
+DỊCH VỤ ÍT KHÁCH LÀM NHẤT (CẦN GIẢI CỨU):
+${lowSvcs}
+
+CÁC COMBO THƯỜNG XUYÊN ĐƯỢC THANH TOÁN CÙNG NHAU:
+${combos}
+
+Hãy viết một báo cáo chi tiết gồm các phần sau bằng tiếng Việt dưới định dạng Markdown (hãy sử dụng các icon emoji, đề mục rõ ràng, bảng biểu nếu cần):
+1. 🩺 ĐÁNH GIÁ SỨC KHỎE GARA & KHUYẾN NGHỊ VẬN HÀNH: Đi thẳng vào phân tích gara đang làm tốt ở mảng nào, điểm nghẽn nằm ở đâu và phương án giải quyết (Ngắn gọn trong 3-4 dòng).
+2. 📦 CHIẾN LƯỢC NHẬP HÀNG & PHÂN BỔ NHÂN SỰ CHO THÁNG TỚI: Lời khuyên cụ thể về việc nhập những phụ tùng nào, dịch vụ nào cần đào tạo hoặc tăng cường kỹ thuật viên (Ngắn gọn trong 3-4 dòng).
+3. 📣 CHIẾN DỊCH KHUYẾN MÃI & THIẾT KẾ COMBO ĐỂ TĂNG DOANH THU: 2 chương trình khuyến mãi cụ thể cho các dịch vụ ít khách (tên chương trình hấp dẫn, mức giảm giá %, quà tặng) và gợi ý gói combo bán chéo (Ngắn gọn dạng gạch đầu dòng).
+
+LƯU Ý QUAN TRỌNG: Không viết lời chào ("Chào bạn...", "Với vai trò..."), không dông dài, đi thẳng vào các gạch đầu dòng hành động thực tế.
+`;
+
+            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+            const geminiRes = await fetch(geminiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }]
+              })
+            });
+
+            if (geminiRes.ok) {
+              const geminiJson = await geminiRes.json();
+              reportData.gemini_insights = geminiJson.candidates?.[0]?.content?.parts?.[0]?.text || "";
+              console.log("Gemini phân tích chiến lược thành công!");
+            } else {
+              const errText = await geminiRes.text();
+              console.error("Lỗi khi gọi Gemini API:", errText);
+              reportData.gemini_insights = `*(Không thể tải khuyến nghị tự động từ AI: Mã lỗi ${geminiRes.status})*`;
+            }
+          } catch (geminiError) {
+            console.error("Lỗi kết nối Gemini API:", geminiError.message);
+            reportData.gemini_insights = `*(Lỗi kết nối API AI: ${geminiError.message})*`;
+          }
+        } else {
+          reportData.gemini_insights = "*(Vui lòng thiết lập GEMINI_API_KEY trong file .env để kích hoạt AI)*";
+        }
+      } else {
+        // Trả về null nếu chưa bấm nút Phân tích kế hoạch
+        reportData.gemini_insights = null;
+      }
+
+      return reportData;
     }
     return null;
   } catch (error) {

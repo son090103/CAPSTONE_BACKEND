@@ -34,7 +34,7 @@ module.exports.getTechniciansWorkingToday = async () => {
     shifts.forEach(shift => {
         const user = shift.user;
         if (!user) return;
-        
+
         // Ensure user is active and has a technician role
         if (user.status !== 'ACTIVE') return;
         if (user.role && !['TECHNICIAN', 'TECHNICIAN_LEADER'].includes(user.role.roleCode)) return;
@@ -56,15 +56,11 @@ module.exports.getTechniciansWorkingToday = async () => {
 };
 
 module.exports.assignRescueTechnician = async (customerId, technicianId, customerLat, customerLng) => {
-    // Tìm kiếm khách hàng xem có tồn tại không
-    // Cần cẩn thận: customerId truyền lên từ Frontend có thể là id của user hoặc id của bảng Customers
-    // Ở ReceptionCustomerList.tsx, nếu là thành viên, nó truyền id của User. 
-    // Chúng ta thử tìm Customer thông qua user_id hoặc id trực tiếp.
     let customer = await db.Customers.findOne({ where: { user_id: customerId } });
     if (!customer) {
         customer = await db.Customers.findByPk(customerId);
     }
-    
+
     if (!customer) {
         throw new Error("Khách hàng không tồn tại trong hệ thống");
     }
