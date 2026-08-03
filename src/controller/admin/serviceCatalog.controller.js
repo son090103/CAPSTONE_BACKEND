@@ -30,6 +30,25 @@ module.exports.createServiceCatalog = async (req, res) => {
     }
 };
 
+module.exports.importServiceCatalog = async (req, res) => {
+    try {
+        if (!req.file || !req.file.buffer) {
+            return res.status(400).json({ message: "Vui lòng tải lên file Excel hoặc CSV" });
+        }
+
+        const result = await serviceCatalog.importServiceCatalog(req.file.buffer, req.file.originalname);
+        return res.status(200).json({
+            message: "Nhập danh sách dịch vụ thành công",
+            data: result,
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            message: error.message || "Internal server error",
+            errors: error.errors || [],
+        });
+    }
+};
+
 module.exports.getServiceCatalog = async (req, res) => {
     try {
         const validation = viewServiceCatalogSchema.safeParse(req.query);

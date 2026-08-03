@@ -1,7 +1,9 @@
 /** @type {import("sequelize").ModelStatic<import("sequelize").Model>} */
+const path = require('path');
 const { Op } = require("sequelize");
 const { where } = require("sequelize");
 const db = require("../../../models");
+const xlsx = require("xlsx");
 const { HfInference } = require('@huggingface/inference');
 const vectorStoreService = require('../ai/vectorStore.service'); // Import dịch vụ AI
 
@@ -80,11 +82,63 @@ const normalizeBoolean = (value) => {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
     const normalized = value.trim().toLowerCase();
-    if (normalized === "true") return true;
-    if (normalized === "false") return false;
+    if (["true", "1", "yes", "x", "active", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off", "inactive"].includes(normalized)) return false;
   }
   return undefined;
 };
+
+const normalizeRow = (row) => {
+  const normalized = {};
+  Object.keys(row).forEach((key) => {
+    let rawKey = key.toString().trim();
+    // Remove BOM and common zero-width/invisible chars that Excel may add
+    rawKey = rawKey.replace(/^[\uFEFF\u200B\u200C\u200D\u2060]+/, '');
+    // Only attempt latin1->utf8 re-decode when the string shows mojibake signatures
+    let decoded = rawKey;
+    try {
+      if (/Ã|Â|ï»¿|�|á»|áº|á¼|Ä|Å|Æ|â/.test(rawKey)) {
+        const redecoded = Buffer.from(rawKey, 'latin1').toString('utf8');
+        if (redecoded && redecoded !== rawKey) decoded = redecoded;
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    let safeKey = decoded.toLowerCase().replace(/\s+/g, "_");
+    safeKey = safeKey.replace(/[\u200B\u200C\u200D\u2060]/g, '');
+    try {
+      safeKey = safeKey.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    } catch (e) {
+    }
+    safeKey = safeKey.replace(/[^a-z0-9_]/g, '');
+    let cellValue = row[key];
+    if (typeof cellValue === 'string') {
+      try {
+        if (/Ã|Â|ï»¿|�|á»|áº|á¼|Ä|Å|Æ|â/.test(cellValue)) {
+          const redecodedVal = Buffer.from(cellValue, 'latin1').toString('utf8');
+          if (redecodedVal) cellValue = redecodedVal;
+        }
+      } catch (e) {
+      }
+    }
+    normalized[safeKey] = cellValue;
+  });
+  return normalized;
+};
+
+const parseNumber = (value, fallback = undefined) => {
+  if (value === null || value === undefined || value === "") return fallback;
+  // Remove common thousands separators (dot, comma, spaces) then parse
+  const cleaned = value.toString().replace(/[.,\s]/g, "");
+  const parsed = Number(cleaned);
+  return Number.isNaN(parsed) ? fallback : parsed;
+};
+
+// Expose helpers for unit testing
+module.exports.normalizeRow = normalizeRow;
+module.exports.parseNumber = parseNumber;
+module.exports.normalizeBoolean = normalizeBoolean;
 
 const buildCatalogWhere = ({ q, category_id, is_active } = {}) => {
   const where = {};
@@ -153,6 +207,107 @@ module.exports.createServiceCatalog = async (category_id, service_name, descript
     await t.rollback();
     throw error;
   }
+};
+
+module.exports.importServiceCatalog = async (fileBuffer, filename) => {
+  if (!fileBuffer) {
+    throw { status: 400, message: "Không có dữ liệu file để import" };
+  }
+
+  const workbook = xlsx.read(fileBuffer, { type: "buffer" });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) {
+    throw { status: 400, message: "File không chứa sheet hợp lệ" };
+  }
+
+  const sheet = workbook.Sheets[sheetName];
+  const rawRows = xlsx.utils.sheet_to_json(sheet, { defval: "" });
+  if (!Array.isArray(rawRows) || rawRows.length === 0) {
+    throw { status: 400, message: "File không chứa dữ liệu dịch vụ" };
+  }
+
+  const results = {
+    successCount: 0,
+    errors: [],
+  };
+
+  for (let index = 0; index < rawRows.length; index += 1) {
+    const row = normalizeRow(rawRows[index]);
+    const serviceName = String(
+      row.service_name || row.name || row.ten_dich_vu || row.tendichvu || row.service || ''
+    ).trim();
+
+    const description = String(
+      row.description || row.mo_ta || row.mota || row.mo_ta || row.des || ''
+    ).trim();
+
+    const estimated_duration = parseNumber(
+      row.estimated_duration || row.duration || row.estimated_duration_minutes || row.thoi_gian || row.thoi_gian_phut || row.thoigian || row.duration_minutes,
+      30
+    );
+
+    const is_active = normalizeBoolean(
+      row.is_active ?? row.active ?? row.trang_thai ?? row.trangthai ?? row.status ?? 'true'
+    );
+
+    const labor_price = parseNumber(
+      row.labor_price || row.price || row.cost || row.gia || row.gia_vnd || row.price_vnd,
+      0
+    ) || 0;
+
+    const spare_part_id = parseNumber(
+      row.spare_part_id || row.sparepart_id || row.spare_part || row.sparepart,
+      undefined
+    );
+
+    let categoryId = parseNumber(
+      row.category_id ?? row.category ?? row.categoryid ?? row.danh_muc_id ?? row.danhmucid ?? undefined,
+      undefined
+    );
+    const categoryName = String(
+      row.category_name || row.categoryname || row.ten_danh_muc || row.danh_muc || row.danhmuc || ''
+    ).trim();
+
+    try {
+      if (!serviceName) {
+        throw { status: 400, message: "Tên dịch vụ không được để trống" };
+      }
+
+      if (!categoryId && categoryName) {
+        const category = await Service_Categories.findOne({
+          where: {
+            category_name: { [Op.iLike]: categoryName }
+          }
+        });
+        if (category) {
+          categoryId = category.id;
+        }
+      }
+
+      if (!categoryId) {
+        throw { status: 400, message: "Danh mục dịch vụ không hợp lệ hoặc bị bỏ trống" };
+      }
+
+      await module.exports.createServiceCatalog(
+        categoryId,
+        serviceName,
+        description,
+        estimated_duration,
+        is_active,
+        labor_price,
+        spare_part_id
+      );
+      results.successCount += 1;
+    } catch (error) {
+      results.errors.push({
+        row: index + 2,
+        message: error.message || error || "Lỗi không xác định khi import dòng",
+      });
+    }
+  }
+
+  vectorStoreService.syncAllServicesToPinecone().catch(err => console.error("Lỗi Background Sync:", err));
+  return results;
 };
 
 module.exports.getServiceCatalog = async (filters = {}) => {

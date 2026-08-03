@@ -8,6 +8,7 @@ const staffController = require("../../controller/admin/manageStaff.controller")
 const controllerServiceBays = require("../../controller/admin/serviceBays.controller");
 const warrantyController = require("../../controller/admin/warrantyPolicies.controller");
 const warrantyUpload = require("../../util/warrantyUpload.util");
+const excelUpload = require("../../util/excelUpload.util");
 const manageCustomer = require("./../../controller/admin/manageCustomer.controller");
 const shiftController = require('../../controller/admin/shift.controller');
 const statisticsController = require("../../controller/admin/statistics.controller");
@@ -19,6 +20,7 @@ router.put("/staff/:userId", staffController.updateStaff);
 
 router.get("/service-categories", serviceCatalogController.getServiceCategories);
 router.post("/service-catalog", serviceCatalogController.createServiceCatalog);
+router.post("/service-catalog/import", excelUpload.single("file"), serviceCatalogController.importServiceCatalog);
 router.get("/service-catalog", serviceCatalogController.getServiceCatalog);
 router.get("/service-catalog/search", serviceCatalogController.searchServiceCatalog);
 router.patch("/service-catalog/:id", serviceCatalogController.updateServiceCatalog);
