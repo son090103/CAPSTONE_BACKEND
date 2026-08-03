@@ -2,8 +2,19 @@
 const { Op } = require("sequelize");
 const { where } = require("sequelize");
 const db = require("../../../models");
-const { HfInference } = require('@huggingface/inference');
-const vectorStoreService = require('../ai/vectorStore.service'); // Import dịch vụ AI
+const { getHfInference } = require("../../util/huggingFace.util");
+
+const syncVectorStoreInBackground = () => {
+  try {
+    const vectorStoreService = require("../ai/vectorStore.service");
+    vectorStoreService
+      .syncAllServicesToPinecone()
+      .catch((error) => console.error("Lỗi Background Sync:", error));
+  } catch (error) {
+    if (error.code !== "MODULE_NOT_FOUND") throw error;
+    console.warn("Thiếu dependency Pinecone; tạm bỏ qua đồng bộ vector dịch vụ.");
+  }
+};
 
 const Service_Categories = db.Service_Categories;
 const Service_Catalog = db.Service_Catalog;
@@ -21,7 +32,8 @@ async function applyCatalogTranslations(t, catalogId, serviceName, description) 
     return;
   }
 
-  const hf = new HfInference(hfToken.trim());
+  const hf = getHfInference(hfToken);
+  if (!hf) return;
 
   const languages = await db.Languages.findAll({
     where: { id: 'en' },
@@ -146,7 +158,7 @@ module.exports.createServiceCatalog = async (category_id, service_name, descript
     await t.commit();
 
     // [Real-time AI Sync] Chạy ngầm đồng bộ lên Pinecone mà không dùng await để không bắt Admin chờ
-    vectorStoreService.syncAllServicesToPinecone().catch(err => console.error("Lỗi Background Sync:", err));
+    syncVectorStoreInBackground();
 
     return serviceCatalog;
   } catch (error) {
@@ -242,7 +254,7 @@ module.exports.updateServiceCatalog = async (service_catalog_id, category_id, se
   });
 
   // [Real-time AI Sync] Chạy ngầm đồng bộ lên Pinecone
-  vectorStoreService.syncAllServicesToPinecone().catch(err => console.error("Lỗi Background Sync:", err));
+  syncVectorStoreInBackground();
 
   return serviceCatalog;
 };

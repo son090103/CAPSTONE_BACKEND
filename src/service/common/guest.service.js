@@ -1,210 +1,183 @@
-const db = require("../../../models");
-const Service_Categories = db.Service_Categories;
-const Service_Catalog = db.Service_Catalog;
-const Service_Combo = db.Service_Combo;
-const { mapServicePrices } = require("../../util/calculateServicePrice.util");
 const { Op } = require("sequelize");
+const db = require("../../../models");
+const { mapServicePrices } = require("../../util/calculateServicePrice.util");
 
-// Categories
-module.exports.getServiceCategories = async (lang = 'vi') => {
-    const include = [];
-    if (lang !== 'vi' && db.Service_Category_Translations) {
-        include.push({
-            model: db.Service_Category_Translations,
-            as: 'translations',
-            where: { languageId: lang },
-            required: false
-        });
-    }
+const {
+  Service_Categories: ServiceCategories,
+  Service_Catalog: ServiceCatalog,
+  Service_Combo: ServiceCombo,
+} = db;
 
-    const categories = await Service_Categories.findAll({
-        attributes: ['id', 'category_name'],
-        include
-    });
+const translationInclude = (model, lang) =>
+  lang !== "vi" && model
+    ? [{ model, as: "translations", where: { languageId: lang }, required: false }]
+    : [];
 
-    if (lang !== 'vi') {
-        return categories.map(cat => {
-            const raw = cat.toJSON();
-            if (raw.translations && raw.translations.length > 0) {
-                raw.category_name = raw.translations[0].name || raw.category_name;
-            }
-            delete raw.translations;
-            return raw;
-        });
-    }
-    return categories;
+const localizeCategory = (category) => {
+  if (!category) return category;
+  const raw = typeof category.toJSON === "function" ? category.toJSON() : { ...category };
+  const translation = raw.translations?.[0];
+  if (translation?.name) raw.category_name = translation.name;
+  delete raw.translations;
+  return raw;
 };
 
-// Catalogs (Single Services)
-module.exports.getServiceCatalog = async (lang = 'vi', page = 1, limit = 16, search = '', categoryId = null) => {
-    const offset = (page - 1) * limit;
-
-    const whereCondition = {
-        is_active: true
-    };
-
-    if (categoryId) {
-        whereCondition.category_id = categoryId;
-    }
-
-    if (search) {
-        whereCondition[Op.or] = [
-            { service_name: { [Op.like]: `%${search}%` } },
-            { description: { [Op.like]: `%${search}%` } }
-        ];
-    }
-    const include = [
-        {
-            model: Service_Categories,
-            as: 'category',
-            attributes: ['category_name']
-        }
-    ];
-
-    if (lang !== 'vi' && db.Service_Catalog_Translations) {
-        include.push({
-            model: db.Service_Catalog_Translations,
-            as: 'translations',
-            where: { languageId: lang },
-            required: false
-        });
-    }
-
-    const { count, rows: serviceCatalog } = await Service_Catalog.findAndCountAll({
-        where: whereCondition,
-        attributes: ['id', 'category_id', 'service_name', 'description', 'estimated_duration', 'labor_price', 'spare_part_id', 'is_active'],
-        include,
-        limit,
-        offset,
-        distinct: true
-    });
-
-    let mappedCatalogs = mapServicePrices(serviceCatalog);
-
-    if (lang !== 'vi') {
-        mappedCatalogs = mappedCatalogs.map(cat => {
-            const raw = cat;
-            if (raw.translations && raw.translations.length > 0) {
-                raw.service_name = raw.translations[0].name || raw.service_name;
-                raw.description = raw.translations[0].description || raw.description;
-            }
-            delete raw.translations;
-            return raw;
-        });
-    }
-
-    return {
-        items: mappedCatalogs,
-        totalItems: count,
-        totalPages: Math.ceil(count / limit),
-        currentPage: page
-    };
+const localizeCatalog = (catalog) => {
+  const raw = typeof catalog.toJSON === "function" ? catalog.toJSON() : { ...catalog };
+  const translation = raw.translations?.[0];
+  if (translation?.name) raw.service_name = translation.name;
+  if (translation?.description !== undefined && translation?.description !== null) {
+    raw.description = translation.description;
+  }
+  delete raw.translations;
+  if (raw.category) raw.category = localizeCategory(raw.category);
+  return raw;
 };
 
-// Combos
-module.exports.getServiceCombos = async (lang = 'vi', page = 1, limit = 16, search = '') => {
-    const offset = (page - 1) * limit;
+const catalogIncludes = (lang) => [
+  {
+    model: ServiceCategories,
+    as: "category",
+    attributes: ["id", "category_name"],
+    include: translationInclude(db.Service_Category_Translations, lang),
+  },
+  ...translationInclude(db.Service_Catalog_Translations, lang),
+];
 
-    const whereCondition = {
-        is_active: true
-    };
+const catalogAttributes = [
+  "id",
+  "category_id",
+  "service_name",
+  "description",
+  "estimated_duration",
+  "labor_price",
+  "is_active",
+];
 
-    if (search) {
-        whereCondition[Op.or] = [
-            { combo_name: { [Op.like]: `%${search}%` } },
-            { description: { [Op.like]: `%${search}%` } }
-        ];
-    }
+const mapCatalogs = (catalogs) => mapServicePrices(catalogs.map(localizeCatalog));
 
-    const include = [
-        {
-            model: Service_Catalog,
-            as: "catalogs",
-            attributes: [
-                "id",
-                "category_id",
-                "service_name",
-                "description",
-                "estimated_duration",
-                "labor_price",
-                "is_active",
-            ],
-            through: { attributes: [] },
-            include: [
-                {
-                    model: Service_Categories,
-                    as: "category",
-                    attributes: ["id", "category_name"],
-                },
-            ],
-        },
+module.exports.getServiceCategories = async (lang = "vi") => {
+  const categories = await ServiceCategories.findAll({
+    where: { is_active: true },
+    attributes: ["id", "category_name"],
+    include: translationInclude(db.Service_Category_Translations, lang),
+    order: [["id", "ASC"]],
+  });
+  return categories.map(localizeCategory);
+};
+
+module.exports.getServiceCatalog = async ({ lang = "vi", categoryId = null } = {}) => {
+  const where = { is_active: true };
+  if (categoryId) where.category_id = categoryId;
+
+  const catalogs = await ServiceCatalog.findAll({
+    where,
+    attributes: catalogAttributes,
+    include: catalogIncludes(lang),
+    order: [["id", "ASC"]],
+  });
+  return mapCatalogs(catalogs);
+};
+
+module.exports.searchServiceCatalog = async ({
+  lang = "vi",
+  q = "",
+  categoryId = null,
+  page = 1,
+  limit = 8,
+} = {}) => {
+  const where = { is_active: true };
+  if (categoryId) where.category_id = categoryId;
+  if (q) {
+    where[Op.or] = [
+      { service_name: { [Op.iLike]: `%${q}%` } },
+      { description: { [Op.iLike]: `%${q}%` } },
     ];
+  }
 
-    if (lang !== 'vi' && db.Service_Combo_Translations) {
-        include.push({
-            model: db.Service_Combo_Translations,
-            as: 'translations',
-            where: { languageId: lang },
-            required: false
-        });
+  const { count, rows } = await ServiceCatalog.findAndCountAll({
+    where,
+    attributes: catalogAttributes,
+    include: catalogIncludes(lang),
+    order: [["id", "ASC"]],
+    limit,
+    offset: (page - 1) * limit,
+    distinct: true,
+  });
 
-        if (db.Service_Catalog_Translations) {
-            include[0].include.push({
-                model: db.Service_Catalog_Translations,
-                as: 'translations',
-                where: { languageId: lang },
-                required: false
-            });
-        }
+  return {
+    items: mapCatalogs(rows),
+    pagination: {
+      page,
+      limit,
+      total: count,
+      totalPages: Math.ceil(count / limit),
+    },
+  };
+};
+
+module.exports.getServiceCatalogDetail = async (id, lang = "vi") => {
+  const catalog = await ServiceCatalog.findOne({
+    where: { id, is_active: true },
+    attributes: catalogAttributes,
+    include: catalogIncludes(lang),
+  });
+
+  if (!catalog) {
+    const error = new Error("Dịch vụ không tồn tại hoặc đã ngừng cung cấp");
+    error.status = 404;
+    throw error;
+  }
+
+  return mapCatalogs([catalog])[0];
+};
+
+module.exports.getServiceCombos = async (lang = "vi") => {
+  const catalogTranslation = translationInclude(db.Service_Catalog_Translations, lang);
+  const combos = await ServiceCombo.findAll({
+    where: { is_active: true },
+    attributes: ["id", "combo_name", "description", "is_active", "createdAt", "updatedAt"],
+    include: [
+      {
+        model: ServiceCatalog,
+        as: "catalogs",
+        where: { is_active: true },
+        required: false,
+        attributes: catalogAttributes,
+        through: { attributes: [] },
+        include: [
+          {
+            model: ServiceCategories,
+            as: "category",
+            attributes: ["id", "category_name"],
+            include: translationInclude(db.Service_Category_Translations, lang),
+          },
+          ...catalogTranslation,
+        ],
+      },
+      ...translationInclude(db.Service_Combo_Translations, lang),
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+
+  return combos.map((combo) => {
+    const raw = combo.toJSON();
+    const translation = raw.translations?.[0];
+    if (translation?.combo_name) raw.combo_name = translation.combo_name;
+    if (translation?.description !== undefined && translation?.description !== null) {
+      raw.description = translation.description;
     }
-
-    const { count, rows: combos } = await Service_Combo.findAndCountAll({
-        where: whereCondition,
-        attributes: ["id", "combo_name", "description", "is_active", "createdAt", "updatedAt"],
-        include,
-        order: [["createdAt", "DESC"]],
-        limit,
-        offset,
-        distinct: true
-    });
-
-    let mappedCombos = combos;
-
-    if (lang !== 'vi') {
-        mappedCombos = combos.map(combo => {
-            const raw = combo.toJSON();
-            if (raw.translations && raw.translations.length > 0) {
-                raw.combo_name = raw.translations[0].combo_name || raw.combo_name;
-                raw.description = raw.translations[0].description || raw.description;
-            }
-            delete raw.translations;
-
-            // Dịch luôn các catalogs con bên trong
-            if (raw.catalogs && raw.catalogs.length > 0) {
-                raw.catalogs = raw.catalogs.map(catalog => {
-                    if (catalog.translations && catalog.translations.length > 0) {
-                        catalog.service_name = catalog.translations[0].name || catalog.service_name;
-                        catalog.description = catalog.translations[0].description || catalog.description;
-                    }
-                    delete catalog.translations;
-                    return catalog;
-                });
-            }
-            return raw;
-        });
-    }
-
-    return {
-        items: mappedCombos,
-        totalItems: count,
-        totalPages: Math.ceil(count / limit),
-        currentPage: page
-    };
+    delete raw.translations;
+    raw.catalogs = mapCatalogs(raw.catalogs || []);
+    raw.total_price = raw.catalogs.reduce(
+      (sum, catalog) => sum + Number(catalog.total_price || 0),
+      0,
+    );
+    return raw;
+  });
 };
 
 module.exports.checkLicensePlate = async (licensePlate) => {
-    const vehicle = await db.Vehicles.findOne({
-        where: { license_plate: licensePlate }
-    });
-    return !!vehicle;
+  const vehicle = await db.Vehicles.findOne({ where: { license_plate: licensePlate } });
+  return Boolean(vehicle);
 };
