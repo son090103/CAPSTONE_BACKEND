@@ -160,7 +160,7 @@ module.exports.getServiceCombos = async (lang = 'vi', page = 1, limit = 16, sear
 
     const { count, rows: combos } = await Service_Combo.findAndCountAll({
         where: whereCondition,
-        attributes: ["id", "combo_name", "description", "is_active", "createdAt", "updatedAt"],
+        attributes: ["id", "combo_name", "description", "discount_percentage", "is_active", "createdAt", "updatedAt"],
         include,
         order: [["createdAt", "DESC"]],
         limit,

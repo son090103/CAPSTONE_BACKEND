@@ -143,7 +143,8 @@ module.exports.createServiceCombo = async (
   combo_name,
   description,
   serviceCatalogIds,
-  is_active = true
+  is_active = true,
+  discount_percentage = 10
 ) => {
   const normalizedCatalogIds = [...new Set((serviceCatalogIds || []).map(Number))].filter(
     (id) => Number.isInteger(id) && id > 0
@@ -180,6 +181,7 @@ module.exports.createServiceCombo = async (
       combo_name,
       description,
       is_active,
+      discount_percentage,
     }, { transaction: t });
 
     await serviceCombo.setCatalogs(normalizedCatalogIds, { transaction: t });
@@ -191,7 +193,7 @@ module.exports.createServiceCombo = async (
 
     const createdCombo = await Service_Combo.findOne({
       where: { id: serviceCombo.id },
-      attributes: ["id", "combo_name", "description", "is_active", "createdAt", "updatedAt"],
+      attributes: ["id", "combo_name", "description", "discount_percentage", "is_active", "createdAt", "updatedAt"],
       include: buildComboInclude(),
     });
 
@@ -209,7 +211,7 @@ module.exports.listServiceCombos = async (options = {}) => {
 
   const queryOptions = {
     where,
-    attributes: ["id", "combo_name", "description", "is_active", "createdAt", "updatedAt"],
+    attributes: ["id", "combo_name", "description", "discount_percentage", "is_active", "createdAt", "updatedAt"],
     include: buildComboInclude(),
     order: [["createdAt", "DESC"]],
     distinct: true,
@@ -250,7 +252,8 @@ module.exports.updateServiceCombo = async (
   combo_name,
   description,
   serviceCatalogIds,
-  is_active
+  is_active,
+  discount_percentage = 10
 ) => {
   const serviceCombo = await Service_Combo.findOne({
     where: { id: serviceComboId },
@@ -302,6 +305,7 @@ module.exports.updateServiceCombo = async (
       combo_name,
       description,
       is_active,
+      discount_percentage,
     }, { transaction: t });
 
     await serviceCombo.setCatalogs(normalizedCatalogIds, { transaction: t });
@@ -314,7 +318,7 @@ module.exports.updateServiceCombo = async (
 
     const updatedCombo = await Service_Combo.findOne({
       where: { id: serviceCombo.id },
-      attributes: ["id", "combo_name", "description", "is_active", "createdAt", "updatedAt"],
+      attributes: ["id", "combo_name", "description", "discount_percentage", "is_active", "createdAt", "updatedAt"],
       include: buildComboInclude(),
     });
 
