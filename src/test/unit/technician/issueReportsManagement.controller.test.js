@@ -1,4 +1,5 @@
 const taskAssignmentService = require("../../../service/technician/taskAssignment.service");
+const notificationService = require("../../../service/technician/notification.service");
 
 jest.mock("../../../service/technician/taskAssignment.service", () => ({
   createIssueReports: jest.fn(),
@@ -14,7 +15,15 @@ jest.mock("../../../service/technician/taskAssignment.service", () => ({
   aiSuggestCauses: jest.fn(),
 }));
 
+jest.mock("../../../service/technician/notification.service", () => ({
+  getNotifications: jest.fn(),
+  markAsRead: jest.fn(),
+  markAllAsRead: jest.fn(),
+  getUnreadCount: jest.fn(),
+}));
+
 const controller = require("../../../controller/technician/taskAssignment.controller");
+const notificationController = require("../../../controller/technician/notification.controller");
 
 const createMockResponse = () => {
   const res = {
@@ -25,7 +34,7 @@ const createMockResponse = () => {
   return res;
 };
 
-describe("FE-17: Issue Reports Management Controller Tests (Technician Role)", () => {
+describe("FE-17: Issue Reports Management & Notifications Controller Tests (Technician Role)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -288,6 +297,76 @@ describe("FE-17: Issue Reports Management Controller Tests (Technician Role)", (
 
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ message: "AI LLM API Timeout" });
+    });
+  });
+
+  /* ==========================================================================
+   * 5. View Notifications (Technician Role)
+   * ========================================================================== */
+  describe("View Notifications", () => {
+    it("UTCID15 - View Notifications - should return 200 OK with technician notifications list", async () => {
+      const mockNotifications = [
+        { id: 1, title: "Phân công công việc mới", message: "Bạn có 1 nhiệm vụ sửa chữa mới", isRead: false },
+      ];
+      notificationService.getNotifications.mockResolvedValue(mockNotifications);
+
+      const req = {};
+      const res = createMockResponse();
+      res.locals.user = { id: 5 };
+
+      await notificationController.getNotifications(req, res);
+
+      expect(notificationService.getNotifications).toHaveBeenCalledWith(5);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(mockNotifications);
+    });
+
+    it("UTCID16 - View Notifications - should return 200 OK with unread notification count", async () => {
+      notificationService.getUnreadCount.mockResolvedValue(3);
+
+      const req = {};
+      const res = createMockResponse();
+      res.locals.user = { id: 5 };
+
+      await notificationController.getUnreadCount(req, res);
+
+      expect(notificationService.getUnreadCount).toHaveBeenCalledWith(5);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ count: 3 });
+    });
+
+    it("UTCID17 - View Notifications - should return 200 OK when marking notification as read", async () => {
+      const mockResult = { id: 1, isRead: true };
+      notificationService.markAsRead.mockResolvedValue(mockResult);
+
+      const req = { params: { id: "1" } };
+      const res = createMockResponse();
+      res.locals.user = { id: 5 };
+
+      await notificationController.markAsRead(req, res);
+
+      expect(notificationService.markAsRead).toHaveBeenCalledWith("1", 5);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        message: "Đã đánh dấu đọc",
+        data: mockResult,
+      });
+    });
+
+    it("UTCID18 - View Notifications - should return 500 Internal Server Error when fetching notifications fails", async () => {
+      notificationService.getNotifications.mockRejectedValue(new Error("Notification service error"));
+
+      const req = {};
+      const res = createMockResponse();
+      res.locals.user = { id: 5 };
+
+      await notificationController.getNotifications(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "Notification service error",
+      });
     });
   });
 });
