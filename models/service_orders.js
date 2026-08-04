@@ -45,6 +45,13 @@ module.exports = (sequelize, DataTypes) => {
           as: "payment"
         });
       }
+
+      if (models.Feedback) {
+        this.hasOne(models.Feedback, {
+          foreignKey: "service_order_id",
+          as: "feedback"
+        });
+      }
     }
   }
   Service_Orders.init(

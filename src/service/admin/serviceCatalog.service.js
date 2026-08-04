@@ -209,7 +209,7 @@ module.exports.createServiceCatalog = async (category_id, service_name, descript
   }
 };
 
-module.exports.importServiceCatalog = async (fileBuffer, filename) => {
+module.exports.previewImportServiceCatalog = async (fileBuffer) => {
   if (!fileBuffer) {
     throw { status: 400, message: "Không có dữ liệu file để import" };
   }
@@ -226,10 +226,7 @@ module.exports.importServiceCatalog = async (fileBuffer, filename) => {
     throw { status: 400, message: "File không chứa dữ liệu dịch vụ" };
   }
 
-  const results = {
-    successCount: 0,
-    errors: [],
-  };
+  const previewList = [];
 
   for (let index = 0; index < rawRows.length; index += 1) {
     const row = normalizeRow(rawRows[index]);
@@ -268,9 +265,24 @@ module.exports.importServiceCatalog = async (fileBuffer, filename) => {
       row.category_name || row.categoryname || row.ten_danh_muc || row.danh_muc || row.danhmuc || ''
     ).trim();
 
+    const previewItem = {
+      row_index: index + 2,
+      service_name: serviceName,
+      description,
+      estimated_duration,
+      is_active,
+      labor_price,
+      spare_part_id,
+      category_id: categoryId,
+      category_name: categoryName,
+      isValid: true,
+      errors: []
+    };
+
     try {
       if (!serviceName) {
-        throw { status: 400, message: "Tên dịch vụ không được để trống" };
+        previewItem.isValid = false;
+        previewItem.errors.push("Tên dịch vụ không được để trống");
       }
 
       if (!categoryId && categoryName) {
@@ -280,33 +292,66 @@ module.exports.importServiceCatalog = async (fileBuffer, filename) => {
           }
         });
         if (category) {
-          categoryId = category.id;
+          previewItem.category_id = category.id;
         }
       }
 
-      if (!categoryId) {
-        throw { status: 400, message: "Danh mục dịch vụ không hợp lệ hoặc bị bỏ trống" };
+      if (!previewItem.category_id) {
+        previewItem.isValid = false;
+        previewItem.errors.push("Danh mục dịch vụ không hợp lệ hoặc bị bỏ trống");
+      }
+    } catch (error) {
+      previewItem.isValid = false;
+      previewItem.errors.push(error.message || "Lỗi không xác định");
+    }
+
+    previewList.push(previewItem);
+  }
+
+  return { previewList };
+};
+
+module.exports.confirmImportServiceCatalog = async (servicesList) => {
+  if (!Array.isArray(servicesList) || servicesList.length === 0) {
+    throw { status: 400, message: "Không có dữ liệu hợp lệ để lưu" };
+  }
+
+  const results = {
+    successCount: 0,
+    errors: [],
+  };
+
+  for (let i = 0; i < servicesList.length; i++) {
+    const item = servicesList[i];
+    try {
+      if (!item.category_id) {
+        throw { status: 400, message: "Thiếu Danh mục ID" };
+      }
+      if (!item.service_name) {
+        throw { status: 400, message: "Thiếu Tên dịch vụ" };
       }
 
       await module.exports.createServiceCatalog(
-        categoryId,
-        serviceName,
-        description,
-        estimated_duration,
-        is_active,
-        labor_price,
-        spare_part_id
+        item.category_id,
+        item.service_name,
+        item.description,
+        item.estimated_duration,
+        item.is_active,
+        item.labor_price,
+        item.spare_part_id
       );
       results.successCount += 1;
     } catch (error) {
       results.errors.push({
-        row: index + 2,
-        message: error.message || error || "Lỗi không xác định khi import dòng",
+        row: item.row_index || i,
+        message: error.message || error || "Lỗi không xác định khi lưu dòng",
       });
     }
   }
 
-  vectorStoreService.syncAllServicesToPinecone().catch(err => console.error("Lỗi Background Sync:", err));
+  if (results.successCount > 0) {
+    vectorStoreService.syncAllServicesToPinecone().catch(err => console.error("Lỗi Background Sync:", err));
+  }
   return results;
 };
 

@@ -20,7 +20,8 @@ router.put("/staff/:userId", staffController.updateStaff);
 
 router.get("/service-categories", serviceCatalogController.getServiceCategories);
 router.post("/service-catalog", serviceCatalogController.createServiceCatalog);
-router.post("/service-catalog/import", excelUpload.single("file"), serviceCatalogController.importServiceCatalog);
+router.post("/service-catalog/import/preview", excelUpload.single("file"), serviceCatalogController.previewImportServiceCatalog);
+router.post("/service-catalog/import/confirm", serviceCatalogController.confirmImportServiceCatalog);
 router.get("/service-catalog", serviceCatalogController.getServiceCatalog);
 router.get("/service-catalog/search", serviceCatalogController.searchServiceCatalog);
 router.patch("/service-catalog/:id", serviceCatalogController.updateServiceCatalog);
