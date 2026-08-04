@@ -61,8 +61,8 @@ module.exports.getRepairProgress = async (userId) => {
   return orders;
 };
 
-// Lịch sử dịch vụ đã hoàn thành: mỗi lệnh sửa chữa COMPLETED gộp toàn bộ báo giá đã duyệt
-// (dịch vụ + phụ tùng) thành 1 "hóa đơn" để khách xem lại/tải PDF.
+// Lịch sử dịch vụ đã hoàn thành và đã thanh toán: mỗi lệnh sửa chữa COMPLETED/DELIVERED có
+// payment PAID gộp toàn bộ báo giá đã duyệt (dịch vụ + phụ tùng) thành 1 "hóa đơn" để khách xem lại/tải PDF.
 module.exports.getServiceHistory = async (userId) => {
   const customer = await db.Customers.findOne({ where: { user_id: userId } });
   if (!customer) {
@@ -85,6 +85,8 @@ module.exports.getServiceHistory = async (userId) => {
         model: db.Booking_Payments,
         as: "payment",
         attributes: ["id", "payment_status", "amount", "payment_method"],
+        where: { payment_status: "PAID" },
+        required: true,
       },
       {
         model: db.Feedback,
