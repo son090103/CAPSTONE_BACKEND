@@ -1,5 +1,4 @@
 const db = require("../../../models");
-
 const { Op } = require("sequelize");
 const getGarageCapacity = require("../../util/getGarageCapacity.util");
 
@@ -28,17 +27,17 @@ module.exports.getAvailability = async (dateStr) => {
         // Helper tính toán các giờ bị trùng chỉ trong 1 ngày cụ thể (dateStr)
         const getOccupiedHours = (startTime, endTime) => {
             if (endTime <= startOfDay || startTime >= endOfDay) return [];
-            
+
             const effectiveStart = startTime < startOfDay ? startOfDay : startTime;
             const effectiveEnd = endTime > endOfDay ? endOfDay : endTime;
-            
+
             const startHour = effectiveStart.getUTCHours();
             let endHour = effectiveEnd.getUTCHours();
-            
+
             if (effectiveEnd.getMinutes() === 0 && effectiveEnd.getSeconds() === 0 && endHour > startHour) {
                 endHour -= 1;
             }
-            
+
             const hours = [];
             for (let h = startHour; h <= endHour; h++) {
                 hours.push(h);
