@@ -96,9 +96,14 @@ module.exports.getServiceHistory = async (userId) => {
       {
         model: db.Task,
         as: "tasks",
-        attributes: ["id"],
+        attributes: ["id", "service_catalog_id"],
         required: false,
         include: [
+          {
+            model: db.Service_Catalog,
+            as: "catalog",
+            attributes: ["id", "service_name", "labor_price"],
+          },
           {
             model: db.Task_Assignment,
             as: "assignments",
@@ -122,6 +127,23 @@ module.exports.getServiceHistory = async (userId) => {
                   { model: db.Service_Catalog, as: "service_catalog", attributes: ["id", "service_name"] },
                 ],
               },
+            ],
+          },
+        ],
+      },
+      {
+        model: db.Appointments,
+        as: "appointment",
+        attributes: ["id", "booking_type"],
+        required: false,
+        include: [
+          {
+            model: db.Appointment_Details,
+            as: "appointmentDetails",
+            required: false,
+            include: [
+              { model: db.Service_Catalog, as: "catalog", attributes: ["id", "service_name", "labor_price"] },
+              { model: db.Service_Combo, as: "combo", attributes: ["id", "combo_name"] },
             ],
           },
         ],
