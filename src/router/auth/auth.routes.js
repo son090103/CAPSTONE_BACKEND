@@ -9,6 +9,7 @@ router.post("/login", authController.login);
 router.post("/register", authController.register);
 router.post("/phone", authController.checkPhone);
 router.post("/refresh-token", authController.refreshToken);
+router.post("/logout", authenticate, authController.logout);
 router.post("/forgot-password", authController.forgotPassword);
 router.get("/profile", authenticate, authController.getProfile);
 router.get("/google",passport.authenticate("google", {scope: ["profile", "email"],session: false,}));

@@ -553,10 +553,17 @@ module.exports.getServiceOrdersAwaitingPayment = async () => {
           where: { service_order_id: order.id },
           required: true,
         },
+        {
+          model: Quotation_Details,
+          as: "items",
+          attributes: ["id", "amount", "status"],
+        },
       ],
     });
+    // grandTotal tính động từ các dòng chưa bị hủy (đóng sớm đơn) — KHÔNG đọc total_amount,
+    // vì trường đó giữ nguyên giá trị gốc lúc khách duyệt, không bị ghi đè khi đóng sớm.
     const grandTotal = quotations.reduce(
-      (sum, q) => sum + Number(q.total_amount),
+      (sum, q) => sum + q.items.filter((i) => i.status !== "CANCELLED").reduce((s, i) => s + Number(i.amount), 0),
       0,
     );
     const totalDeposit = quotations.reduce(
@@ -882,4 +889,134 @@ module.exports.getCompleteServiceOrder = async () => {
     ],
   });
   return serviceOrder;
+};
+
+// Đóng sớm lệnh sửa chữa (Early Closure) khi khách hàng muốn dừng giữa chừng lúc đang sửa.
+// Nguyên tắc: KHÔNG hủy Service_Order/Quotation đã có chi phí thực tế phát sinh — chỉ chốt
+// (close) đúng phần đã thực hiện thật. Các hạng mục dịch vụ đã duyệt nhưng CHƯA thực hiện
+// (do lễ tân xác nhận cùng kỹ thuật viên) sẽ được đánh dấu CANCELLED và loại khỏi hóa đơn cuối,
+// không tạo ra bất kỳ dòng "báo giá âm"/bù trừ giả tạo nào.
+module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotationItemIds, reason, receptionistId) => {
+  const transaction = await db.sequelize.transaction();
+
+  try {
+    const serviceOrder = await Service_Order.findByPk(serviceOrderId, { transaction });
+    if (!serviceOrder) {
+      throw { status: 404, message: "Không tìm thấy lệnh sửa chữa" };
+    }
+    if (serviceOrder.status === "COMPLETED") {
+      throw { status: 400, message: "Lệnh sửa chữa đã hoàn thành, không thể đóng sớm" };
+    }
+
+    // Lấy toàn bộ item (Quotation_Details) thuộc các Quotation APPROVED của service order này,
+    // kèm Task tương ứng (mỗi service item luôn sinh 1 Task REPAIR riêng khi được duyệt).
+    const approvedQuotations = await Quotation.findAll({
+      where: { status: "APPROVED" },
+      include: [
+        { model: Tasks, as: "task", attributes: ["id"], where: { service_order_id: serviceOrderId }, required: true },
+        { model: QuotationDetail, as: "items" },
+      ],
+      order: [["createdAt", "ASC"]],
+      transaction,
+    });
+
+    if (approvedQuotations.length === 0) {
+      throw { status: 400, message: "Lệnh sửa chữa chưa có báo giá nào được duyệt để đóng sớm" };
+    }
+
+    const completedIdSet = new Set((completedQuotationItemIds || []).map((id) => Number(id)));
+    const itemsToCancel = [];
+    const quotationsAffected = new Map(); // quotation_id -> Quotation instance
+
+    for (const quotation of approvedQuotations) {
+      for (const item of quotation.items) {
+        // Item đã ở trạng thái xuất/nhận kho (EXPORTED/RECEIVED) coi như đã dùng thật —
+        // không được hủy dù không nằm trong danh sách "đã hoàn thành" lễ tân chọn.
+        const isAlreadyUsed = ["EXPORTED", "RECEIVED"].includes(item.status);
+        const isMarkedCompleted = completedIdSet.has(item.id);
+
+        if (!isMarkedCompleted && !isAlreadyUsed && item.status !== "CANCELLED") {
+          itemsToCancel.push(item);
+        }
+        quotationsAffected.set(quotation.id, quotation);
+      }
+    }
+
+    // Không chặn khi itemsToCancel rỗng — trường hợp lễ tân tick TẤT CẢ hạng mục (mọi thứ đã
+    // hoàn thành thật) vẫn là một lượt đóng sớm hợp lệ, chỉ là không có gì bị hủy cả.
+
+    // 1. Đánh dấu CANCELLED cho từng dòng báo giá chưa thực hiện
+    const itemIds = itemsToCancel.map((i) => i.id);
+    if (itemIds.length > 0) {
+      await QuotationDetail.update(
+        { status: "CANCELLED" },
+        { where: { id: itemIds }, transaction },
+      );
+
+      // 2. Hủy các Task REPAIR tương ứng (mỗi item service tương ứng 1 Task qua quotation_item_id)
+      await Tasks.update(
+        { status: "CANCELLED" },
+        {
+          where: { quotation_item_id: itemIds, status: ["PENDING", "IN_PROGRESS", "PAUSED", "WAITING_STOCK"] },
+          transaction,
+        },
+      );
+    }
+
+    // 2b. Hoàn thành các Task REPAIR ứng với item được lễ tân tick "đã hoàn thành" nhưng Task
+    //     trên hệ thống chưa kịp cập nhật COMPLETED (đúng ý nghĩa của việc tick: KTV xác nhận
+    //     đã làm xong). Nếu bỏ qua bước này, Task treo ở PENDING/IN_PROGRESS mãi mãi dù đơn đã
+    //     đóng, chặn luôn nút thanh toán vì yêu cầu mọi Task phải COMPLETED/CANCELLED.
+    if (completedIdSet.size > 0) {
+      await Tasks.update(
+        { status: "COMPLETED" },
+        {
+          where: {
+            quotation_item_id: [...completedIdSet],
+            status: ["PENDING", "IN_PROGRESS", "PAUSED", "WAITING_STOCK"],
+          },
+          transaction,
+        },
+      );
+    }
+
+    // 3. KHÔNG đổi total_amount của Quotation — đây là con số khách đã duyệt (approved_at),
+    //    phải giữ nguyên làm bằng chứng lịch sử. Số tiền thực phải trả sau khi đóng sớm được
+    //    tính động ở nơi hiển thị/thanh toán (SUM các Quotation_Details chưa CANCELLED),
+    //    không ghi đè lên báo giá gốc.
+
+    // 4. Service_Order chỉ thật sự COMPLETED khi MỌI Task của nó đã ở trạng thái cuối
+    //    (COMPLETED hoặc CANCELLED) — không tự gán COMPLETED vô điều kiện chỉ vì lễ tân bấm nút.
+    //    "Đóng sớm" là hành động chủ động ghi nhận ý định dừng (lưu ở early_closure_reason),
+    //    còn status thật của đơn phải phản ánh đúng tình trạng Task, tránh nói dối là đã xong
+    //    trong khi vẫn còn công việc treo lại.
+    const remainingTasks = await Tasks.findAll({
+      where: { service_order_id: serviceOrderId },
+      attributes: ["id", "status"],
+      transaction,
+    });
+    const allTasksFinished = remainingTasks.every((t) =>
+      ["COMPLETED", "CANCELLED"].includes(t.status?.toUpperCase()),
+    );
+
+    const updatePayload = { early_closure_reason: reason };
+    if (allTasksFinished) {
+      updatePayload.status = "COMPLETED";
+      updatePayload.actual_finish_time = new Date();
+      updatePayload.exit_time = serviceOrder.exit_time || new Date();
+    }
+    await serviceOrder.update(updatePayload, { transaction });
+
+    await transaction.commit();
+
+    return {
+      serviceOrderId,
+      cancelledItemCount: itemsToCancel.length,
+      affectedQuotationIds: [...quotationsAffected.keys()],
+      serviceOrderCompleted: allTasksFinished,
+    };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
 };

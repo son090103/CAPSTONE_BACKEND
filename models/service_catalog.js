@@ -64,6 +64,10 @@ module.exports = (sequelize, DataTypes) => {
     spare_part_id: {
       type: DataTypes.INTEGER,
       allowNull: true // Co the null neu dich vu ko co phu tung
+    },
+    recommended_interval_days: {
+      type: DataTypes.INTEGER,
+      allowNull: true // NULL = dịch vụ không định kỳ, không tham gia nhắc bảo dưỡng
     }
   }, {
     sequelize,

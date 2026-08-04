@@ -524,24 +524,25 @@ module.exports.reportAdditionalIssue = async (
   note,
   technicianId,
 ) => {
+  // Chỉ cần xác định đúng Task REPAIR thuộc về kỹ thuật viên này để biết service_order_id
+  // (dùng gộp báo giá bổ sung sau này) — không ép trạng thái phải IN_PROGRESS, vì lỗi phát
+  // sinh có thể được ghi nhận cả khi Task đang PAUSED/WAITING_STOCK, không chỉ lúc đang chạy.
   const task = await Tasks.findOne({
     where: {
       id: task_id,
       type: "REPAIR",
-      status: "IN_PROGRESS",
     },
   });
   const taskAssignment = await Task_Assignments.findOne({
     where: {
       task_id: task_id,
       technician_id: technicianId,
-      status: "IN_PROGRESS",
     },
   });
   if (!task || !taskAssignment) {
     throw {
       status: 404,
-      message: "Không tìm thấy công việc sửa chữa đang thực hiện.",
+      message: "Không tìm thấy công việc sửa chữa được giao cho bạn.",
     };
   }
   const records = issues.map((item) => ({
@@ -834,6 +835,44 @@ module.exports.getModels = async (makeId) => {
   });
 };
 
+// Bước 6 (Format AI Response): parse JSON thô từ Gemini và dựng lại thành text có cấu trúc rõ ràng cho FE hiển thị
+function formatAiCausesResponse(rawText) {
+  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    // AI không trả đúng JSON như yêu cầu -> fallback dùng nguyên văn bản
+    return { causes: [], recommendations: [], formattedText: rawText.trim() };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return { causes: [], recommendations: [], formattedText: rawText.trim() };
+  }
+
+  const causes = Array.isArray(parsed.causes) ? parsed.causes : [];
+  const recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
+
+  const lines = [];
+  if (causes.length > 0) {
+    lines.push("Nguyên nhân khả dĩ:");
+    causes.forEach((c, idx) => {
+      const part = c.part_to_check ? ` (Kiểm tra: ${c.part_to_check})` : "";
+      lines.push(`${idx + 1}. ${c.cause}${part}`);
+    });
+  }
+  if (recommendations.length > 0) {
+    lines.push("", "Khuyến nghị kiểm tra:");
+    recommendations.forEach((r) => lines.push(`- ${r}`));
+  }
+
+  return {
+    causes,
+    recommendations,
+    formattedText: lines.length > 0 ? lines.join("\n") : rawText.trim(),
+  };
+}
+
 module.exports.aiSuggestCauses = async (symptom, modelName) => {
   if (!symptom || !symptom.trim()) {
     throw { status: 400, message: "Vui lòng nhập triệu chứng" };
@@ -842,14 +881,24 @@ module.exports.aiSuggestCauses = async (symptom, modelName) => {
   const prompt = `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm.
     Xe: ${modelName || "không xác định"}.
     Triệu chứng: "${symptom.trim()}".
-    Liệt kê 3-5 nguyên nhân khả dĩ phổ biến nhất, sắp theo khả năng cao nhất trước.
-    Mỗi nguyên nhân một dòng ngắn gọn, kèm bộ phận cần kiểm tra.
-    Chỉ trả lời bằng tiếng Việt, không giải thích dài dòng.`;
+    Liệt kê 3-5 nguyên nhân khả dĩ phổ biến nhất, sắp theo khả năng cao nhất trước, và các khuyến nghị kiểm tra đi kèm.
+    Chỉ trả lời bằng MỘT khối JSON hợp lệ duy nhất, không kèm markdown hay giải thích thêm, theo đúng cấu trúc:
+    {
+      "causes": [ { "cause": "Tên nguyên nhân ngắn gọn", "part_to_check": "Bộ phận cần kiểm tra" } ],
+      "recommendations": [ "Khuyến nghị kiểm tra ngắn gọn" ]
+    }
+    Tất cả nội dung bằng tiếng Việt.`;
   const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  const rawText = result.response.text();
+
+  // Bước 6: Format AI Response — parse và cấu trúc lại output thô từ AI
+  const { causes, recommendations, formattedText } = formatAiCausesResponse(rawText);
+
   return {
     symptom: symptom.trim(),
-    ai_suggestion: text,
+    ai_suggestion: formattedText,
+    causes,
+    recommendations,
     disclaimer: "Gợi ý từ AI, cần kỹ thuật viên kiểm chứng trước khi kết luận.",
   };
 };

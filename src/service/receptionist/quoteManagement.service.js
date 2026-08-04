@@ -26,6 +26,9 @@ const {
 } = require("../../templates/quotation.template");
 const { generateQuotationActionToken } = require("../../util/jwt.util");
 
+// Gộp chung: lỗi từ Task INSPECTION đã hoàn tất (báo giá lần đầu) VÀ lỗi phát sinh từ Task
+// REPAIR (báo giá bổ sung, không ép status vì Task có thể đang PAUSED/WAITING_STOCK) —
+// hiển thị cùng 1 danh sách duy nhất cho lễ tân, không tách riêng endpoint /issues/additional nữa.
 module.exports.getIssuesReports = async () => {
   const issues = await Issues.findAll({
     attributes: ["id", "error_description", "note", "createdAt"],
@@ -45,85 +48,12 @@ module.exports.getIssuesReports = async () => {
         model: Tasks,
         as: "task",
         attributes: ["id"],
-        where: { status: "COMPLETED" },
-        required: true,
-        include: [
-          {
-            model: Service_Order,
-            as: "serviceOrder",
-            attributes: ["id"],
-            include: [
-              {
-                model: Vehicles,
-                as: "vehicle",
-                attributes: ["id", "color", "license_plate"],
-                include: [
-                  {
-                    model: Vehicle_Models,
-                    as: "model",
-                    attributes: ["id", "model_name"],
-                  },
-                  {
-                    model: Customers,
-                    as: "customer",
-                    attributes: ["id", "name", "phone"],
-                    include: [
-                      {
-                        model: Users,
-                        as: "user",
-                        attributes: ["id", "fullName", "phoneNumber"],
-                      },
-                    ],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      },
-      {
-        model: Components,
-        as: "component",
-        attributes: ["id", "name", "parent_id"],
-        include: [
-          {
-            model: Components,
-            as: "parent",
-            attributes: ["id", "name"],
-          },
-          {
-            model: Components,
-            as: "children",
-            attributes: ["id", "name"],
-          },
-        ],
-      },
-    ],
-    order: [["createdAt", "DESC"]],
-  });
-  return issues;
-};
-
-module.exports.getAdditionalIssuesReports = async () => {
-  const issues = await Issues.findAll({
-    attributes: ["id", "error_description", "note", "createdAt"],
-    where: {
-      id: {
-        [Op.notIn]: db.sequelize.literal(`(
-              SELECT qd.issue_id
-              FROM "Quotation_Details" qd
-              JOIN "Quotations" q ON q.id = qd.quotation_id
-              WHERE qd.issue_id IS NOT NULL
-                AND q.status != 'REJECTED'
-            )`),
-      },
-    },
-    include: [
-      {
-        model: Tasks,
-        as: "task",
-        attributes: ["id", "service_order_id"],
-        where: { type: "REPAIR", status: "IN_PROGRESS" },
+        where: {
+          [Op.or]: [
+            { type: "INSPECTION", status: "COMPLETED" },
+            { type: "REPAIR" },
+          ],
+        },
         required: true,
         include: [
           {
@@ -537,12 +467,19 @@ module.exports.getPaymentSummaryByServiceOrder = async (serviceOrderId) => {
         where: { service_order_id: serviceOrderId },
         required: true,
       },
+      {
+        model: QuotationDetail,
+        as: "items",
+        attributes: ["id", "amount", "status"],
+      },
     ],
     order: [["createdAt", "ASC"]],
   });
 
+  // grandTotal tính động từ các dòng chưa bị hủy (đóng sớm đơn) — KHÔNG đọc total_amount,
+  // vì trường đó giữ nguyên giá trị gốc lúc khách duyệt, không bị ghi đè khi đóng sớm.
   const grandTotal = quotations.reduce(
-    (sum, q) => sum + Number(q.total_amount),
+    (sum, q) => sum + q.items.filter((i) => i.status !== "CANCELLED").reduce((s, i) => s + Number(i.amount), 0),
     0,
   );
   const totalDeposit = quotations.reduce(
@@ -593,7 +530,7 @@ module.exports.getServiceOrderInvoice = async (serviceOrderId) => {
       {
         model: QuotationDetail,
         as: "items",
-        attributes: ["id", "quantity", "unit_price", "repair_price", "amount", "custom_item_name"],
+        attributes: ["id", "quantity", "unit_price", "repair_price", "amount", "custom_item_name", "status"],
         include: [
           {
             model: Issues,
@@ -609,8 +546,11 @@ module.exports.getServiceOrderInvoice = async (serviceOrderId) => {
     order: [["createdAt", "ASC"]],
   });
 
-  const items = quotations.flatMap((q) => q.items);
-  const grandTotal = quotations.reduce((sum, q) => sum + Number(q.total_amount), 0);
+  // Loại bỏ các dòng đã bị hủy (đóng sớm đơn — Early Closure) khỏi hóa đơn hiển thị.
+  // grandTotal tính động từ các dòng còn hiệu lực — KHÔNG đọc quotation.total_amount, vì
+  // trường đó giữ nguyên giá trị gốc lúc khách duyệt (bằng chứng lịch sử, không bị ghi đè).
+  const items = quotations.flatMap((q) => q.items).filter((item) => item.status !== "CANCELLED");
+  const grandTotal = items.reduce((sum, item) => sum + Number(item.amount), 0);
   const totalDeposit = quotations.reduce((sum, q) => sum + Number(q.deposit_amount || 0), 0);
 
   return {

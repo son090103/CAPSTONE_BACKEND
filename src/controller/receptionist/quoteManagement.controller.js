@@ -16,17 +16,6 @@ module.exports.getIssueReports = async (req, res) => {
   }
 };
 
-module.exports.getAdditionalIssueReports = async (req, res) => {
-  try {
-    const result = await quoteManagementService.getAdditionalIssuesReports();
-    return res.status(200).json({ success: true, data: result });
-  } catch (error) {
-    return res
-      .status(error.status || 500)
-      .json({ message: error.message || "Internal server error" });
-  }
-};
-
 module.exports.getPaymentSummary = async (req, res) => {
   try {
     const { serviceOrderId } = req.params;

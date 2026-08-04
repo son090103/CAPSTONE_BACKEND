@@ -119,3 +119,36 @@ module.exports.getCompleteServiceOrder = async (req,res) => {
         });
     }
 }
+
+module.exports.closeServiceOrderEarly = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const receptionistId = res.locals.user.id;
+        const { completedQuotationItemIds, reason } = req.body;
+
+        if (!reason || !reason.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: "Vui lòng nhập lý do đóng sớm lệnh sửa chữa"
+            });
+        }
+
+        const result = await serviceOrderService.closeServiceOrderEarly(
+            id,
+            completedQuotationItemIds,
+            reason.trim(),
+            receptionistId
+        );
+
+        return res.status(200).json({
+            success: true,
+            message: "Đóng sớm lệnh sửa chữa thành công",
+            data: result
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};

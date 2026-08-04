@@ -9,7 +9,6 @@ const technicianController = require("../../controller/receptionist/technician.c
 const chatController = require("../../controller/chat/chat.controller");
 
 router.get("/issues", quoteManagementController.getIssueReports);
-router.get("/issues/additional", quoteManagementController.getAdditionalIssueReports);
 router.post("/quote", quoteManagementController.createQuotation);
 router.patch("/quote/:id", quoteManagementController.updateQuotation);
 router.get("/quote", quoteManagementController.getQuoteHistory);
@@ -32,6 +31,7 @@ router.post("/service-order", serviceOrderController.createServiceOrder)
 router.get("/service-orders", serviceOrderController.getServiceOrders)
 router.get("/service-order/:id", serviceOrderController.getServiceOrderById)
 router.put("/service-order/:id/odo", serviceOrderController.updateServiceOrderOdo)
+router.patch("/service-order/:id/close-early", serviceOrderController.closeServiceOrderEarly)
 
 router.get("/notifications", notificationController.getNotification)
 router.get("/notifications/unread-count", notificationController.getUnreadCount)

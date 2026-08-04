@@ -84,6 +84,7 @@ module.exports = (sequelize, DataTypes) => {
             "RECEIVED",
             "WAITING_DEPOSIT",
             "WAITING_STOCK",
+            "CANCELLED",
           ]],
         },
       },

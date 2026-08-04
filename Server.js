@@ -94,6 +94,7 @@ io.on('connection', (socket) => {
 });
 const ROUTES = require("./src/router/registry.routes");
 require("./src/jobs/pricingRule.job");
+require("./src/jobs/maintenanceReminder.job");
 app.use(
   cors({
     origin(origin, callback) {
