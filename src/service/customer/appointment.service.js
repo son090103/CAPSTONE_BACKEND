@@ -79,6 +79,24 @@ module.exports.getAppointments = async (userId) => {
                         ]
                     }
                 ]
+            },
+            {
+                model: db.Service_Orders,
+                as: 'serviceOrder',
+                attributes: ['id', 'status'],
+                required: false,
+                include: [
+                    {
+                        model: db.Service_Bays,
+                        as: 'bay',
+                        attributes: ['bay_name']
+                    },
+                    {
+                        model: db.User,
+                        as: 'receptionist',
+                        attributes: ['fullName']
+                    }
+                ]
             }
         ],
         order: [['scheduled_time', 'DESC']]
