@@ -30,6 +30,45 @@ module.exports.createServiceCatalog = async (req, res) => {
     }
 };
 
+module.exports.previewImportServiceCatalog = async (req, res) => {
+    try {
+        if (!req.file || !req.file.buffer) {
+            return res.status(400).json({ message: "Vui lòng tải lên file Excel hoặc CSV" });
+        }
+
+        const result = await serviceCatalog.previewImportServiceCatalog(req.file.buffer);
+        return res.status(200).json({
+            message: "Đọc file thành công",
+            data: result,
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            message: error.message || "Internal server error",
+            errors: error.errors || [],
+        });
+    }
+};
+
+module.exports.confirmImportServiceCatalog = async (req, res) => {
+    try {
+        const { servicesList } = req.body;
+        if (!servicesList || !Array.isArray(servicesList)) {
+            return res.status(400).json({ message: "Dữ liệu không hợp lệ" });
+        }
+        
+        const result = await serviceCatalog.confirmImportServiceCatalog(servicesList);
+        return res.status(200).json({
+            message: "Nhập danh sách dịch vụ thành công",
+            data: result,
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            message: error.message || "Internal server error",
+            errors: error.errors || [],
+        });
+    }
+};
+
 module.exports.getServiceCatalog = async (req, res) => {
     try {
         const validation = viewServiceCatalogSchema.safeParse(req.query);

@@ -87,6 +87,11 @@ module.exports.getServiceHistory = async (userId) => {
         attributes: ["id", "payment_status", "amount", "payment_method"],
       },
       {
+        model: db.Feedback,
+        as: "feedback",
+        attributes: ["id", "rating"],
+      },
+      {
         model: db.Task,
         as: "tasks",
         attributes: ["id"],

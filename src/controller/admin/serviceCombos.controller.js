@@ -31,12 +31,13 @@ module.exports.searchServiceCombos = async (req, res) => {
 
 module.exports.createServiceCombo = async (req, res) => {
   try {
-    const { combo_name, description, serviceCatalogIds, is_active } = req.body;
+    const { combo_name, description, serviceCatalogIds, is_active, discount_percentage } = req.body;
     const validation = createServiceComboSchema.safeParse({
       combo_name,
       description,
       serviceCatalogIds,
       is_active,
+      discount_percentage,
     });
 
     if (!validation.success) {
@@ -48,6 +49,7 @@ module.exports.createServiceCombo = async (req, res) => {
       validation.data.description,
       validation.data.serviceCatalogIds,
       validation.data.is_active,
+      validation.data.discount_percentage
     );
 
     return res.status(201).json({ message: "Tạo gói dịch vụ thành công", data: result });
@@ -59,12 +61,13 @@ module.exports.createServiceCombo = async (req, res) => {
 module.exports.updateServiceCombo = async (req, res) => {
   try {
     const { id } = req.params;
-    const { combo_name, description, serviceCatalogIds, is_active } = req.body;
+    const { combo_name, description, serviceCatalogIds, is_active, discount_percentage } = req.body;
     const validation = updateServiceComboSchema.safeParse({
       combo_name,
       description,
       serviceCatalogIds,
       is_active,
+      discount_percentage,
     });
 
     if (!validation.success) {
@@ -77,6 +80,7 @@ module.exports.updateServiceCombo = async (req, res) => {
       validation.data.description,
       validation.data.serviceCatalogIds,
       validation.data.is_active,
+      validation.data.discount_percentage
     );
 
     return res.status(200).json({ message: "Cập nhật gói dịch vụ thành công", data: result });
