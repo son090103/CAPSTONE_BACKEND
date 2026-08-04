@@ -111,6 +111,19 @@ module.exports.createAppointment = async (userId, data) => {
         }
     }
 
+    // Nếu đặt lịch sửa chữa (REPAIR), tự động thêm dịch vụ kiểm tra (labor_price = 0)
+    if (data.booking_type && data.booking_type.includes('REPAIR')) {
+        const freeCheckupService = await db.Service_Catalog.findOne({
+            where: { labor_price: 0, is_active: true }
+        });
+        if (freeCheckupService) {
+            const existing = allDetails.find(d => d.catalog_id === freeCheckupService.id);
+            if (!existing) {
+                allDetails.push({ catalog_id: freeCheckupService.id });
+            }
+        }
+    }
+
     if (allDetails.length > 0) {
         for (const detail of allDetails) {
             if (detail.catalog_id) {
