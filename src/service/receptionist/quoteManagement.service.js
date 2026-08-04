@@ -559,6 +559,70 @@ module.exports.getPaymentSummaryByServiceOrder = async (serviceOrderId) => {
   };
 };
 
+// Hóa đơn tổng hợp khi trả xe: gộp toàn bộ hạng mục (dịch vụ + phụ tùng) từ TẤT CẢ báo giá
+// đã duyệt của lệnh sửa chữa, kèm thông tin khách hàng/xe - chỉ để xem/in, không xử lý thanh toán.
+module.exports.getServiceOrderInvoice = async (serviceOrderId) => {
+  const serviceOrder = await Service_Order.findByPk(serviceOrderId, {
+    attributes: ["id", "status", "entry_time", "actual_finish_time", "exit_time"],
+    include: [
+      {
+        model: Vehicles,
+        as: "vehicle",
+        attributes: ["id", "license_plate", "color"],
+        include: [
+          { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+          {
+            model: Customers,
+            as: "customer",
+            attributes: ["id", "name", "phone"],
+            include: [{ model: Users, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+          },
+        ],
+      },
+    ],
+  });
+  if (!serviceOrder) {
+    throw { status: 404, message: "Không tìm thấy lệnh sửa chữa" };
+  }
+
+  const quotations = await Quotation.findAll({
+    attributes: ["id", "total_amount", "deposit_amount", "deposit_paid_at", "approved_at", "createdAt"],
+    where: { status: "APPROVED" },
+    include: [
+      { model: Tasks, as: "task", attributes: ["id"], where: { service_order_id: serviceOrderId }, required: true },
+      {
+        model: QuotationDetail,
+        as: "items",
+        attributes: ["id", "quantity", "unit_price", "repair_price", "amount", "custom_item_name"],
+        include: [
+          {
+            model: Issues,
+            as: "issue",
+            attributes: ["id", "error_description"],
+            include: [{ model: Components, as: "component", attributes: ["id", "name"] }],
+          },
+          { model: SparePart, as: "sparePart", attributes: ["id", "name", "sku"] },
+          { model: Service_Catalog, as: "service_catalog", attributes: ["id", "service_name"] },
+        ],
+      },
+    ],
+    order: [["createdAt", "ASC"]],
+  });
+
+  const items = quotations.flatMap((q) => q.items);
+  const grandTotal = quotations.reduce((sum, q) => sum + Number(q.total_amount), 0);
+  const totalDeposit = quotations.reduce((sum, q) => sum + Number(q.deposit_amount || 0), 0);
+
+  return {
+    serviceOrder,
+    quotationIds: quotations.map((q) => q.id),
+    items,
+    grandTotal,
+    totalDeposit,
+    remainingAmount: grandTotal - totalDeposit,
+  };
+};
+
 module.exports.getQuoteHistory = async () => {
   const result = await Quotation.findAll({
     attributes: [
@@ -587,7 +651,7 @@ module.exports.getQuoteHistory = async () => {
           {
             model: Service_Order,
             as: "serviceOrder",
-            attributes: ["id"],
+            attributes: ["id", "symptoms"],
             include: [
               {
                 model: Vehicles,
@@ -674,6 +738,98 @@ module.exports.getQuoteHistory = async () => {
     ],
   });
   return result;
+};
+
+module.exports.getQuotationById = async (id) => {
+  const quotation = await Quotation.findByPk(id, {
+    attributes: [
+      "id",
+      "total_amount",
+      "deposit_amount",
+      "deposit_paid_at",
+      "status",
+      "note",
+      "approval_method",
+      "approved_at",
+      "createdAt",
+    ],
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id"],
+        include: [
+          {
+            model: Service_Order,
+            as: "serviceOrder",
+            attributes: ["id"],
+            include: [
+              {
+                model: Vehicles,
+                as: "vehicle",
+                attributes: ["id", "color", "license_plate"],
+                include: [
+                  {
+                    model: Vehicle_Models,
+                    as: "model",
+                    attributes: ["id", "model_name"],
+                  },
+                  {
+                    model: Customers,
+                    as: "customer",
+                    attributes: ["id", "name", "phone"],
+                    include: [
+                      {
+                        model: Users,
+                        as: "user",
+                        attributes: ["id", "fullName", "phoneNumber"],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        model: QuotationDetail,
+        as: "items",
+        attributes: ["id", "quantity", "unit_price", "repair_price", "amount", "custom_item_name", "status"],
+        include: [
+          {
+            model: Issues,
+            as: "issue",
+            attributes: ["id", "error_description", "note"],
+            include: [
+              {
+                model: Components,
+                as: "component",
+                attributes: ["id", "name", "parent_id"],
+                include: [
+                  { model: Components, as: "parent", attributes: ["id", "name"] },
+                ],
+              },
+            ],
+          },
+          {
+            model: SparePart,
+            as: "sparePart",
+            attributes: ["id", "name", "sku"],
+          },
+          {
+            model: Service_Catalog,
+            as: "service_catalog",
+            attributes: ["id", "service_name"],
+          },
+        ],
+      },
+    ],
+  });
+  if (!quotation) {
+    throw { status: 404, message: "Không tìm thấy báo giá" };
+  }
+  return quotation;
 };
 
 module.exports.approveQuotationByOTP = async (id, idToken) => {

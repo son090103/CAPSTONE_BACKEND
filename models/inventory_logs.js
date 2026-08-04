@@ -84,6 +84,14 @@ module.exports = (sequelize, DataTypes) => {
     proof_image_url: {
       type: DataTypes.STRING(500),
       allowNull: true
+    },
+    requested_technician_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    signature_method: {
+      type: DataTypes.STRING(20),
+      allowNull: true
     }
   }, {
     sequelize,

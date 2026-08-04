@@ -52,10 +52,24 @@ const initPayment = async (req, res) => {
     }
 };
 
-
+const confirmPayment = async (req, res) => {
+    try {
+        const { orderId, amount, method } = req.body;
+        const receptionistId = res.locals.user?.id || null;
+        if (!orderId) {
+            return res.status(400).json({ success: false, message: "Missing orderId" });
+        }
+        const result = await paymentService.confirmPayment(orderId, amount, method || 'VIETQR', receptionistId);
+        return res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        console.error("❌ [Confirm Payment] Lỗi:", error);
+        return res.status(500).json({ success: false, message: "Internal server error" });
+    }
+};
 
 module.exports = {
     sepayWebhook,
     checkPaymentStatus,
     initPayment,
+    confirmPayment,
 };

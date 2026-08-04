@@ -13,3 +13,19 @@ module.exports.getRepairProgress = async (req, res) => {
     });
   }
 };
+
+module.exports.getServiceHistory = async (req, res) => {
+  try {
+    const userId = res.locals.user.id;
+    const result = await serviceHistoryAndTrackingService.getServiceHistory(userId);
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Internal server error",
+    });
+  }
+};

@@ -6,6 +6,11 @@ const { notifyRole } = require("../../util/notification.util");
 
 const getQuotationInclude = (customerId) => [
   {
+    model: db.User,
+    as: "creator",
+    attributes: ["id", "fullName"],
+  },
+  {
     model: db.Task,
     as: "task",
     attributes: ["id", "type", "service_order_id"],
@@ -33,6 +38,13 @@ const getQuotationInclude = (customerId) => [
                 model: db.Customers,
                 as: "customer",
                 attributes: ["id", "name", "phone"],
+                include: [
+                  {
+                    model: db.User,
+                    as: "user",
+                    attributes: ["id", "fullName", "phoneNumber"],
+                  },
+                ],
               },
             ],
           },
@@ -276,6 +288,28 @@ module.exports.rejectQuotation = async (userId, quotationId, reason) => {
     },
   );
 
+  return quotation;
+};
+
+module.exports.getQuotationById = async (userId, quotationId) => {
+  const customer = await getCustomerOrThrow(userId);
+  const quotation = await Quotation.findByPk(quotationId, {
+    attributes: [
+      "id",
+      "total_amount",
+      "deposit_amount",
+      "deposit_paid_at",
+      "status",
+      "approval_method",
+      "note",
+      "approved_at",
+      "createdAt",
+    ],
+    include: getQuotationInclude(customer.id),
+  });
+  if (!quotation) {
+    throw { status: 404, message: "Báo giá không tồn tại" };
+  }
   return quotation;
 };
 

@@ -237,10 +237,12 @@ const resolveStartStatus = async (task) => {
   if (!quotationItem || !quotationItem.issue_id) {
     return "IN_PROGRESS";
   }
+  // Luồng xuất kho: thủ kho duyệt -> WAITING_SIGNATURE (chờ KTV ký) -> EXPORTED (đã ký xong).
+  // Chỉ coi là "đủ hàng" khi đã EXPORTED (đã ký) - RECEIVED giữ để tương thích dữ liệu cũ.
   const needsPart = await db.Quotation_Details.findOne({
     where: {
       issue_id: quotationItem.issue_id,
-      status: { [Op.ne]: "RECEIVED" },
+      status: { [Op.notIn]: ["EXPORTED", "RECEIVED"] },
       [Op.or]: [
         { spare_part_id: { [Op.ne]: null } },
         { custom_item_name: { [Op.ne]: null } },
@@ -473,7 +475,10 @@ module.exports.createIssueReports = async (
   }));
   const issuesRecords = await Issues.bulkCreate(records);
   await task.update({ status: "COMPLETED" });
-  await taskAssignment.update({ status: "COMPLETED" });
+  await taskAssignment.update({
+    status: "COMPLETED",
+    actual_end_time: new Date(),
+  });
   await Service_Order.update(
     { status: "PENDING_QUOTATION" },
     { where: { id: task.service_order_id } },
@@ -1269,16 +1274,12 @@ module.exports.getCompletedTasks = async (technicianId) => {
 };
 
 
-module.exports.confirmReceivedParts = async (
-  serviceOrderId,
-  technicianId,
-  fileBuffer,
-) => {
-  if (!fileBuffer) {
-    throw { status: 400, message: "Vui lòng chụp ảnh phụ tùng khi nhận hàng." };
-  }
-
-  const assignment = await Task_Assignments.findOne({
+// Danh sách phụ tùng (đã có trong báo giá đã duyệt, thuộc chính Task này) mà KTV có thể
+// yêu cầu xuất kho - chỉ lấy các dòng còn PENDING (chưa yêu cầu/xuất).
+// Lấy issue_id của TẤT CẢ Task mà KTV này phụ trách trong 1 service order - dùng làm phạm vi
+// gộp yêu cầu xuất kho chung (1 nút duy nhất cho cả lệnh sửa chữa, không tách theo từng Task).
+const getIssueIdsForTechnicianInServiceOrder = async (serviceOrderId, technicianId) => {
+  const assignments = await Task_Assignments.findAll({
     where: { technician_id: technicianId },
     include: [
       {
@@ -1286,100 +1287,83 @@ module.exports.confirmReceivedParts = async (
         as: "task",
         attributes: ["id"],
         where: { service_order_id: serviceOrderId },
-      },
-    ],
-  });
-  if (!assignment) {
-    throw {
-      status: 403,
-      message: "Bạn không phụ trách công việc thuộc lệnh sửa chữa này.",
-    };
-  }
-
-  const logs = await db.Inventory_Logs.findAll({
-    where: {
-      service_order_id: serviceOrderId,
-      type: "OUT",
-      received_by: null,
-    },
-  });
-  if (logs.length === 0) {
-    throw {
-      status: 404,
-      message: "Không có phụ tùng nào đang chờ xác nhận nhận hàng.",
-    };
-  }
-
-  const uploadResult = await uploadToCloudinary(fileBuffer, "inventory-receipts");
-  const now = new Date();
-  const receiptCodes = [...new Set(logs.map((log) => log.receipt_code))];
-  await db.Inventory_Logs.update(
-    {
-      received_by: technicianId,
-      received_at: now,
-      proof_image_url: uploadResult.secure_url,
-    },
-    {
-      where: {
-        service_order_id: serviceOrderId,
-        type: "OUT",
-        received_by: null,
-      },
-    },
-  );
-
-  const partIds = [...new Set(logs.map((log) => log.part_id))];
-  const detailsToReceive = await db.Quotation_Details.findAll({
-    where: { spare_part_id: partIds, status: "EXPORTED" },
-    include: [
-      {
-        model: db.Quotations,
-        as: "quotation",
-        attributes: ["id"],
         required: true,
         include: [
-          {
-            model: Tasks,
-            as: "task",
-            attributes: ["id"],
-            required: true,
-            where: { service_order_id: serviceOrderId },
-          },
+          { model: db.Quotation_Details, as: "quotationItem", attributes: ["id", "issue_id"] },
         ],
       },
     ],
   });
-  await db.Quotation_Details.update(
-    { status: "RECEIVED" },
-    { where: { id: detailsToReceive.map((d) => d.id) } },
-  );
+  if (assignments.length === 0) {
+    throw { status: 403, message: "Bạn không phụ trách công việc nào thuộc lệnh sửa chữa này." };
+  }
+  return [
+    ...new Set(
+      assignments
+        .map((a) => a.task?.quotationItem?.issue_id)
+        .filter(Boolean),
+    ),
+  ];
+};
 
-  const waitingTasks = await Tasks.findAll({
-    where: { service_order_id: serviceOrderId, status: "WAITING_STOCK" },
-    include: [{ model: Task_Assignments, as: "assignments" }],
+module.exports.getRequestablePartsForServiceOrder = async (serviceOrderId, technicianId) => {
+  const issueIds = await getIssueIdsForTechnicianInServiceOrder(serviceOrderId, technicianId);
+  if (issueIds.length === 0) {
+    return [];
+  }
+  return db.Quotation_Details.findAll({
+    where: {
+      issue_id: issueIds,
+      spare_part_id: { [Op.ne]: null },
+      status: "PENDING",
+    },
+    attributes: ["id", "quantity", "unit_price", "amount"],
+    include: [
+      { model: db.Spare_Parts, as: "sparePart", attributes: ["id", "sku", "name", "brand", "stock_quantity"] },
+    ],
   });
-  for (const task of waitingTasks) {
-    const startStatus = await resolveStartStatus(task);
-    if (startStatus === "IN_PROGRESS") {
-      task.status = "IN_PROGRESS";
-      await task.save();
-      for (const asg of task.assignments || []) {
-        if (asg.status === "WAITING_STOCK") {
-          asg.status = "IN_PROGRESS";
-          if (!asg.actual_start_time) {
-            asg.actual_start_time = now;
-          }
-          await asg.save();
-        }
-      }
-    }
+};
+
+// Kỹ thuật viên gửi yêu cầu xuất kho cho các dòng phụ tùng đã chọn (có thể thuộc nhiều Task
+// khác nhau trong cùng lệnh sửa chữa mà chính KTV này phụ trách) - thủ kho sẽ duyệt sau.
+module.exports.requestExportParts = async (serviceOrderId, technicianId, detailIds) => {
+  const issueIds = await getIssueIdsForTechnicianInServiceOrder(serviceOrderId, technicianId);
+  if (issueIds.length === 0) {
+    throw { status: 400, message: "Không tìm thấy hạng mục báo giá nào để yêu cầu xuất kho." };
   }
 
-  return {
-    receipt_codes: receiptCodes,
-    received_at: now,
-    proof_image_url: uploadResult.secure_url,
-  };
+  const items = await db.Quotation_Details.findAll({
+    where: {
+      id: detailIds,
+      issue_id: issueIds,
+      spare_part_id: { [Op.ne]: null },
+      status: "PENDING",
+    },
+  });
+  if (items.length !== detailIds.length) {
+    throw {
+      status: 400,
+      message: "Có dòng không hợp lệ, đã yêu cầu, hoặc không thuộc các công việc bạn phụ trách.",
+    };
+  }
+  await db.Quotation_Details.update(
+    { status: "REQUESTED", requested_by: technicianId },
+    { where: { id: detailIds } },
+  );
+
+  await notifyRole(
+    "INVENTORY_MANAGER",
+    {
+      title: "Yêu cầu xuất kho mới",
+      content: `Kỹ thuật viên yêu cầu xuất ${items.length} phụ tùng cho lệnh sửa chữa #${serviceOrderId}.`,
+      notificationType: "SERVICE_ORDER",
+      referenceId: serviceOrderId,
+    },
+    "new_notification",
+    { type: "PARTS_EXPORT_REQUESTED", serviceOrderId },
+  );
+
+  return { requested_count: items.length };
 };
 
 const PAUSE_STATUSES = ["PAUSED", "WAITING_STOCK"];

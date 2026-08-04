@@ -6,6 +6,7 @@ const notificationController = require("../../controller/receptionist/notificati
 const searchController = require("../../controller/receptionist/search.controller");
 const quoteManagementController = require("./../../controller/receptionist/quoteManagement.controller");
 const technicianController = require("../../controller/receptionist/technician.controller");
+const chatController = require("../../controller/chat/chat.controller");
 
 router.get("/issues", quoteManagementController.getIssueReports);
 router.get("/issues/additional", quoteManagementController.getAdditionalIssueReports);
@@ -37,11 +38,19 @@ router.get("/notifications/unread-count", notificationController.getUnreadCount)
 router.get("/notification/:id", notificationController.getNotificationById)
 router.put("/notification/:id/read", notificationController.markAsRead)
 
+router.get("/quotation/:id", quoteManagementController.getQuotationById);
 router.patch("/quotation/:id/approve-otp", quoteManagementController.approveQuoteByOTP);
 // lấy ra toàn bộ technician làm hôm nay 
 router.get("/technicians/working-today", technicianController.getTechniciansWorkingToday);
 
 // Phân công technician cho 1 yêu cầu cứu hộ
 router.post("/rescue/assign", technicianController.assignRescueTechnician);
+
+router.get("/chat/conversations", chatController.getConversationsForReception);
+router.get("/chat/conversations/:id", chatController.getConversationDetailForReception);
+router.post("/chat/conversations/:id/claim", chatController.claimConversation);
+router.post("/chat/conversations/:id/unclaim", chatController.unclaimConversation);
+router.post("/chat/conversations/:id/message", chatController.sendMessageAsReceptionist);
+router.get("/chat/unread-count", chatController.getUnreadCountForReception);
 
 module.exports = router;
