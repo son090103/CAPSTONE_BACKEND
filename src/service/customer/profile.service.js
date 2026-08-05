@@ -13,6 +13,11 @@ module.exports.getProfile = async (userId) => {
                 model: db.Role,
                 as: "role",
             },
+            {
+                model: db.Customers,
+                as: "customerProfile",
+                attributes: ["id", "membership_tier", "loyalty_points"],
+            },
         ],
     });
 
