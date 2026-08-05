@@ -16,7 +16,6 @@ const Users = db.User;
 const Vehicles = db.Vehicles;
 const Vehicle_Models = db.Vehicle_Models;
 const Service_Catalog = db.Service_Catalog;
-const admin = require("../../config/firebase.config");
 const { normalizeVnPhone } = require("../../util/phone.util");
 const { notifyRole, notifyUser } = require("../../util/notification.util");
 
@@ -772,22 +771,7 @@ module.exports.getQuotationById = async (id) => {
   return quotation;
 };
 
-module.exports.approveQuotationByOTP = async (id, idToken) => {
-  let decoded;
-  try {
-    console.log("Firebase Admin project:", admin.app().options.projectId);
-    decoded = await admin.auth().verifyIdToken(idToken);
-  } catch (e) {
-    console.error("VERIFY FIREBASE TOKEN ERROR:", {
-      code: e.code,
-      message: e.message,
-    });
-    throw { status: 401, message: "Xác thực OTP không hợp lệ" };
-  }
-  const verifiedPhone = decoded.phone_number;
-  if (!verifiedPhone) {
-    throw { status: 400, message: "Không lấy được số điện thoại từ xác thực" };
-  }
+module.exports.approveQuotation = async (id) => {
   return await db.sequelize.transaction(async (t) => {
     const quotation = await Quotation.findByPk(id, {
       include: [
@@ -817,35 +801,6 @@ module.exports.approveQuotationByOTP = async (id, idToken) => {
         message: "Không tìm thấy công việc kiểm tra của báo giá",
       };
     }
-    const serviceOrder = await Service_Order.findByPk(
-      inspectionTask.service_order_id,
-      {
-        attributes: ["id"],
-        include: [
-          {
-            model: Vehicles,
-            as: "vehicle",
-            attributes: ["id"],
-            include: [
-              { model: Customers, as: "customer", attributes: ["id", "phone"] },
-            ],
-          },
-        ],
-        transaction: t,
-      },
-    );
-    const customerPhone = serviceOrder?.vehicle?.customer?.phone;
-    if (!customerPhone) {
-      throw { status: 400, message: "Không tìm thấy số điện thoại khách hàng" };
-    }
-    const normVerified = await normalizeVnPhone(verifiedPhone);
-    const normCustomer = await normalizeVnPhone(customerPhone);
-    if (normVerified !== normCustomer) {
-      throw {
-        status: 403,
-        message: "Số điện thoại xác thực không khớp với khách hàng của báo giá",
-      };
-    }
     const serviceItems = quotation.items.filter((item) => item.service_id);
     if (serviceItems.length > 0) {
       await Task.bulkCreate(
@@ -873,8 +828,7 @@ module.exports.approveQuotationByOTP = async (id, idToken) => {
       {
         status: "APPROVED",
         approved_at: new Date(),
-        approval_method: "OTP",
-        approved_phone: verifiedPhone,
+        approval_method: "RECEPTIONIST",
       },
       { transaction: t },
     );
@@ -884,7 +838,7 @@ module.exports.approveQuotationByOTP = async (id, idToken) => {
       "INVENTORY_MANAGER",
       {
         title: "Có báo giá cần xuất phụ tùng",
-        content: `Báo giá #${quotation.id} đã được duyệt (OTP), cần chuẩn bị xuất phụ tùng.`,
+        content: `Báo giá #${quotation.id} đã được duyệt (lễ tân), cần chuẩn bị xuất phụ tùng.`,
         notificationType: "SERVICE_ORDER",
         referenceId: quotation.id,
       },

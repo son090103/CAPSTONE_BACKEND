@@ -124,16 +124,13 @@ module.exports.getExportReceiptDetail = async (req, res) => {
 module.exports.signExportReceipt = async (req, res) => {
   try {
     const { receiptCode } = req.params;
-    const { signatureImage } = req.body;
-    if (!signatureImage || typeof signatureImage !== "string") {
-      return res.status(400).json({ message: "Vui lòng ký tên để xác nhận nhận phụ tùng" });
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ message: "Vui lòng chụp ảnh xác nhận nhận phụ tùng" });
     }
-    const base64Data = signatureImage.replace(/^data:image\/\w+;base64,/, "");
-    const signatureBuffer = Buffer.from(base64Data, "base64");
-    const result = await ImportAndExportManagement.signExportReceipt(receiptCode, signatureBuffer);
+    const result = await ImportAndExportManagement.signExportReceipt(receiptCode, req.file.buffer);
     return res.status(200).json({
       success: true,
-      message: "Ký nhận phụ tùng thành công",
+      message: "Xác nhận nhận phụ tùng thành công",
       data: result,
     });
   } catch (error) {

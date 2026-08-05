@@ -15,7 +15,7 @@ router.get("/export-requests", importAndExportManagementController.getExportRequ
 router.post("/export-requests/approve", importAndExportManagementController.approveExportRequest);
 router.post("/export-requests/reject", importAndExportManagementController.rejectExportRequest);
 router.get("/export-requests/:receiptCode/receipt", importAndExportManagementController.getExportReceiptDetail);
-router.post("/export-requests/:receiptCode/sign", importAndExportManagementController.signExportReceipt);
+router.post("/export-requests/:receiptCode/sign", upload.single("proofPhoto"), importAndExportManagementController.signExportReceipt);
 
 router.get("/export", importAndExportManagementController.viewExportHistory);
 router.get("/export/:receiptCode", importAndExportManagementController.viewExportDetail);

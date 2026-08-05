@@ -341,11 +341,16 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
     const uniqueTaskCatalogs = [...new Set(taskCatalogs)];
 
     if (uniqueTaskCatalogs.length === 0) {
-      // Khách sửa chữa chưa rõ bệnh -> Tạo một Task kiểm tra xe chung
+      // Khách sửa chữa chưa rõ bệnh -> Tạo một Task kiểm tra xe chung,
+      // gắn vào dịch vụ đặc biệt "Kiểm tra hoặc sửa chữa" (labor_price = 0)
+      const inspectionCatalog = await db.Service_Catalog.findOne({
+        where: { labor_price: 0 },
+        transaction,
+      });
       const task = await db.Task.create(
         {
           service_order_id: serviceOrder.id,
-          service_catalog_id: null,
+          service_catalog_id: inspectionCatalog ? inspectionCatalog.id : null,
           type: "INSPECTION",
           status: "PENDING",
         },
@@ -366,12 +371,17 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         );
       }
     } else {
+      const freeCheckupCatalog = await db.Service_Catalog.findOne({
+        where: { labor_price: 0 },
+        transaction,
+      });
       for (const catalogId of uniqueTaskCatalogs) {
+        const isFreeCheckup = freeCheckupCatalog && catalogId === freeCheckupCatalog.id;
         const task = await db.Task.create(
           {
             service_order_id: serviceOrder.id,
             service_catalog_id: catalogId,
-            type: "REPAIR",
+            type: isFreeCheckup ? "INSPECTION" : "REPAIR",
             status: "PENDING",
           },
           { transaction },

@@ -39,7 +39,7 @@ router.get("/notification/:id", notificationController.getNotificationById)
 router.put("/notification/:id/read", notificationController.markAsRead)
 
 router.get("/quotation/:id", quoteManagementController.getQuotationById);
-router.patch("/quotation/:id/approve-otp", quoteManagementController.approveQuoteByOTP);
+router.patch("/quotation/:id/approve", quoteManagementController.approveQuote);
 // lấy ra toàn bộ technician làm hôm nay 
 router.get("/technicians/working-today", technicianController.getTechniciansWorkingToday);
 

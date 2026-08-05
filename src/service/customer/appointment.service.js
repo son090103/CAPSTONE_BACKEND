@@ -327,7 +327,7 @@ module.exports.createAppointment = async (userId, data) => {
                 current_odo: 0,
                 status: 'INSPECTING',
                 entry_time: appointment.scheduled_time,
-                symptoms: "Chưa cập nhật"
+                symptoms: data.notes || "Chưa cập nhật"
             }, { transaction });
 
             const { findAvailableTechnicians } = require("../../util/findAvailableTechnicians.util");
@@ -385,11 +385,16 @@ module.exports.createAppointment = async (userId, data) => {
                     status: 'ASSIGNED'
                 }, { transaction });
             } else {
+                const freeCheckupCatalog = await db.Service_Catalog.findOne({
+                    where: { labor_price: 0 },
+                    transaction
+                });
                 for (const catalogId of uniqueTaskCatalogs) {
+                    const isFreeCheckup = freeCheckupCatalog && catalogId === freeCheckupCatalog.id;
                     const task = await db.Task.create({
                         service_order_id: serviceOrder.id,
                         service_catalog_id: catalogId,
-                        type: "REPAIR",
+                        type: isFreeCheckup ? "INSPECTION" : "REPAIR",
                         status: 'PENDING'
                     }, { transaction });
 

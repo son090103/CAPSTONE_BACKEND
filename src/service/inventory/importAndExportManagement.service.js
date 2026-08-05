@@ -447,8 +447,8 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
     await notifyUser(
       result.technicianId,
       {
-        title: "Phụ tùng đã xuất kho - cần ký xác nhận",
-        content: `Kho đã chuẩn bị ${result.exported_count} phụ tùng (phiếu ${result.receipt_code}). Vui lòng ký tên tại quầy kho để hoàn tất.`,
+        title: "Phụ tùng đã xuất kho - cần xác nhận nhận hàng",
+        content: `Kho đã chuẩn bị ${result.exported_count} phụ tùng (phiếu ${result.receipt_code}). Vui lòng ký nhận trên phiếu giấy tại quầy kho để hoàn tất.`,
         notificationType: "SERVICE_ORDER",
         referenceId: result.serviceOrderId,
       },
@@ -536,9 +536,9 @@ module.exports.getExportReceiptDetail = async (receiptCode) => {
 // Kỹ thuật viên vẽ chữ ký tay ngay trên màn hình thủ kho để xác nhận đã nhận phụ tùng.
 // Đây là bước hoàn tất cuối cùng - không cần thao tác gì thêm sau đó (không có bước
 // "xác nhận nhận hàng" riêng như luồng cũ).
-module.exports.signExportReceipt = async (receiptCode, signatureBuffer) => {
-  if (!signatureBuffer) {
-    throw { status: 400, message: "Vui lòng ký tên để xác nhận nhận phụ tùng" };
+module.exports.signExportReceipt = async (receiptCode, proofPhotoBuffer) => {
+  if (!proofPhotoBuffer) {
+    throw { status: 400, message: "Vui lòng chụp ảnh xác nhận nhận phụ tùng" };
   }
   return await db.sequelize.transaction(async (t) => {
     const logs = await InventoryLog.findAll({
@@ -551,7 +551,7 @@ module.exports.signExportReceipt = async (receiptCode, signatureBuffer) => {
     }
     const firstLog = logs[0];
     if (firstLog.received_by) {
-      throw { status: 400, message: "Phiếu xuất kho này đã được ký nhận" };
+      throw { status: 400, message: "Phiếu xuất kho này đã được xác nhận nhận hàng" };
     }
     const technicianId = firstLog.requested_technician_id;
     if (!technicianId) {
@@ -560,13 +560,13 @@ module.exports.signExportReceipt = async (receiptCode, signatureBuffer) => {
     const serviceOrderId = firstLog.service_order_id;
     const partIds = logs.map((log) => log.part_id);
 
-    const uploadResult = await uploadToCloudinary(signatureBuffer, "inventory-signatures");
+    const uploadResult = await uploadToCloudinary(proofPhotoBuffer, "inventory-proof-photos");
     const now = new Date();
     await InventoryLog.update(
       {
         received_by: technicianId,
         received_at: now,
-        signature_method: "SIGNATURE",
+        signature_method: "PHOTO",
         proof_image_url: uploadResult.secure_url,
       },
       { where: { receipt_code: receiptCode, type: "OUT" }, transaction: t },
@@ -595,8 +595,8 @@ module.exports.signExportReceipt = async (receiptCode, signatureBuffer) => {
     await notifyUser(
       result.technicianId,
       {
-        title: "Đã ký nhận phụ tùng thành công",
-        content: `Bạn đã ký nhận ${result.part_count} phụ tùng theo phiếu ${result.receipt_code}.`,
+        title: "Đã xác nhận nhận phụ tùng thành công",
+        content: `Bạn đã nhận ${result.part_count} phụ tùng theo phiếu ${result.receipt_code}.`,
         notificationType: "SERVICE_ORDER",
         referenceId: result.serviceOrderId,
       },
