@@ -16,6 +16,12 @@ module.exports = (sequelize, DataTypes) => {
         otherKey: 'catalog_id',
         as: 'catalogs'
       });
+      if (models.Service_Combo_Translations) {
+        this.hasMany(models.Service_Combo_Translations, {
+          foreignKey: 'serviceComboId',
+          as: 'translations'
+        });
+      }
     }
   }
   Service_Combo.init({
@@ -34,6 +40,12 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
       defaultValue: true,
       comment: 'Trạng thái hoạt động'
+    },
+    discount_percentage: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 10,
+      comment: 'Phần trăm giảm giá của gói combo (mặc định 10%)'
     }
   }, {
     sequelize,

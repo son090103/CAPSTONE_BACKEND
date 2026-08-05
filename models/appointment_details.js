@@ -25,6 +25,8 @@ module.exports = (sequelize, DataTypes) => {
           as: 'combo'
         });
       }
+
+
     }
   }
 

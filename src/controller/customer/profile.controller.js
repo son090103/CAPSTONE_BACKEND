@@ -167,3 +167,43 @@ module.exports.changePassword = async (req, res) => {
         });
     }
 };
+
+module.exports.updateLocation = async (req, res) => {
+    try {
+        const requestUser = res.locals.user;
+        if (!requestUser) {
+            return res.status(401).json({ message: "Unauthorized" });
+        }
+
+        let { latitude, longitude } = req.body;
+        
+        // Chuyển đổi sang số thực nếu có giá trị
+        if (latitude !== null && latitude !== undefined) {
+            latitude = parseFloat(latitude);
+            if (isNaN(latitude)) {
+                return res.status(400).json({ message: "Latitude phải là kiểu số hợp lệ" });
+            }
+        }
+        
+        if (longitude !== null && longitude !== undefined) {
+            longitude = parseFloat(longitude);
+            if (isNaN(longitude)) {
+                return res.status(400).json({ message: "Longitude phải là kiểu số hợp lệ" });
+            }
+        }
+
+        const result = await profileService.updateLocation(
+            requestUser.id,
+            latitude,
+            longitude
+        );
+
+        return res.status(200).json({
+            message: result.message,
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            message: error.message || "Internal server error",
+        });
+    }
+};

@@ -1,6 +1,6 @@
 const { success } = require("zod");
 const taskAssignmentService = require("../../service/technician/taskAssignment.service");
-const {createIssueReportSchema} = require ("../../validation/technician/taskAssignment.validation");
+const { createIssueReportSchema, createAdditionalIssueSchema } = require("../../validation/technician/taskAssignment.validation");
 
 module.exports.getTaskAssignment = async (req, res) => {
   try {
@@ -69,11 +69,18 @@ module.exports.startTask = async (req, res) => {
 
 module.exports.completeTask = async (req, res) => {
   try {
-    const { taskAssignmentId } = req.body;
+    const { taskAssignmentId, content } = req.body;
     const technicianId = res.locals.user.id;
+    if (!taskAssignmentId) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng truyền taskAssignmentId vào body."
+      });
+    }
     const result = await taskAssignmentService.completeTask(
       taskAssignmentId,
       technicianId,
+      content,
     );
     return res.status(200).json({
       success: true,
@@ -89,19 +96,65 @@ module.exports.completeTask = async (req, res) => {
   }
 };
 
-module.exports.getAllComponents = async (req,res) => {
-    try {
-        const result = await taskAssignmentService.getAllComponents();
-        return res.status(200).json({success: true, data: result})
-    } catch (error) {
-        return res.status(500).json({success: false, message: error.message})
+module.exports.startRescueTask = async (req, res) => {
+  try {
+    const { rescueId, status } = req.body;
+    const technicianId = res.locals.user.id;
+
+    if (!rescueId) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng truyền rescueId vào body."
+      });
     }
+
+    const result = await taskAssignmentService.startRescueTask(rescueId, technicianId, status);
+
+    return res.status(200).json({
+      success: true,
+      message: "Cập nhật trạng thái nhiệm vụ cứu hộ thành công.",
+      data: result
+    });
+  } catch (error) {
+    console.error("Error in startRescueTask:", error);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi khi nhận/bắt đầu nhiệm vụ cứu hộ."
+    });
+  }
+};
+
+module.exports.getMyActiveRescue = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const result = await taskAssignmentService.getMyActiveRescue(technicianId);
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    console.error("Error in getMyActiveRescue:", error);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi khi lấy nhiệm vụ cứu hộ."
+    });
+  }
+};
+
+module.exports.getAllComponents = async (req, res) => {
+  try {
+    const result = await taskAssignmentService.getAllComponents();
+    return res.status(200).json({ success: true, data: result })
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message })
+  }
 };
 
 module.exports.createIssuesReport = async (req, res) => {
   try {
     const technicianId = res.locals.user.id;
-    const {task_id, note, issues} = req.body;
+    const { task_id, note, issues } = req.body;
     const validation = createIssueReportSchema.safeParse({ task_id, issues, note, technicianId });
     if (!validation.success) {
       return res.status(400).json({
@@ -110,10 +163,70 @@ module.exports.createIssuesReport = async (req, res) => {
     };
     const result = await taskAssignmentService.createIssueReports(task_id, issues, note, technicianId);
     return res.status(201).json({
-        success: true,
-        message: "Tạo báo cáo kiểm tra thành công",
-        data: result,
+      success: true,
+      message: "Tạo báo cáo kiểm tra thành công",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi.",
+    });
+  }
+};
+
+module.exports.getRequestableParts = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const { serviceOrderId } = req.params;
+    const result = await taskAssignmentService.getRequestablePartsForServiceOrder(serviceOrderId, technicianId);
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi.",
+    });
+  }
+};
+
+module.exports.requestExportParts = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const { serviceOrderId } = req.params;
+    const { detailIds } = req.body;
+    if (!Array.isArray(detailIds) || detailIds.length === 0) {
+      return res.status(400).json({ success: false, message: "Vui lòng chọn ít nhất 1 phụ tùng cần xuất." });
+    }
+    const result = await taskAssignmentService.requestExportParts(serviceOrderId, technicianId, detailIds);
+    return res.status(200).json({
+      success: true,
+      message: "Đã gửi yêu cầu xuất kho",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi.",
+    });
+  }
+};
+
+module.exports.reportAdditionalIssue = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const { task_id, note, issues } = req.body;
+    const validation = createAdditionalIssueSchema.safeParse({ task_id, issues, note, technicianId });
+    if (!validation.success) {
+      return res.status(400).json({
+        message: validation.error.issues[0].message,
       });
+    };
+    const result = await taskAssignmentService.reportAdditionalIssue(task_id, issues, note, technicianId);
+    return res.status(201).json({
+      success: true,
+      message: "Ghi nhận lỗi phát sinh thành công",
+      data: result,
+    });
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
@@ -126,11 +239,204 @@ module.exports.getIssuesReportHistory = async (req, res) => {
   try {
     const technicianId = res.locals.user.id;
     const result = await taskAssignmentService.getIssuesReportHistory(technicianId);
-    return res.status(200).json({success: true,data: result});
+    return res.status(200).json({ success: true, data: result });
   } catch (error) {
     return res.status(error.status || 500).json({
       success: false,
       message: error.message || "Đã xảy ra lỗi.",
     });
-    }
+  }
 }
+
+module.exports.getAllDiagnostics = async (req, res) => {
+  try {
+    const result = await taskAssignmentService.getAllDiagnostics();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.searchDiagnostics = async (req, res) => {
+  try {
+    const { keyword } = req.query;
+    const result = await taskAssignmentService.searchDiagnostics(keyword);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.filterDiagnostics = async (req, res) => {
+  try {
+    const { makeId, modelId } = req.query;
+    const result = await taskAssignmentService.filterDiagnostics({
+      makeId: makeId ? Number(makeId) : null,
+      modelId: modelId ? Number(modelId) : null,
+    });
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getMakes = async (req, res) => {
+  try {
+    const result = await taskAssignmentService.getMakes();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getModels = async (req, res) => {
+  try {
+    const { makeId } = req.query;
+    const result = await taskAssignmentService.getModels(
+      makeId ? Number(makeId) : null,
+    );
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.aiSuggestCauses = async (req, res) => {
+  try {
+    const { symptom, modelName } = req.body;
+    const result = await taskAssignmentService.aiSuggestCauses(symptom, modelName);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    console.error("AI SUGGEST ERROR:", error);
+    return res.status(error.status || 500).json({
+      message: error.message || "Lỗi khi gọi AI gợi ý",
+    });
+  }
+};
+
+module.exports.getRepairHistory = async (req, res) => {
+  try {
+    const result = await taskAssignmentService.getRepairHistory();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.filterRepairHistory = async (req, res) => {
+  try {
+    const { makeId, modelId } = req.query;
+    const result = await taskAssignmentService.filterRepairHistory({
+      makeId: makeId ? Number(makeId) : null,
+      modelId: modelId ? Number(modelId) : null,
+    });
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.searchRepairHistory = async (req, res) => {
+  try {
+    const { keyword } = req.query;
+    const result = await taskAssignmentService.searchRepairHistory(keyword);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getAllInspectionHistory = async (req, res) => {
+  try {
+    const result = await taskAssignmentService.getAllInspectionHistory();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.searchInspectionHistory = async (req, res) => {
+  try {
+    const result = await taskAssignmentService.searchInspectionHistory(
+      req.query.keyword,
+    );
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.filterInspectionHistory = async (req, res) => {
+  try {
+    const { makeId, modelId } = req.query;
+    const result = await taskAssignmentService.filterInspectionHistory({
+      makeId: makeId ? Number(makeId) : null,
+      modelId: modelId ? Number(modelId) : null,
+    });
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getMyCompletedTasks = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const result = await taskAssignmentService.getCompletedTasks(technicianId);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.pauseTask = async (req, res) => {
+  try {
+    const { taskAssignmentId, reason, status } = req.body;
+    const technicianId = res.locals.user.id;
+    if (!taskAssignmentId) {
+      return res.status(400).json({ message: "Vui lòng truyền taskAssignmentId vào body." });
+    }
+    const result = await taskAssignmentService.pauseTask(taskAssignmentId, technicianId, reason, status);
+    return res.status(200).json({ message: "Đã tạm dừng công việc.", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({ message: error.message || "Internal server error" });
+  }
+};
+
+module.exports.resumeTask = async (req, res) => {
+  try {
+    const { taskAssignmentId } = req.body;
+    const technicianId = res.locals.user.id;
+    if (!taskAssignmentId) {
+      return res.status(400).json({ message: "Vui lòng truyền taskAssignmentId vào body." });
+    }
+    const result = await taskAssignmentService.resumeTask(taskAssignmentId, technicianId);
+    return res.status(200).json({ message: "Đã tiếp tục công việc.", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({ message: error.message || "Internal server error" });
+  }
+};

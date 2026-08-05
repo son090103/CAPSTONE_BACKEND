@@ -12,6 +12,12 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: "component_id",
         as: "component",
       });
+      if (models.Quotation_Details) {
+        this.hasMany(models.Quotation_Details, {
+          foreignKey: "issue_id",
+          as: "quotationDetails",
+        });
+      }
     }
   }
   Vehicle_Issues.init(

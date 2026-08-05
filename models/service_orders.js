@@ -38,6 +38,20 @@ module.exports = (sequelize, DataTypes) => {
           as: "tasks",
         });
       }
+
+      if (models.Booking_Payments) {
+        this.hasOne(models.Booking_Payments, {
+          foreignKey: "order_id",
+          as: "payment"
+        });
+      }
+
+      if (models.Feedback) {
+        this.hasOne(models.Feedback, {
+          foreignKey: "service_order_id",
+          as: "feedback"
+        });
+      }
     }
   }
   Service_Orders.init(
@@ -68,16 +82,29 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: "INSPECTING",
       },
+      symptoms: {
+        type: DataTypes.TEXT,
+        allowNull: false
+      },
       entry_time: {
         type: DataTypes.DATE,
         allowNull: false,
         defaultValue: DataTypes.NOW,
       },
+      symptoms: {
+        type: DataTypes.TEXT,
+        allowNull: false,
+      },
       estimated_finish_time: DataTypes.DATE,
       promised_finish_time: DataTypes.DATE,
       actual_finish_time: DataTypes.DATE,
       exit_time: DataTypes.DATE,
+      early_closure_reason: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
     },
+
     {
       sequelize,
       modelName: "Service_Orders",

@@ -30,6 +30,18 @@ module.exports = (sequelize, DataTypes) => {
           as: "assignments",
         });
       }
+      if (models.Repair_Notes) {
+        Task.hasMany(models.Repair_Notes, {
+          foreignKey: "task_id",
+          as: "repairNotes",
+        });
+      }
+      if (models.Quotations) {
+        Task.hasMany(models.Quotations, {
+          foreignKey: "task_id",
+          as: "quotations",
+        });
+      }
     }
   }
 
@@ -60,7 +72,7 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: "PENDING",
         validate: {
-          isIn: [["PENDING", "IN_PROGRESS", "COMPLETED"]],
+          isIn: [["PENDING", "IN_PROGRESS", "PAUSED", "WAITING_STOCK", "COMPLETED", "CANCELLED"]],
         },
       },
     },

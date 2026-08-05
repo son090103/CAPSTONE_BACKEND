@@ -239,6 +239,21 @@ module.exports.processRefreshToken = async (refreshToken) => {
   }
 };
 
+module.exports.logout = async (userId) => {
+  const user = await User.findByPk(userId);
+  if (!user) {
+    throw {
+      status: 404,
+      message: "Không tìm thấy tài khoản",
+    };
+  }
+  user.refreshToken = null;
+  await user.save();
+  return {
+    message: "Đăng xuất thành công",
+  };
+};
+
 module.exports.forgotPassword = async (phone, password, confirmPassword) => {
   const normalizePhone = await normalizeVnPhone(phone);
   if (!normalizePhone) {

@@ -1,0 +1,10 @@
+const xlsx = require('xlsx');
+const fs = require('fs');
+const path = require('path');
+const csvPath = path.join(process.cwd(), 'temp_service_import.csv');
+const buf = fs.readFileSync(csvPath);
+const wb = xlsx.read(buf, { type: 'buffer' });
+const rows = xlsx.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+console.log(JSON.stringify(rows, null, 2));
+console.log('sheet names:', wb.SheetNames);
+console.log('raw sheet data', wb.Sheets[wb.SheetNames[0]] ? Object.keys(wb.Sheets[wb.SheetNames[0]]).slice(0,20) : []);

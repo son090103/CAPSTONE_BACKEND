@@ -13,6 +13,10 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'category_id',
         as: 'category'
       });
+      this.hasMany(models.Service_Catalog, {
+        foreignKey: 'spare_part_id',
+        as: 'services'
+      });
     }
   }
   Spare_Parts.init({

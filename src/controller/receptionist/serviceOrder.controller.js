@@ -35,7 +35,23 @@ module.exports.createServiceOrder = async (req, res) => {
 module.exports.getServiceOrders = async (req, res) => {
     try {
         const result = await serviceOrderService.getServiceOrders();
-        
+
+        return res.status(200).json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+module.exports.getServiceOrdersAwaitingPayment = async (req, res) => {
+    try {
+        const result = await serviceOrderService.getServiceOrdersAwaitingPayment();
+
         return res.status(200).json({
             success: true,
             data: result
@@ -68,7 +84,7 @@ module.exports.getServiceOrderById = async (req, res) => {
 module.exports.updateServiceOrderOdo = async (req, res) => {
     try {
         const { id } = req.params;
-        const { current_odo } = req.body;
+        const { current_odo, symptoms } = req.body;
 
         if (current_odo === undefined || current_odo === null) {
             return res.status(400).json({
@@ -77,11 +93,56 @@ module.exports.updateServiceOrderOdo = async (req, res) => {
             });
         }
 
-        const result = await serviceOrderService.updateServiceOrderOdo(id, current_odo);
+        const result = await serviceOrderService.updateServiceOrderOdo(id, current_odo, symptoms);
         
         return res.status(200).json({
             success: true,
             message: "Cập nhật số km tiếp nhận thành công",
+            data: result
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+module.exports.getCompleteServiceOrder = async (req,res) => {
+    try {
+        const result = await serviceOrderService.getCompleteServiceOrder();
+        return res.status(200).json({success: true, data: result});
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+}
+
+module.exports.closeServiceOrderEarly = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const receptionistId = res.locals.user.id;
+        const { completedQuotationItemIds, reason } = req.body;
+
+        if (!reason || !reason.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: "Vui lòng nhập lý do đóng sớm lệnh sửa chữa"
+            });
+        }
+
+        const result = await serviceOrderService.closeServiceOrderEarly(
+            id,
+            completedQuotationItemIds,
+            reason.trim(),
+            receptionistId
+        );
+
+        return res.status(200).json({
+            success: true,
+            message: "Đóng sớm lệnh sửa chữa thành công",
             data: result
         });
     } catch (error) {

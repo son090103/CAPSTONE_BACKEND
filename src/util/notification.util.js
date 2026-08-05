@@ -7,36 +7,65 @@ const db = require("../../models");
  * @param {string} socketEvent Tên sự kiện socket (Mặc định: 'new_notification')
  * @param {Object} socketPayload Dữ liệu gửi qua socket
  */
-const notifyRole = async (roleCode, notificationData, socketEvent = 'new_notification', socketPayload = {}) => {
+const notifyRole = async (
+  roleCode,
+  notificationData,
+  socketEvent = "new_notification",
+  socketPayload = {},
+) => {
+  try {
+    const role = await db.Role.findOne({ where: { roleCode } });
+    if (role) {
+      const users = await db.User.findAll({ where: { roleId: role.id } });
+
+      const notificationsToCreate = users.map((user) => ({
+        recipientId: user.id,
+        title: notificationData.title,
+        content: notificationData.content,
+        notificationType: notificationData.notificationType,
+        referenceId: notificationData.referenceId || null,
+        link: notificationData.link || null,
+        isRead: false,
+        priority: notificationData.priority || "NORMAL",
+      }));
+
+      if (notificationsToCreate.length > 0) {
+        await db.Notification.bulkCreate(notificationsToCreate);
+      }
+    }
+
+    if (global._io) {
+      global._io.to(`role-${roleCode}`).emit(socketEvent, socketPayload);
+    }
+  } catch (error) {
+    console.error(`Lỗi khi tạo thông báo cho role ${roleCode}:`, error);
+  }
+};
+const notifyUser = async (userId, notificationData, socketEvent = 'new_notification', socketPayload = {}) => {
     try {
-        const role = await db.Role.findOne({ where: { roleCode } });
-        if (role) {
-            const users = await db.User.findAll({ where: { roleId: role.id } });
+        await db.Notification.create({
+            recipientId: userId,
+            title: notificationData.title,
+            content: notificationData.content,
+            notificationType: notificationData.notificationType,
+            referenceId: notificationData.referenceId || null,
+            link: notificationData.link || null,
+            isRead: false,
+            priority: notificationData.priority || 'NORMAL'
+        });
 
-            const notificationsToCreate = users.map(user => ({
-                recipientId: user.id,
-                title: notificationData.title,
-                content: notificationData.content,
-                notificationType: notificationData.notificationType,
-                referenceId: notificationData.referenceId || null,
-                link: notificationData.link || null,
-                isRead: false,
-                priority: notificationData.priority || 'NORMAL'
-            }));
-
-            if (notificationsToCreate.length > 0) {
-                await db.Notification.bulkCreate(notificationsToCreate);
-            }
-        }
+        console.log(`[notifyUser] Đã tạo Notification DB cho user ${userId}`);
 
         if (global._io) {
-            global._io.emit(socketEvent, socketPayload);
+            global._io.to(`user-${userId}`).emit(socketEvent, socketPayload);
+            console.log(`[notifyUser] Đã emit socket '${socketEvent}' tới room user-${userId}`);
+        } else {
+            console.log(`[notifyUser] global._io KHÔNG tồn tại, không emit được socket`);
         }
     } catch (error) {
-        console.error(`Lỗi khi tạo thông báo cho role ${roleCode}:`, error);
+        console.error(`Lỗi khi tạo thông báo cho user ${userId}:`, error);
     }
 };
-
 module.exports = {
-    notifyRole
+  notifyRole,notifyUser
 };

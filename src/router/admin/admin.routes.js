@@ -8,8 +8,10 @@ const staffController = require("../../controller/admin/manageStaff.controller")
 const controllerServiceBays = require("../../controller/admin/serviceBays.controller");
 const warrantyController = require("../../controller/admin/warrantyPolicies.controller");
 const warrantyUpload = require("../../util/warrantyUpload.util");
+const excelUpload = require("../../util/excelUpload.util");
 const manageCustomer = require("./../../controller/admin/manageCustomer.controller");
 const shiftController = require('../../controller/admin/shift.controller');
+const statisticsController = require("../../controller/admin/statistics.controller");
 
 router.get("/role", staffController.getRoles);
 router.get("/staff", staffController.getStaffList);
@@ -18,6 +20,8 @@ router.put("/staff/:userId", staffController.updateStaff);
 
 router.get("/service-categories", serviceCatalogController.getServiceCategories);
 router.post("/service-catalog", serviceCatalogController.createServiceCatalog);
+router.post("/service-catalog/import/preview", excelUpload.single("file"), serviceCatalogController.previewImportServiceCatalog);
+router.post("/service-catalog/import/confirm", serviceCatalogController.confirmImportServiceCatalog);
 router.get("/service-catalog", serviceCatalogController.getServiceCatalog);
 router.get("/service-catalog/search", serviceCatalogController.searchServiceCatalog);
 router.patch("/service-catalog/:id", serviceCatalogController.updateServiceCatalog);
@@ -61,5 +65,9 @@ router.get("/shift/templates", shiftController.getShiftTemplates);
 router.post("/shift/templates/assign", shiftController.assignShift);
 router.post("/shift/templates/auto-generate", shiftController.autoGenerateSchedule);
 router.post("/shift/templates/confirm", shiftController.confirmSchedule);
+
+// Thống kê báo cáo doanh thu
+router.get("/statistics/advanced", statisticsController.getAdvancedStats);
+router.get("/statistics", statisticsController.getDashboardStats);
 
 module.exports = router;
