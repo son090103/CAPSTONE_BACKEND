@@ -97,7 +97,7 @@ module.exports.getCustomer = async (searchParams = "") => {
                 {
                     model: db.Rescue_Requests,
                     as: 'rescueRequests',
-                    required: false,
+                    required: true,
                     include: [
                         {
                             model: db.User,

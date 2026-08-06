@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const db = require('module');
+const db = require('../../models');
 const Pricing_Rule = db.Pricing_Rules;
 const { Op } = require('sequelize');
 // job này để cấu hình theo ngày tự động mà mình đã set up giảm giá các kiểu trên web 

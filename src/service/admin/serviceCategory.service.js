@@ -2,7 +2,7 @@
 
 const db = require("../../../models");
 const { Op } = require("sequelize");
-const { HfInference } = require('@huggingface/inference');
+const { getHfInference } = require("../../util/huggingFace.util");
 
 
 
@@ -25,7 +25,8 @@ async function applyTranslations(t, categoryId, categoryName) {
     return;
   }
   
-  const hf = new HfInference(hfToken.trim()); // trim() để xoá khoảng trắng nếu có
+  const hf = getHfInference(hfToken);
+  if (!hf) return;
 
   const languages = await db.Languages.findAll({
     where: { id: 'en' }, // Only translate to English for now

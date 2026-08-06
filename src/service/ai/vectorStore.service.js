@@ -1,12 +1,12 @@
-const { Pinecone } = require("@pinecone-database/pinecone");
-const { HuggingFaceInferenceEmbeddings } = require("@langchain/community/embeddings/hf");
-const { PineconeStore } = require("@langchain/pinecone");
 const db = require("../../../models"); // Truy cập DB
 
 let vectorStore = null;
 
 const getVectorStore = async () => {
   if (!vectorStore) {
+    const { Pinecone } = require("@pinecone-database/pinecone");
+    const { HuggingFaceInferenceEmbeddings } = require("@langchain/community/embeddings/hf");
+    const { PineconeStore } = require("@langchain/pinecone");
     const pinecone = new Pinecone({
       apiKey: process.env.PINECONE_API_KEY
     });
@@ -51,6 +51,7 @@ const searchKnowledge = async (query) => {
 
 const syncAllServicesToPinecone = async () => {
   try {
+    const { Pinecone } = require("@pinecone-database/pinecone");
     console.log("[Background Job] Bắt đầu đồng bộ Dịch vụ lên Pinecone...");
     const services = await db.Service_Catalog.findAll({
       where: { is_active: true }

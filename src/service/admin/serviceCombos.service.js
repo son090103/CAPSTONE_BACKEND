@@ -1,6 +1,6 @@
 const { Op } = require("sequelize");
 const db = require("../../../models");
-const { HfInference } = require('@huggingface/inference');
+const { getHfInference } = require("../../util/huggingFace.util");
 
 const Service_Combo = db.Service_Combo;
 const Service_Catalog = db.Service_Catalog;
@@ -29,7 +29,8 @@ async function applyComboTranslations(t, comboId, comboName, description) {
     return;
   }
 
-  const hf = new HfInference(hfToken.trim());
+  const hf = getHfInference(hfToken);
+  if (!hf) return;
 
   const languages = await db.Languages.findAll({
     where: { id: 'en' },

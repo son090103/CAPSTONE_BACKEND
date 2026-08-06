@@ -16,17 +16,6 @@ module.exports.getIssueReports = async (req, res) => {
   }
 };
 
-module.exports.getAdditionalIssueReports = async (req, res) => {
-  try {
-    const result = await quoteManagementService.getAdditionalIssuesReports();
-    return res.status(200).json({ success: true, data: result });
-  } catch (error) {
-    return res
-      .status(error.status || 500)
-      .json({ message: error.message || "Internal server error" });
-  }
-};
-
 module.exports.getPaymentSummary = async (req, res) => {
   try {
     const { serviceOrderId } = req.params;
@@ -152,15 +141,11 @@ module.exports.getQuotationById = async (req, res) => {
   }
 };
 
-module.exports.approveQuoteByOTP = async (req, res) => {
+module.exports.approveQuote = async (req, res) => {
   try {
     const { id } = req.params;
-    const { idToken } = req.body;
-    if (!idToken) {
-      return res.status(400).json({ message: "Thiếu mã xác thực OTP" });
-    }
-    await quoteManagementService.approveQuotationByOTP(id, idToken);
-    return res.status(200).json({ message: "Duyệt báo giá qua OTP thành công" });
+    await quoteManagementService.approveQuotation(id);
+    return res.status(200).json({ message: "Duyệt báo giá thành công" });
   } catch (error) {
     return res.status(error.status || 500).json({
       message: error.message || "Internal server error",

@@ -327,7 +327,7 @@ module.exports.createAppointment = async (userId, data) => {
                 current_odo: 0,
                 status: 'INSPECTING',
                 entry_time: appointment.scheduled_time,
-                symptoms: "Chưa cập nhật"
+                symptoms: data.notes || "Chưa cập nhật"
             }, { transaction });
 
             const { findAvailableTechnicians } = require("../../util/findAvailableTechnicians.util");
@@ -385,11 +385,94 @@ module.exports.createAppointment = async (userId, data) => {
                     status: 'ASSIGNED'
                 }, { transaction });
             } else {
+                const freeCheckupCatalog = await db.Service_Catalog.findOne({
+                    where: { labor_price: 0 },
+                    transaction
+                });
+
+                // Tạo một Inspection Task đại diện để gắn kết báo giá
+                const inspectionTask = await db.Task.create({
+                    service_order_id: serviceOrder.id,
+                    service_catalog_id: null,
+                    type: "INSPECTION",
+                    status: 'COMPLETED'
+                }, { transaction });
+
+                await db.Task_Assignment.create({
+                    task_id: inspectionTask.id,
+                    technician_id: technicianId,
+                    bay_id: bayId,
+                    role_in_task: 'LEAD',
+                    contribution_percent: 100,
+                    status: 'COMPLETED'
+                }, { transaction });
+
+                // Tạo báo giá tự động đã APPROVED
+                const quotation = await db.Quotations.create({
+                    task_id: inspectionTask.id,
+                    created_by: receptionistId,
+                    total_amount: 0,
+                    deposit_amount: 0,
+                    status: "APPROVED",
+                    approved_at: new Date(),
+                    approval_method: "CUSTOMER_WEB"
+                }, { transaction });
+
+                let totalQuotationAmount = 0;
+
                 for (const catalogId of uniqueTaskCatalogs) {
+                    const isFreeCheckup = freeCheckupCatalog && catalogId === freeCheckupCatalog.id;
+
+                    const catalog = await db.Service_Catalog.findByPk(catalogId, {
+                        include: [{ model: db.Spare_Parts, as: 'sparePart' }],
+                        transaction
+                    });
+
+                    if (!catalog) continue;
+
+                    // Tạo issue để nhóm dịch vụ và phụ tùng liên quan
+                    const issue = await db.Vehicle_Issues.create({
+                        task_id: inspectionTask.id,
+                        error_description: `Đặt trước dịch vụ: ${catalog.service_name}`,
+                        status: 'RESOLVED'
+                    }, { transaction });
+
+                    // Tạo dòng Dịch vụ (Tiền công)
+                    const serviceDetail = await db.Quotation_Details.create({
+                        quotation_id: quotation.id,
+                        issue_id: issue.id,
+                        service_id: catalogId,
+                        quantity: 1,
+                        unit_price: 0,
+                        repair_price: catalog.labor_price || 0,
+                        amount: catalog.labor_price || 0,
+                        status: 'PENDING'
+                    }, { transaction });
+
+                    let partAmount = 0;
+                    // Tạo dòng Phụ tùng đi kèm (nếu có)
+                    if (catalog.spare_part_id && catalog.sparePart) {
+                        partAmount = Number(catalog.sparePart.retail_price || 0);
+                        await db.Quotation_Details.create({
+                            quotation_id: quotation.id,
+                            issue_id: issue.id,
+                            spare_part_id: catalog.spare_part_id,
+                            quantity: 1,
+                            unit_price: partAmount,
+                            repair_price: 0,
+                            amount: partAmount,
+                            status: 'PENDING'
+                        }, { transaction });
+                    }
+
+                    totalQuotationAmount += Number(catalog.labor_price || 0) + partAmount;
+
+                    // Tạo Task REPAIR thực thi và gắn với dòng dịch vụ vừa tạo
                     const task = await db.Task.create({
                         service_order_id: serviceOrder.id,
+                        quotation_item_id: serviceDetail.id,
                         service_catalog_id: catalogId,
-                        type: "REPAIR",
+                        type: isFreeCheckup ? "INSPECTION" : "REPAIR",
                         status: 'PENDING'
                     }, { transaction });
 
@@ -402,6 +485,12 @@ module.exports.createAppointment = async (userId, data) => {
                         status: 'ASSIGNED'
                     }, { transaction });
                 }
+
+                // Cập nhật tổng tiền cho Quotation
+                await quotation.update({ total_amount: totalQuotationAmount }, { transaction });
+
+                // Cập nhật Service Order sang trạng thái IN_PROGRESS vì đã được duyệt & bắt đầu làm việc
+                await serviceOrder.update({ status: 'IN_PROGRESS' }, { transaction });
             }
 
             if (data.payment_amount && Number(data.payment_amount) > 0) {

@@ -45,7 +45,7 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING(50),
       allowNull: false,
       validate: {
-        isIn: [['SERVICE_ORDER', 'APPOINTMENT', 'PROMOTION', 'SYSTEM', 'INVOICE']]
+        isIn: [['SERVICE_ORDER', 'APPOINTMENT', 'PROMOTION', 'SYSTEM', 'INVOICE', 'MAINTENANCE_REMINDER']]
       }
     },
     referenceId: {

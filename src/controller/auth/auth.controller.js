@@ -129,6 +129,23 @@ module.exports.changePassword = async (req, res) => {
   }
 };
 
+module.exports.logout = async (req, res) => {
+  try {
+    const requestUser = res.locals.user;
+    if (!requestUser) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+    const result = await authService.logout(requestUser.id);
+    return res.status(200).json({
+      message: result.message,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
 module.exports.forgotPassword = async (req, res) => {
   try {
     const { phone, password, confirmPassword } = req.body;

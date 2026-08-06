@@ -99,6 +99,10 @@ module.exports = (sequelize, DataTypes) => {
       promised_finish_time: DataTypes.DATE,
       actual_finish_time: DataTypes.DATE,
       exit_time: DataTypes.DATE,
+      early_closure_reason: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
       points_redeemed: {
         type: DataTypes.INTEGER,
         allowNull: false,

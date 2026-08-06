@@ -16,8 +16,9 @@ module.exports.getProfile = async (userId) => {
             {
                 model: db.Customers,
                 as: "customerProfile",
+                attributes: ["id", "membership_tier", "loyalty_points"],
                 required: false
-            }
+            },
         ],
     });
 
