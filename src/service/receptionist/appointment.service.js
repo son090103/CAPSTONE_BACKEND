@@ -112,7 +112,40 @@ module.exports.getCustomer = async (searchParams = "") => {
         });
 
         const registeredCustomers = customers.filter(c => c.user_id !== null);
-        const guestCustomers = customers.filter(c => c.user_id === null);
+        
+        // Tìm các cuốc cứu hộ chưa được liên kết customer_id (dữ liệu cũ hoặc chưa tạo kịp hồ sơ)
+        let unlinkedWhere = { customer_id: null };
+        if (searchParams) {
+            unlinkedWhere.phone_number = { [db.Sequelize.Op.like]: `%${searchParams}%` };
+        }
+        const unlinkedRescues = await db.Rescue_Requests.findAll({
+            where: unlinkedWhere,
+            include: [
+                {
+                    model: db.User,
+                    as: 'technician',
+                    attributes: ['id', 'fullName', 'phoneNumber', 'avatar'],
+                    required: false
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        const mockGuestCustomers = unlinkedRescues.map(rescue => {
+            return {
+                id: `guest-rescue-${rescue.id}`,
+                name: "Khách vãng lai",
+                phone: rescue.phone_number || "Không có SĐT",
+                user: null,
+                createdAt: rescue.createdAt,
+                rescueRequests: [rescue]
+            };
+        });
+
+        const guestCustomers = [
+            ...customers.filter(c => c.user_id === null),
+            ...mockGuestCustomers
+        ];
 
         return {
             registeredCustomers,

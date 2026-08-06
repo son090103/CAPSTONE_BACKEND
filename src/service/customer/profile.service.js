@@ -1,7 +1,7 @@
 const db = require("../../../models");
 const User = db.User;
 const { Op } = require("sequelize");
-const { notifyRole } = require("../../util/notification.util");
+const { notifyRole, notifyUser } = require("../../util/notification.util");
 const { normalizeVnPhone } = require("../../util/phone.util");
 const bcrypt = require("bcrypt");
 module.exports.getProfile = async (userId) => {
@@ -26,7 +26,38 @@ module.exports.getProfile = async (userId) => {
         throw { status: 404, message: "Người dùng không tồn tại" };
     }
 
-    return user;
+    const customer = await db.Customers.findOne({
+        where: { user_id: userId },
+        attributes: ["id"],
+    });
+
+    let vehicles = [];
+    if (customer) {
+        vehicles = await db.Vehicles.findAll({
+            where: { customer_id: customer.id },
+            include: [
+                {
+                    model: db.Vehicle_Models,
+                    as: "model",
+                    attributes: ["id", "model_name", "vehicle_type"],
+                    include: [
+                        {
+                            model: db.Vehicle_Makes,
+                            as: "make",
+                            attributes: ["id", "make_name"],
+                        },
+                    ],
+                },
+            ],
+            order: [["createdAt", "DESC"]],
+            attributes: ["id", "license_plate", "vin_number", "avg_daily_mileage", "year", "color", "createdAt", "updatedAt"],
+        });
+    }
+
+    const profileData = user.toJSON();
+    profileData.vehicles = vehicles;
+
+    return profileData;
 };
 
 
@@ -107,6 +138,8 @@ module.exports.updateLocation = async (userId, latitude, longitude) => {
     await user.save();
 
     // Đồng bộ toạ độ mới sang bảng Rescue_Requests nếu Khách hàng đang có cuốc cứu hộ chưa hoàn thành
+    let isNewRescueRequest = false;
+    let newRescueId = null;
     if (latitude !== undefined && longitude !== undefined) {
         const customer = await db.Customers.findOne({ where: { user_id: userId } });
         if (customer) {
@@ -124,12 +157,14 @@ module.exports.updateLocation = async (userId, latitude, longitude) => {
 
             // Tự động tạo 1 yêu cầu Cứu hộ PENDING nếu khách hàng chưa có yêu cầu nào đang chạy
             if (updatedRows === 0) {
-                await db.Rescue_Requests.create({
+                const newRescue = await db.Rescue_Requests.create({
                     customer_id: customer.id,
                     status: 'PENDING',
                     customer_lat: latitude,
                     customer_lng: longitude
                 });
+                isNewRescueRequest = true;
+                newRescueId = newRescue.id;
             }
         }
     }
@@ -143,6 +178,17 @@ module.exports.updateLocation = async (userId, latitude, longitude) => {
             priority: 'HIGH',
             link: '/reception/customers'
         }, 'new_notification', { message: `Khách hàng ${user.fullName || ''} đang yêu cầu cứu hộ khẩn cấp!` });
+
+        // Chỉ tự confirm lại cho khách khi đây là yêu cầu MỚI (PENDING lần đầu) — nếu họ chỉ đang
+        // cập nhật toạ độ của 1 rescue đã có (đã ASSIGNED/EN_ROUTE...) thì không cần báo lại "đã gửi".
+        if (isNewRescueRequest) {
+            await notifyUser(userId, {
+                title: "Yêu cầu cứu hộ đã được gửi",
+                content: "Yêu cầu cứu hộ khẩn cấp của bạn đã được gửi tới Gara, vui lòng đợi lễ tân tiếp nhận.",
+                notificationType: "SYSTEM",
+                priority: "HIGH",
+            }, "new_notification", { type: "RESCUE_REQUESTED", rescueId: newRescueId, status: "PENDING" });
+        }
 
         return { message: "Đã bật chia sẻ vị trí và thông báo cho bộ phận Lễ tân thành công" };
     }

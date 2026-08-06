@@ -45,6 +45,7 @@ router.get("/technicians/working-today", technicianController.getTechniciansWork
 
 // Phân công technician cho 1 yêu cầu cứu hộ
 router.post("/rescue/assign", technicianController.assignRescueTechnician);
+router.post("/rescue/create", technicianController.createRescueRequest);
 
 router.get("/chat/conversations", chatController.getConversationsForReception);
 router.get("/chat/conversations/:id", chatController.getConversationDetailForReception);

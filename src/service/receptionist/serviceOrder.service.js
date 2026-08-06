@@ -924,7 +924,17 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
   const transaction = await db.sequelize.transaction();
 
   try {
-    const serviceOrder = await Service_Order.findByPk(serviceOrderId, { transaction });
+    const serviceOrder = await Service_Order.findByPk(serviceOrderId, {
+      include: [
+        {
+          model: Vehicles,
+          as: "vehicle",
+          attributes: ["id"],
+          include: [{ model: Customers, as: "customer", attributes: ["id", "user_id"] }],
+        },
+      ],
+      transaction,
+    });
     if (!serviceOrder) {
       throw { status: 404, message: "Không tìm thấy lệnh sửa chữa" };
     }
@@ -948,29 +958,32 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
       throw { status: 400, message: "Lệnh sửa chữa chưa có báo giá nào được duyệt để đóng sớm" };
     }
 
-    const completedIdSet = new Set((completedQuotationItemIds || []).map((id) => Number(id)));
+    // completedQuotationItemIds giờ mang nghĩa "chắc chắn giữ lại, không hủy" (lễ tân xác nhận
+    // cùng kỹ thuật viên là hạng mục này không thể/không nên hủy — ví dụ đã lắp vào xe), KHÔNG
+    // còn nghĩa "đã hoàn thành". Task tương ứng các item được giữ lại GIỮ NGUYÊN status hiện tại,
+    // để kỹ thuật viên tự cập nhật qua đúng luồng làm việc bình thường của họ — hệ thống không
+    // tự ý gán COMPLETED thay họ.
+    const keepIdSet = new Set((completedQuotationItemIds || []).map((id) => Number(id)));
     const itemsToCancel = [];
     const quotationsAffected = new Map(); // quotation_id -> Quotation instance
 
     for (const quotation of approvedQuotations) {
       for (const item of quotation.items) {
-        // Item đã ở trạng thái xuất/nhận kho (EXPORTED/RECEIVED) coi như đã dùng thật —
-        // không được hủy dù không nằm trong danh sách "đã hoàn thành" lễ tân chọn.
-        const isAlreadyUsed = ["EXPORTED", "RECEIVED"].includes(item.status);
-        const isMarkedCompleted = completedIdSet.has(item.id);
+        const isMarkedKeep = keepIdSet.has(item.id);
 
-        if (!isMarkedCompleted && !isAlreadyUsed && item.status !== "CANCELLED") {
+        if (!isMarkedKeep && item.status !== "CANCELLED") {
           itemsToCancel.push(item);
         }
         quotationsAffected.set(quotation.id, quotation);
       }
     }
 
-    // Không chặn khi itemsToCancel rỗng — trường hợp lễ tân tick TẤT CẢ hạng mục (mọi thứ đã
-    // hoàn thành thật) vẫn là một lượt đóng sớm hợp lệ, chỉ là không có gì bị hủy cả.
+    // Không chặn khi itemsToCancel rỗng — trường hợp lễ tân tick TẤT CẢ hạng mục (mọi thứ đều
+    // giữ lại) vẫn là một lượt đóng sớm hợp lệ, chỉ là không có gì bị hủy cả.
 
-    // 1. Đánh dấu CANCELLED cho từng dòng báo giá chưa thực hiện
+    // 1. Đánh dấu CANCELLED cho từng dòng báo giá không được giữ lại
     const itemIds = itemsToCancel.map((i) => i.id);
+    let affectedTechnicianIds = [];
     if (itemIds.length > 0) {
       await QuotationDetail.update(
         { status: "CANCELLED" },
@@ -978,30 +991,44 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
       );
 
       // 2. Hủy các Task REPAIR tương ứng (mỗi item service tương ứng 1 Task qua quotation_item_id)
-      await Tasks.update(
-        { status: "CANCELLED" },
-        {
+      const cancelledTaskIds = (
+        await Tasks.findAll({
           where: { quotation_item_id: itemIds, status: ["PENDING", "IN_PROGRESS", "PAUSED", "WAITING_STOCK"] },
+          attributes: ["id"],
           transaction,
-        },
-      );
-    }
+        })
+      ).map((t) => t.id);
 
-    // 2b. Hoàn thành các Task REPAIR ứng với item được lễ tân tick "đã hoàn thành" nhưng Task
-    //     trên hệ thống chưa kịp cập nhật COMPLETED (đúng ý nghĩa của việc tick: KTV xác nhận
-    //     đã làm xong). Nếu bỏ qua bước này, Task treo ở PENDING/IN_PROGRESS mãi mãi dù đơn đã
-    //     đóng, chặn luôn nút thanh toán vì yêu cầu mọi Task phải COMPLETED/CANCELLED.
-    if (completedIdSet.size > 0) {
-      await Tasks.update(
-        { status: "COMPLETED" },
-        {
+      if (cancelledTaskIds.length > 0) {
+        await Tasks.update(
+          { status: "CANCELLED" },
+          { where: { id: cancelledTaskIds }, transaction },
+        );
+
+        // 2b. Hủy theo các Task_Assignment con của những Task vừa bị hủy — không để KTV vẫn
+        //     thấy việc này "đang active" trong danh sách công việc dù Task cha đã CANCELLED.
+        //     Lấy technician_id TRƯỚC khi update để còn báo cho họ biết dừng việc.
+        const cancelledAssignments = await Task_Assignment.findAll({
           where: {
-            quotation_item_id: [...completedIdSet],
-            status: ["PENDING", "IN_PROGRESS", "PAUSED", "WAITING_STOCK"],
+            task_id: cancelledTaskIds,
+            status: ["ASSIGNED", "IN_PROGRESS", "PAUSED", "WAITING_STOCK"],
           },
+          attributes: ["technician_id"],
           transaction,
-        },
-      );
+        });
+        affectedTechnicianIds = [...new Set(cancelledAssignments.map((a) => a.technician_id))];
+
+        await Task_Assignment.update(
+          { status: "CANCELLED" },
+          {
+            where: {
+              task_id: cancelledTaskIds,
+              status: ["ASSIGNED", "IN_PROGRESS", "PAUSED", "WAITING_STOCK"],
+            },
+            transaction,
+          },
+        );
+      }
     }
 
     // 3. KHÔNG đổi total_amount của Quotation — đây là con số khách đã duyệt (approved_at),
@@ -1032,6 +1059,39 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
     await serviceOrder.update(updatePayload, { transaction });
 
     await transaction.commit();
+
+    // Gửi thông báo SAU khi commit thành công, không giữ transaction chờ I/O thông báo.
+    const customerUserId = serviceOrder.vehicle?.customer?.user_id;
+    if (customerUserId) {
+      await notifyUser(
+        customerUserId,
+        {
+          title: "Lệnh sửa chữa đã đóng sớm",
+          content: reason
+            ? `Xưởng đã đóng sớm lệnh sửa chữa #${serviceOrderId} theo yêu cầu. Lý do: ${reason}`
+            : `Xưởng đã đóng sớm lệnh sửa chữa #${serviceOrderId} theo yêu cầu của bạn.`,
+          notificationType: "SERVICE_ORDER",
+          referenceId: serviceOrderId,
+        },
+        "new_notification",
+        { type: "SERVICE_ORDER_CLOSED_EARLY", serviceOrderId },
+      );
+    }
+    for (const technicianId of affectedTechnicianIds) {
+      await notifyUser(
+        technicianId,
+        {
+          title: "Công việc đã bị hủy do đóng đơn sớm",
+          content: reason
+            ? `Lệnh sửa chữa #${serviceOrderId} đã đóng sớm, một số công việc của bạn bị hủy. Lý do: ${reason}`
+            : `Lệnh sửa chữa #${serviceOrderId} đã đóng sớm, một số công việc của bạn bị hủy.`,
+          notificationType: "SERVICE_ORDER",
+          referenceId: serviceOrderId,
+        },
+        "new_notification",
+        { type: "TASK_CANCELLED_EARLY_CLOSURE", serviceOrderId },
+      );
+    }
 
     return {
       serviceOrderId,

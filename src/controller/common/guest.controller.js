@@ -138,39 +138,3 @@ module.exports.checkLicensePlate = async (req, res) => {
   }
 };
 
-module.exports.requestRescue = async (req, res) => {
-  try {
-    const { phone_number, latitude, longitude, distance_km, rescue_price, issue_description } = req.body;
-    
-    if (!phone_number) {
-      return res.status(400).json({
-        success: false,
-        message: "Vui lòng cung cấp số điện thoại."
-      });
-    }
-
-    if (latitude === undefined || longitude === undefined) {
-      return res.status(400).json({
-        success: false,
-        message: "Vui lòng cung cấp vị trí GPS."
-      });
-    }
-
-    const data = await guestService.requestRescue({
-      phone_number,
-      latitude: parseFloat(latitude),
-      longitude: parseFloat(longitude),
-      distance_km: distance_km ? parseFloat(distance_km) : null,
-      rescue_price: rescue_price ? parseFloat(rescue_price) : null,
-      issue_description
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "Yêu cầu cứu hộ khẩn cấp thành công.",
-      data
-    });
-  } catch (error) {
-    return sendError(res, error);
-  }
-};

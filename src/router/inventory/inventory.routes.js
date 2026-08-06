@@ -7,8 +7,9 @@ const sparePartCategoryManagementController = require("../../controller/inventor
 const supplierManagementController = require("../../controller/inventory/supplierManagement.controller");
 const importAndExportManagementController = require("../../controller/inventory/importAndExportManagement.controller");
 const notificationController = require("../../controller/inventory/notification.controller");
+const dashboardController = require("../../controller/inventory/dashboard.controller");
 
-
+router.get("/dashboard", dashboardController.getInventoryDashboard);
 router.post("/import/scan-invoice", upload.array("invoices"), importAndExportManagementController.scanInvoice);
 
 router.get("/export-requests", importAndExportManagementController.getExportRequests);

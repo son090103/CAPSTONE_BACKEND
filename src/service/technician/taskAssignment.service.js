@@ -657,7 +657,7 @@ module.exports.getIssuesReportHistory = async (technicianId) => {
   return issues;
 };
 
-module.exports.startRescueTask = async (rescueId, technicianId, newStatus) => {
+module.exports.startRescueTask = async (rescueId, technicianId, newStatus, technicianLat, technicianLng) => {
   const rescue = await db.Rescue_Requests.findByPk(rescueId, {
     include: [{ model: db.Customers, as: "customer" }],
   });
@@ -687,9 +687,44 @@ module.exports.startRescueTask = async (rescueId, technicianId, newStatus) => {
 
   await rescue.save();
 
-  if (rescue.status === 'COMPLETED') {
-    const technician = await db.User.findByPk(technicianId);
+  // Lúc bắt đầu di chuyển (EN_ROUTE), lưu GPS hiện tại của KTV vào User.latitude/longitude —
+  // dùng chung field đã có sẵn (giống cách customer share vị trí) để khách hàng tính đúng route
+  // xuất phát từ vị trí THẬT của KTV, không phải toạ độ Gara cố định.
+  if (rescue.status === "EN_ROUTE" && technicianLat != null && technicianLng != null) {
+    await db.User.update(
+      { latitude: technicianLat, longitude: technicianLng },
+      { where: { id: technicianId } },
+    );
+  }
 
+  const technician = await db.User.findByPk(technicianId, {
+    attributes: ["id", "fullName", "latitude", "longitude"],
+  });
+  const statusMessages = {
+    ACCEPTED: "Kỹ thuật viên đã xác nhận nhận cứu hộ của bạn.",
+    EN_ROUTE: "Kỹ thuật viên đang trên đường tới vị trí của bạn.",
+    ARRIVED: "Kỹ thuật viên đã tới nơi.",
+    COMPLETED: "Cứu hộ đã hoàn tất, xe đã được đưa về Gara.",
+  };
+
+  if (rescue.customer?.user_id && statusMessages[rescue.status]) {
+    await notifyUser(rescue.customer.user_id, {
+      title: "Cập nhật yêu cầu cứu hộ",
+      content: technician
+        ? `${statusMessages[rescue.status]} (KTV ${technician.fullName})`
+        : statusMessages[rescue.status],
+      notificationType: "SYSTEM",
+      priority: "HIGH",
+    }, "new_notification", {
+      type: "RESCUE_STATUS_UPDATED",
+      rescueId: rescue.id,
+      status: rescue.status,
+      technicianLat: technician?.latitude ?? null,
+      technicianLng: technician?.longitude ?? null,
+    });
+  }
+
+  if (rescue.status === 'COMPLETED') {
     // Clear customer coordinates
     if (rescue.customer && rescue.customer.user_id) {
       await db.User.update(
@@ -835,24 +870,19 @@ module.exports.getModels = async (makeId) => {
   });
 };
 
-// Bước 6 (Format AI Response): parse JSON thô từ Gemini và dựng lại thành text có cấu trúc rõ ràng cho FE hiển thị
 function formatAiCausesResponse(rawText) {
   const jsonMatch = rawText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    // AI không trả đúng JSON như yêu cầu -> fallback dùng nguyên văn bản
     return { causes: [], recommendations: [], formattedText: rawText.trim() };
   }
-
   let parsed;
   try {
     parsed = JSON.parse(jsonMatch[0]);
   } catch {
     return { causes: [], recommendations: [], formattedText: rawText.trim() };
   }
-
   const causes = Array.isArray(parsed.causes) ? parsed.causes : [];
   const recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
-
   const lines = [];
   if (causes.length > 0) {
     lines.push("Nguyên nhân khả dĩ:");
@@ -865,7 +895,6 @@ function formatAiCausesResponse(rawText) {
     lines.push("", "Khuyến nghị kiểm tra:");
     recommendations.forEach((r) => lines.push(`- ${r}`));
   }
-
   return {
     causes,
     recommendations,
