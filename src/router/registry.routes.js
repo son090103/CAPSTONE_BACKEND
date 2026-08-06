@@ -46,7 +46,7 @@ module.exports = [
     prefix: "/api/inventory",
     middlewares: [
       checkClient.authenticate,
-      checkClient.authorizeRoles(ROLES.INVENTORY_MANAGER, ROLES.ADMIN),
+      checkClient.authorizeRoles(ROLES.INVENTORY_MANAGER),
     ],
     router: inventoryRoutes
   },
