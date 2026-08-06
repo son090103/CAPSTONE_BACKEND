@@ -36,6 +36,14 @@ module.exports = (sequelize, DataTypes) => {
           as: 'appointmentDetails'
         });
       }
+
+      // 6. Một lịch hẹn có thể liên kết với một yêu cầu cứu hộ
+      if (models.Rescue_Requests) {
+        this.hasOne(models.Rescue_Requests, {
+          foreignKey: 'appointment_id',
+          as: 'rescueRequest'
+        });
+      }
     }
   }
   Appointments.init({

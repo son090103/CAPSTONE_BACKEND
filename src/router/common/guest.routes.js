@@ -21,5 +21,6 @@ router.get("/availability", configController.getAvailability);
 
 
 router.get("/check-license-plate", guestController.checkLicensePlate);
+router.post("/rescue", guestController.requestRescue);
 
 module.exports = router;

@@ -103,6 +103,16 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: true,
       },
+      points_redeemed: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      points_earned: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      }
     },
 
     {

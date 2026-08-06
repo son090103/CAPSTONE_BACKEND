@@ -274,11 +274,14 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       { transaction },
     );
 
-    // Cập nhật trạng thái Cứu hộ nếu có mã rescue_id được truyền vào
+    // Cập nhật trạng thái Cứu hộ và gắn appointment_id nếu có mã rescue_id được truyền vào
     if (data.rescue_id) {
       const rescueRequest = await db.Rescue_Requests.findByPk(data.rescue_id, { transaction });
-      if (rescueRequest && rescueRequest.status === 'COMPLETED') {
-        rescueRequest.status = 'SERVICE_CREATED';
+      if (rescueRequest) {
+        rescueRequest.appointment_id = actualAppointmentId;
+        if (rescueRequest.status === 'COMPLETED') {
+          rescueRequest.status = 'SERVICE_CREATED';
+        }
         await rescueRequest.save({ transaction });
       }
     }
@@ -570,12 +573,18 @@ module.exports.getServiceOrdersAwaitingPayment = async () => {
         },
       ],
     });
+    // Lấy phí cứu hộ nếu có liên kết qua appointment
+    const rescueRequest = order.appointment_id ? await db.Rescue_Requests.findOne({
+      where: { appointment_id: order.appointment_id }
+    }) : null;
+    const rescuePrice = rescueRequest ? Number(rescueRequest.rescue_price || 0) : 0;
+
     // grandTotal tính động từ các dòng chưa bị hủy (đóng sớm đơn) — KHÔNG đọc total_amount,
     // vì trường đó giữ nguyên giá trị gốc lúc khách duyệt, không bị ghi đè khi đóng sớm.
     const grandTotal = quotations.reduce(
       (sum, q) => sum + q.items.filter((i) => i.status !== "CANCELLED").reduce((s, i) => s + Number(i.amount), 0),
       0,
-    );
+    ) + rescuePrice;
     const totalDeposit = quotations.reduce(
       (sum, q) => sum + Number(q.deposit_amount || 0),
       0,
@@ -671,6 +680,11 @@ module.exports.getServiceOrderById = async (id) => {
                 attributes: ["id", "combo_name"],
               },
             ],
+          },
+          {
+            model: db.Rescue_Requests,
+            as: "rescueRequest",
+            attributes: ["id", "rescue_price", "distance_km", "phone_number"],
           },
         ],
       },
