@@ -1,9 +1,9 @@
 const db = require("../../../models");
+const { notifyUser } = require("../../util/notification.util");
 
 module.exports.getTechniciansWorkingToday = async () => {
     const today = new Date();
-    // Tạm thời fix cứng ngày 17/07 (thứ 6) để test vì hôm nay (thứ 7) không có lịch làm việc trong DB
-    const todayStr = '2026-07-17'; // `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
     const shifts = await db.Shift_Templates.findAll({
         where: {
@@ -93,6 +93,27 @@ module.exports.assignRescueTechnician = async (customerId, technicianId, custome
             customer_lat: customerLat || null,
             customer_lng: customerLng || null
         });
+    }
+
+    const technician = await db.User.findByPk(technicianId, { attributes: ["id", "fullName"] });
+
+    await notifyUser(technicianId, {
+        title: "Bạn được giao nhiệm vụ cứu hộ",
+        content: `Bạn vừa được lễ tân giao 1 cuốc cứu hộ khẩn cấp. Vui lòng kiểm tra vị trí và lên đường.`,
+        notificationType: "SYSTEM",
+        priority: "HIGH",
+        link: "/technician/rescue",
+    }, "new_notification", { type: "RESCUE_ASSIGNED", rescueId: rescue.id });
+
+    if (customer.user_id) {
+        await notifyUser(customer.user_id, {
+            title: "Kỹ thuật viên đã tiếp nhận cứu hộ",
+            content: technician
+                ? `Kỹ thuật viên ${technician.fullName} đã tiếp nhận yêu cầu cứu hộ của bạn và đang chuẩn bị lên đường.`
+                : "Yêu cầu cứu hộ của bạn đã được tiếp nhận.",
+            notificationType: "SYSTEM",
+            priority: "HIGH",
+        }, "new_notification", { type: "RESCUE_ASSIGNED", rescueId: rescue.id, status: rescue.status });
     }
 
     return rescue;

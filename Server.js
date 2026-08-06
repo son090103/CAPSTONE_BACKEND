@@ -71,13 +71,6 @@ io.on('connection', (socket) => {
     socket.join(roomId);
   });
 
-  // Lễ tân điều phối xe cứu hộ
-  socket.on('dispatch-rescue-vehicle', (data) => {
-    // Phát tọa độ xe cứu hộ CHỈ RIÊNG cho Khách hàng đó thông qua Room (Bảo mật vị trí)
-    io.to(`customer_${data.customerId}`).emit('rescue-vehicle-dispatched', data);
-    // Đồng thời phát cho Kỹ thuật viên để họ nhận thông báo
-    io.to(`technician_${data.technicianId}`).emit('incoming-rescue-task', data);
-  });
   socket.on('join-role', (roleCode) => {
     socket.join(`role-${roleCode}`);
   });

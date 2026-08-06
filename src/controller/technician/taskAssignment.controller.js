@@ -98,7 +98,7 @@ module.exports.completeTask = async (req, res) => {
 
 module.exports.startRescueTask = async (req, res) => {
   try {
-    const { rescueId, status } = req.body;
+    const { rescueId, status, technicianLat, technicianLng } = req.body;
     const technicianId = res.locals.user.id;
 
     if (!rescueId) {
@@ -108,7 +108,13 @@ module.exports.startRescueTask = async (req, res) => {
       });
     }
 
-    const result = await taskAssignmentService.startRescueTask(rescueId, technicianId, status);
+    const result = await taskAssignmentService.startRescueTask(
+      rescueId,
+      technicianId,
+      status,
+      technicianLat,
+      technicianLng,
+    );
 
     return res.status(200).json({
       success: true,
