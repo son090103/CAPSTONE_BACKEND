@@ -14,6 +14,7 @@ module.exports.getProfile = async (req, res) => {
         }
 
         const result = await profileService.getProfile(requestUser.id);
+        console.log("SENDING PROFILE TO FRONTEND:", JSON.stringify(result));
         return res.status(200).json({ message: "Lấy thông tin thành công", data: result });
     } catch (error) {
         return res.status(error.status || 500).json({ message: error.message || "Internal server error" });

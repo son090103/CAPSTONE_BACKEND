@@ -99,6 +99,16 @@ module.exports = (sequelize, DataTypes) => {
       promised_finish_time: DataTypes.DATE,
       actual_finish_time: DataTypes.DATE,
       exit_time: DataTypes.DATE,
+      points_redeemed: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      },
+      points_earned: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      }
     },
 
     {

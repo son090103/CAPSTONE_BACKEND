@@ -590,11 +590,11 @@ module.exports.getAppointmentVehicles = async (userId) => {
     const availableVehicles = [];
 
     for (const vehicle of vehicles) {
-        // Kiểm tra xem xe có đang có lịch hẹn chờ xử lý hoặc đang xử lý không
+        // Kiểm tra xem xe có đang có lịch hẹn chờ xử lý hoặc đang xử lý không (chỉ khóa khi lịch hẹn đã được CONFIRMED thanh toán)
         const activeAppointment = await db.Appointments.findOne({
             where: {
                 vehicle_id: vehicle.id,
-                status: { [db.Sequelize.Op.in]: ['PENDING', 'CONFIRMED'] }
+                status: 'CONFIRMED'
             }
         });
 
@@ -603,15 +603,25 @@ module.exports.getAppointmentVehicles = async (userId) => {
             where: {
                 vehicle_id: vehicle.id,
                 status: { [db.Sequelize.Op.in]: ['INSPECTING', 'WAITING_FOR_PARTS', 'IN_PROGRESS'] }
-            }
+            },
+            include: [{
+                model: db.Appointments,
+                as: 'appointment',
+                required: false
+            }]
         });
+
+        const isServiceOrderActive = activeServiceOrder && (
+            !activeServiceOrder.appointment ||
+            activeServiceOrder.appointment.status !== 'PENDING'
+        );
 
         const vehicleData = vehicle.toJSON();
 
         if (activeAppointment) {
             vehicleData.isDisabled = true;
             vehicleData.disableReason = 'Xe đang có lịch hẹn chờ xử lý';
-        } else if (activeServiceOrder) {
+        } else if (isServiceOrderActive) {
             vehicleData.isDisabled = true;
             vehicleData.disableReason = 'Xe đang được sửa tại xưởng';
         } else {

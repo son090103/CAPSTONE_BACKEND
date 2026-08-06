@@ -13,6 +13,11 @@ module.exports.getProfile = async (userId) => {
                 model: db.Role,
                 as: "role",
             },
+            {
+                model: db.Customers,
+                as: "customerProfile",
+                required: false
+            }
         ],
     });
 
@@ -97,7 +102,7 @@ module.exports.updateLocation = async (userId, latitude, longitude) => {
 
     if (latitude !== undefined) user.latitude = latitude;
     if (longitude !== undefined) user.longitude = longitude;
-    
+
     await user.save();
 
     // Đồng bộ toạ độ mới sang bảng Rescue_Requests nếu Khách hàng đang có cuốc cứu hộ chưa hoàn thành
