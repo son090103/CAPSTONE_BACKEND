@@ -30,8 +30,11 @@ describe("ServiceCatalog Controller", () => {
 
       expect(mockGetServiceCatalog).toHaveBeenCalledWith({
         q: "bao dưỡng",
-        category_id: "2",
-        is_active: "true",
+        category_id: undefined,
+        is_active: undefined,
+        page: undefined,
+        limit: undefined,
+        all: false,
       });
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({ data: fakeData });

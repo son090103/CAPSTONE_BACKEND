@@ -25,7 +25,38 @@ module.exports.getProfile = async (userId) => {
         throw { status: 404, message: "Người dùng không tồn tại" };
     }
 
-    return user;
+    const customer = await db.Customers.findOne({
+        where: { user_id: userId },
+        attributes: ["id"],
+    });
+
+    let vehicles = [];
+    if (customer) {
+        vehicles = await db.Vehicles.findAll({
+            where: { customer_id: customer.id },
+            include: [
+                {
+                    model: db.Vehicle_Models,
+                    as: "model",
+                    attributes: ["id", "model_name", "vehicle_type"],
+                    include: [
+                        {
+                            model: db.Vehicle_Makes,
+                            as: "make",
+                            attributes: ["id", "make_name"],
+                        },
+                    ],
+                },
+            ],
+            order: [["createdAt", "DESC"]],
+            attributes: ["id", "license_plate", "vin_number", "avg_daily_mileage", "year", "color", "createdAt", "updatedAt"],
+        });
+    }
+
+    const profileData = user.toJSON();
+    profileData.vehicles = vehicles;
+
+    return profileData;
 };
 
 
