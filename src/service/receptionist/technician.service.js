@@ -1,20 +1,48 @@
 const db = require("../../../models");
 
 module.exports.getTechniciansWorkingToday = async () => {
-    const today = new Date();
-    // Tạm thời fix cứng ngày 17/07 (thứ 6) để test vì hôm nay (thứ 7) không có lịch làm việc trong DB
-    const todayStr = '2026-07-17'; // `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    // FAKE DỮ LIỆU GIẢ ĐỂ TEST: Ngày 17/07 và Giờ 10:00 sáng (ca làm việc)
+    const todayStr = '2026-07-17';
+    const timeStr = '10:00:00';
+    //logic thật 
+    // const today = new Date();
+    //     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
-    const shifts = await db.Shift_Templates.findAll({
+    //     // Lấy giờ hiện tại (HH:MM:SS) theo local time
+    //     const hh = String(today.getHours()).padStart(2, '0');
+    //     const mm = String(today.getMinutes()).padStart(2, '0');
+    //     const timeStr = `${hh}:${mm}:00`;
+    // Tìm các slot trực khớp với giờ hiện tại
+    const matchingSlots = await db.Shift_Slots.findAll({
         where: {
-            work_date: todayStr,
-            is_confirmed: true
-        },
+            is_active: true,
+            start_time: { [db.Sequelize.Op.lte]: timeStr },
+            end_time: { [db.Sequelize.Op.gte]: timeStr }
+        }
+    });
+
+    const slotIds = matchingSlots.map(s => s.id);
+    if (slotIds.length === 0) {
+        return []; // Nếu không khớp ca trực nào ở giờ hiện tại, trả về rỗng ngay lập tức
+    }
+
+    let whereCondition = {
+        work_date: todayStr,
+        is_confirmed: true,
+        slot_id: { [db.Sequelize.Op.in]: slotIds }
+    };
+
+    let shifts = await db.Shift_Templates.findAll({
+        where: whereCondition,
         include: [
             {
                 model: db.User,
                 as: 'user',
-                attributes: ['id', 'fullName', 'phoneNumber', 'skillLevel', 'status'],
+                attributes: ['id', 'fullName', 'phoneNumber', 'skillLevel', 'status', 'hasDrivingLicense'],
+                where: {
+                    hasDrivingLicense: true
+                },
+                required: true,
                 include: [
                     {
                         model: db.Role,
@@ -35,7 +63,7 @@ module.exports.getTechniciansWorkingToday = async () => {
         const user = shift.user;
         if (!user) return;
 
-        // Ensure user is active and has a technician role
+        // Đảm bảo user hoạt động và là kĩ thuật viên
         if (user.status !== 'ACTIVE') return;
         if (user.role && !['TECHNICIAN', 'TECHNICIAN_LEADER'].includes(user.role.roleCode)) return;
 
