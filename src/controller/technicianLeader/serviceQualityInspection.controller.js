@@ -14,6 +14,19 @@ module.exports.getServiceOrdersPendingQC = async (req, res) => {
   }
 };
 
+module.exports.getInspectionStatistics = async (req, res) => {
+  try {
+    const result = await serviceQualityInspectionService.getInspectionStatistics();
+    return res.status(200).json({
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
 module.exports.approveFinalInspection = async (req, res) => {
   try {
     const { serviceOrderId } = req.params;

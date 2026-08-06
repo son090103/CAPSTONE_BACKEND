@@ -10,6 +10,7 @@ const configureGoogle = require("././src/config/google.config");
 const whitelist = [
   "http://localhost:3000",
   "http://localhost:5173",
+  "http://127.0.0.1:5173",
   "https://agm-garage.id.vn",
   "https://www.agm-garage.id.vn",
   "192.168.0.191:8081",

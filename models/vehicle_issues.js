@@ -31,7 +31,7 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
       error_description: {
-        type: DataTypes.STRING(50),
+        type: DataTypes.TEXT,
         allowNull: false,
       },
       note: {
