@@ -1,85 +1,6 @@
 const db = require("../../../models");
 const { notifyUser } = require("../../util/notification.util");
 
-// module.exports.getTechniciansWorkingToday = async () => {
-//     const today = new Date();
-//     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-
-//     //     // Lấy giờ hiện tại (HH:MM:SS) theo local time
-//     //     const hh = String(today.getHours()).padStart(2, '0');
-//     //     const mm = String(today.getMinutes()).padStart(2, '0');
-//     //     const timeStr = `${hh}:${mm}:00`;
-//     // Tìm các slot trực khớp với giờ hiện tại
-//     const matchingSlots = await db.Shift_Slots.findAll({
-//         where: {
-//             is_active: true,
-//             start_time: { [db.Sequelize.Op.lte]: timeStr },
-//             end_time: { [db.Sequelize.Op.gte]: timeStr }
-//         }
-//     });
-
-//     const slotIds = matchingSlots.map(s => s.id);
-//     if (slotIds.length === 0) {
-//         return []; // Nếu không khớp ca trực nào ở giờ hiện tại, trả về rỗng ngay lập tức
-//     }
-
-//     let whereCondition = {
-//         work_date: todayStr,
-//         is_confirmed: true,
-//         slot_id: { [db.Sequelize.Op.in]: slotIds }
-//     };
-
-//     let shifts = await db.Shift_Templates.findAll({
-//         where: whereCondition,
-//         include: [
-//             {
-//                 model: db.User,
-//                 as: 'user',
-//                 attributes: ['id', 'fullName', 'phoneNumber', 'skillLevel', 'status', 'hasDrivingLicense'],
-//                 where: {
-//                     hasDrivingLicense: true
-//                 },
-//                 required: true,
-//                 include: [
-//                     {
-//                         model: db.Role,
-//                         as: 'role',
-//                         attributes: ['roleName', 'roleCode']
-//                     }
-//                 ]
-//             },
-//             {
-//                 model: db.Shift_Slots,
-//                 as: 'shiftSlot'
-//             }
-//         ]
-//     });
-
-//     const technicianMap = new Map();
-//     shifts.forEach(shift => {
-//         const user = shift.user;
-//         if (!user) return;
-
-//         // Đảm bảo user hoạt động và là kĩ thuật viên
-//         if (user.status !== 'ACTIVE') return;
-//         if (user.role && !['TECHNICIAN', 'TECHNICIAN_LEADER'].includes(user.role.roleCode)) return;
-
-//         if (!technicianMap.has(user.id)) {
-//             technicianMap.set(user.id, {
-//                 id: user.id,
-//                 fullName: user.fullName,
-//                 phoneNumber: user.phoneNumber,
-//                 skillLevel: user.skillLevel,
-//                 role: user.role,
-//                 shifts: []
-//             });
-//         }
-//         technicianMap.get(user.id).shifts.push(shift.shiftSlot);
-//     });
-
-//     return Array.from(technicianMap.values());
-// };
-
 module.exports.assignRescueTechnician = async (customerId, technicianId, customerLat, customerLng) => {
     let customer = await db.Customers.findByPk(customerId);
     if (!customer) {
@@ -146,37 +67,15 @@ module.exports.assignRescueTechnician = async (customerId, technicianId, custome
 
     return rescue;
 };
-// bản make up v2
 module.exports.getTechniciansWorkingToday = async () => {
-    // FAKE DỮ LIỆU GIẢ ĐỂ TEST: Ngày 17/07 và Giờ 10:00 sáng (ca làm việc)
-    const todayStr = '2026-07-17';
-    const timeStr = '10:00:00';
-    //logic thật
-    // const today = new Date();
-    //     const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
-    //     // Lấy giờ hiện tại (HH:MM:SS) theo local time
-    //     const hh = String(today.getHours()).padStart(2, '0');
-    //     const mm = String(today.getMinutes()).padStart(2, '0');
-    //     const timeStr = `${hh}:${mm}:00`;
-    // Tìm các slot trực khớp với giờ hiện tại
-    const matchingSlots = await db.Shift_Slots.findAll({
-        where: {
-            is_active: true,
-            start_time: { [db.Sequelize.Op.lte]: timeStr },
-            end_time: { [db.Sequelize.Op.gte]: timeStr }
-        }
-    });
-
-    const slotIds = matchingSlots.map(s => s.id);
-    if (slotIds.length === 0) {
-        return []; // Nếu không khớp ca trực nào ở giờ hiện tại, trả về rỗng ngay lập tức
-    }
-
+    // Không lọc theo giờ hiện tại nữa — chỉ cần KTV có ca đã xác nhận trong hôm nay, bất kể
+    // giờ đó đã bắt đầu/kết thúc hay chưa.
     let whereCondition = {
         work_date: todayStr,
-        is_confirmed: true,
-        slot_id: { [db.Sequelize.Op.in]: slotIds }
+        is_confirmed: true
     };
 
     let shifts = await db.Shift_Templates.findAll({
@@ -185,6 +84,8 @@ module.exports.getTechniciansWorkingToday = async () => {
             {
                 model: db.User,
                 as: 'user',
+                // Cứu hộ bắt buộc phải lái xe đi — chỉ lấy KTV có bằng lái, không hiển thị
+                // người không đủ điều kiện thay vì để lễ tân tự cân nhắc.
                 attributes: ['id', 'fullName', 'phoneNumber', 'skillLevel', 'status', 'hasDrivingLicense'],
                 where: {
                     hasDrivingLicense: true
@@ -220,6 +121,7 @@ module.exports.getTechniciansWorkingToday = async () => {
                 fullName: user.fullName,
                 phoneNumber: user.phoneNumber,
                 skillLevel: user.skillLevel,
+                hasDrivingLicense: user.hasDrivingLicense,
                 role: user.role,
                 shifts: []
             });
@@ -227,7 +129,62 @@ module.exports.getTechniciansWorkingToday = async () => {
         technicianMap.get(user.id).shifts.push(shift.shiftSlot);
     });
 
-    return Array.from(technicianMap.values());
+    const technicianIds = Array.from(technicianMap.keys());
+    if (technicianIds.length === 0) {
+        return [];
+    }
+
+    // Lấy công việc đang dang dở của từng KTV để lễ tân biết ai đang bận/rảnh trước khi gán cứu hộ.
+    const activeAssignments = await db.Task_Assignment.findAll({
+        where: {
+            technician_id: { [db.Sequelize.Op.in]: technicianIds },
+            status: { [db.Sequelize.Op.in]: ['ASSIGNED', 'IN_PROGRESS', 'PAUSED', 'WAITING_STOCK'] }
+        },
+        attributes: ['id', 'technician_id', 'status'],
+        include: [
+            {
+                model: db.Task,
+                as: 'task',
+                attributes: ['id', 'type'],
+                include: [
+                    {
+                        model: db.Service_Orders,
+                        as: 'serviceOrder',
+                        attributes: ['id'],
+                        include: [
+                            {
+                                model: db.Vehicles,
+                                as: 'vehicle',
+                                attributes: ['id', 'license_plate'],
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    });
+
+    const assignmentsByTechnician = new Map();
+    activeAssignments.forEach(assignment => {
+        const list = assignmentsByTechnician.get(assignment.technician_id) || [];
+        list.push({
+            id: assignment.id,
+            status: assignment.status,
+            taskType: assignment.task?.type || null,
+            serviceOrderId: assignment.task?.serviceOrder?.id || null,
+            vehiclePlate: assignment.task?.serviceOrder?.vehicle?.license_plate || null,
+        });
+        assignmentsByTechnician.set(assignment.technician_id, list);
+    });
+
+    return Array.from(technicianMap.values()).map(technician => {
+        const currentTasks = assignmentsByTechnician.get(technician.id) || [];
+        return {
+            ...technician,
+            isBusy: currentTasks.length > 0,
+            currentTasks,
+        };
+    });
 };
 
 module.exports.createRescueRequest = async (data) => {

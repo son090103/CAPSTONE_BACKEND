@@ -71,11 +71,16 @@ module.exports = (sequelize, DataTypes) => {
       },
       bay_id: {
         type: DataTypes.INTEGER,
+        allowNull: true, // NULL khi bay_status là NOT_NEEDED hoặc WAITING
+      },
+      bay_status: {
+        type: DataTypes.STRING(20),
         allowNull: false,
+        defaultValue: 'NOT_NEEDED', // NOT_NEEDED: dịch vụ không cần cầu nâng | WAITING: đang chờ cầu nâng trống | ASSIGNED: đã có bay_id
       },
       current_odo: {
         type: DataTypes.INTEGER,
-        allowNull: false,
+        allowNull: true,
       },
       status: {
         type: DataTypes.STRING(50),

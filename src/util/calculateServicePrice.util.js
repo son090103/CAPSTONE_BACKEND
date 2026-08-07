@@ -1,16 +1,16 @@
 /**
  * Hàm tiện ích để tính tổng tiền của một Dịch vụ
  * Tổng tiền = Tiền công (labor_price) + Tiền vật tư đi kèm (sparePart.retail_price)
- * 
+ *
  * @param {Object} serviceCatalog - Object service_catalog từ Database (đã eager-load sparePart)
  * @returns {Number} Tổng tiền
  */
 function calculateTotalServicePrice(serviceCatalog) {
     if (!serviceCatalog) return 0;
-    
+
     // Parse tiền công, mặc định là 0 nếu không có
     const laborPrice = parseFloat(serviceCatalog.labor_price) || 0;
-    
+
     // Parse tiền vật tư, mặc định là 0 nếu không có phụ tùng đi kèm
     let partPrice = 0;
     if (serviceCatalog.sparePart && serviceCatalog.sparePart.retail_price) {
@@ -19,7 +19,7 @@ function calculateTotalServicePrice(serviceCatalog) {
         // Dự phòng trường hợp có query raw truyền giá phụ tùng vào biến tạm
         partPrice = parseFloat(serviceCatalog.part_price_temp);
     }
-    
+
     return laborPrice + partPrice;
 }
 

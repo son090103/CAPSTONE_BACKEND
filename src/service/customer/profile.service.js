@@ -122,7 +122,7 @@ module.exports.changePassword = async (
     return { message: "Đổi mật khẩu thành công" };
 };
 
-module.exports.updateLocation = async (userId, latitude, longitude) => {
+module.exports.updateLocation = async (userId, latitude, longitude, contactName, contactPhone) => {
     if (!userId) {
         throw { status: 401, message: "Unauthorized" };
     }
@@ -143,8 +143,17 @@ module.exports.updateLocation = async (userId, latitude, longitude) => {
     if (latitude !== undefined && longitude !== undefined) {
         const customer = await db.Customers.findOne({ where: { user_id: userId } });
         if (customer) {
+            // Người liên hệ có thể khác chủ tài khoản (vd người nhà gọi hộ) — giống cách lễ tân
+            // xử lý ở createRescueRequest: tên cập nhật thẳng vào Customers.name, SĐT lưu riêng
+            // vào Rescue_Requests.phone_number (không đổi Customers.phone/User.phoneNumber gốc).
+            if (contactName && contactName.trim() && contactName.trim() !== customer.name) {
+                customer.name = contactName.trim();
+                await customer.save();
+            }
+            const rescuePhone = (contactPhone && contactPhone.trim()) || user.phoneNumber || null;
+
             const [updatedRows] = await db.Rescue_Requests.update(
-                { customer_lat: latitude, customer_lng: longitude },
+                { customer_lat: latitude, customer_lng: longitude, phone_number: rescuePhone },
                 {
                     where: {
                         customer_id: customer.id,
@@ -161,7 +170,8 @@ module.exports.updateLocation = async (userId, latitude, longitude) => {
                     customer_id: customer.id,
                     status: 'PENDING',
                     customer_lat: latitude,
-                    customer_lng: longitude
+                    customer_lng: longitude,
+                    phone_number: rescuePhone
                 });
                 isNewRescueRequest = true;
                 newRescueId = newRescue.id;

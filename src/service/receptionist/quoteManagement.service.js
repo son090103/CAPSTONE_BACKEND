@@ -18,6 +18,7 @@ const Vehicle_Models = db.Vehicle_Models;
 const Service_Catalog = db.Service_Catalog;
 const { normalizeVnPhone } = require("../../util/phone.util");
 const { notifyRole, notifyUser } = require("../../util/notification.util");
+const assignQueuedOrders = require("../../util/assignQueuedOrders.util");
 
 const transporter = require("../../config/mailer.config");
 const {
@@ -32,13 +33,15 @@ module.exports.getIssuesReports = async () => {
   const issues = await Issues.findAll({
     attributes: ["id", "error_description", "note", "createdAt"],
     where: {
+      // Issue đã từng được đưa vào bất kỳ báo giá nào (kể cả REJECTED) thì không hiện lại ở đây
+      // nữa — báo giá REJECTED phải được lễ tân vào "Lịch sử báo giá" để cập nhật lại trên
+      // chính Quotation đó (updateQuotation đã hỗ trợ sửa cả khi status = REJECTED), không tạo
+      // báo giá mới từ danh sách báo cáo lỗi.
       id: {
         [Op.notIn]: db.sequelize.literal(`(
               SELECT qd.issue_id
               FROM "Quotation_Details" qd
-              JOIN "Quotations" q ON q.id = qd.quotation_id
               WHERE qd.issue_id IS NOT NULL
-                AND q.status != 'REJECTED'
             )`),
       },
     },
@@ -251,6 +254,26 @@ module.exports.createQuotation = async (data, receptionistId) => {
 
       });
     }
+    // Gara sửa chữa không bán rời phụ tùng — mỗi hạng mục lỗi (issue) có phụ tùng đính kèm thì
+    // bắt buộc phải có ít nhất 1 dòng dịch vụ/công sửa chữa đi cùng issue đó, không để phụ tùng
+    // "mồ côi" không có công việc sửa chữa nào để KTV thực hiện.
+    const issuesWithService = new Set(
+      detailsData.filter((item) => item.service_id).map((item) => item.issue_id),
+    );
+    const orphanPartIssueId = detailsData.find(
+      (item) =>
+        !item.service_id &&
+        (item.spare_part_id || item.custom_item_name) &&
+        item.issue_id &&
+        !issuesWithService.has(item.issue_id),
+    )?.issue_id;
+    if (orphanPartIssueId) {
+      throw {
+        status: 400,
+        message: `Lỗi #${orphanPartIssueId} có phụ tùng nhưng chưa có dịch vụ sửa chữa đi kèm. Vui lòng thêm dịch vụ cho hạng mục lỗi này trước khi lưu báo giá.`,
+      };
+    }
+
     const quotation = await Quotation.create(
       {
         task_id: data.task_id,
@@ -353,10 +376,6 @@ module.exports.updateQuotation = async (id, data, receptionistId) => {
         };
       }
     }
-    await QuotationDetail.destroy({
-      where: { quotation_id: id },
-      transaction: t,
-    });
     let totalAmount = 0;
     const detailsData = [];
     for (const item of data.items) {
@@ -412,6 +431,30 @@ module.exports.updateQuotation = async (id, data, receptionistId) => {
 
       });
     }
+
+    // Gara sửa chữa không bán rời phụ tùng — mỗi hạng mục lỗi (issue) có phụ tùng đính kèm thì
+    // bắt buộc phải có ít nhất 1 dòng dịch vụ/công sửa chữa đi cùng issue đó.
+    const issuesWithService = new Set(
+      detailsData.filter((item) => item.service_id).map((item) => item.issue_id),
+    );
+    const orphanPartIssueId = detailsData.find(
+      (item) =>
+        !item.service_id &&
+        (item.spare_part_id || item.custom_item_name) &&
+        item.issue_id &&
+        !issuesWithService.has(item.issue_id),
+    )?.issue_id;
+    if (orphanPartIssueId) {
+      throw {
+        status: 400,
+        message: `Lỗi #${orphanPartIssueId} có phụ tùng nhưng chưa có dịch vụ sửa chữa đi kèm. Vui lòng thêm dịch vụ cho hạng mục lỗi này trước khi lưu báo giá.`,
+      };
+    }
+
+    await QuotationDetail.destroy({
+      where: { quotation_id: id },
+      transaction: t,
+    });
     await QuotationDetail.bulkCreate(detailsData, { transaction: t });
     await quotation.update(
       {
@@ -576,6 +619,7 @@ module.exports.getQuoteHistory = async () => {
       "approved_phone",
       "status",
       "note",
+      "rejection_reason",
       "approved_at",
       "createdAt",
     ],
@@ -688,6 +732,7 @@ module.exports.getQuotationById = async (id) => {
       "deposit_paid_at",
       "status",
       "note",
+      "rejection_reason",
       "approval_method",
       "approved_at",
       "createdAt",
@@ -823,6 +868,15 @@ module.exports.approveQuotation = async (id) => {
           transaction: t,
         },
       );
+
+      // Báo giá được duyệt -> phát sinh Task REPAIR mới -> xe cần cầu nâng trở lại (đã nhả lúc
+      // kiểm tra xong chờ duyệt). Xếp vào hàng đợi và để assignQueuedOrders tự gán ngay nếu có
+      // cầu nâng + KTV rảnh.
+      await Service_Order.update(
+        { bay_status: "WAITING" },
+        { where: { id: inspectionTask.service_order_id }, transaction: t },
+      );
+      await assignQueuedOrders(t);
     }
     await quotation.update(
       {

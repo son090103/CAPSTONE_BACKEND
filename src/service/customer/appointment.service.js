@@ -1,7 +1,7 @@
 const db = require("../../../models");
 const { Op } = require("sequelize");
 const getGarageCapacity = require("../../util/getGarageCapacity.util");
-const { notifyRole, notifyUser } = require("../../util/notification.util");
+const { notifyRole } = require("../../util/notification.util");
 
 module.exports.getAppointments = async (userId) => {
     let customer = await db.Customers.findOne({ where: { user_id: userId } });
@@ -105,6 +105,9 @@ module.exports.getAppointments = async (userId) => {
     return appointments;
 };
 
+// Đặt lịch hẹn: chỉ giữ chỗ (Appointment + Appointment_Details), KHÔNG tạo Service_Order/Task/Quotation
+// và KHÔNG chiếm cầu nâng/gán KTV — vì xe chưa thực sự có mặt tại garage. Service_Order chỉ được tạo
+// sau khi khách đến và lễ tân bấm "Tiếp nhận" (receiveAppointment).
 module.exports.createAppointment = async (userId, data) => {
     // Kiểm tra sức chứa của gara
     const capacityData = await getGarageCapacity();
@@ -294,217 +297,6 @@ module.exports.createAppointment = async (userId, data) => {
             await db.Appointment_Details.bulkCreate(detailsToCreate, { transaction });
         }
 
-        const needsServiceOrder = ['CUSTOMER_SPECIFIC', 'RECEPTIONIST_SPECIFIC', 'CUSTOMER_REPAIR', 'RECEPTIONIST_REPAIR'].includes(data.booking_type);
-        let serviceOrder = null;
-        let technicianId = null;
-        if (needsServiceOrder) {
-            const recRole = await db.Role.findOne({ where: { roleCode: 'RECEPTIONIST' }, transaction });
-            let receptionistId = 1;
-            if (recRole) {
-                const receptionist = await db.User.findOne({ where: { roleId: recRole.id }, transaction });
-                if (receptionist) receptionistId = receptionist.id;
-            }
-
-            const bays = await db.Service_Bays.findAll({ where: { is_active: true }, transaction });
-            let bayId = 1;
-            if (bays.length > 0) {
-                const bayUsageCount = await Promise.all(bays.map(async (b) => {
-                    const count = await db.Service_Orders.count({
-                        where: { bay_id: b.id, status: { [Op.in]: ['INSPECTING', 'IN_PROGRESS', 'WAITING_FOR_PARTS'] } },
-                        transaction
-                    });
-                    return { id: b.id, count };
-                }));
-                bayUsageCount.sort((a, b) => a.count - b.count);
-                bayId = bayUsageCount[0].id;
-            }
-
-            serviceOrder = await db.Service_Orders.create({
-                appointment_id: appointment.id,
-                vehicle_id: resolvedVehicleId,
-                receptionist_id: receptionistId,
-                bay_id: bayId,
-                current_odo: 0,
-                status: 'INSPECTING',
-                entry_time: appointment.scheduled_time,
-                symptoms: data.notes || "Chưa cập nhật"
-            }, { transaction });
-
-            const { findAvailableTechnicians } = require("../../util/findAvailableTechnicians.util");
-            technicianId = 1;
-
-            const technicians = await findAvailableTechnicians(data.scheduled_time, transaction);
-            if (technicians.length > 0) {
-                const technicianTasksCount = await Promise.all(technicians.map(async (tech) => {
-                    const count = await db.Task_Assignment.count({
-                        where: {
-                            technician_id: tech.id,
-                            status: { [Op.in]: ['ASSIGNED', 'IN_PROGRESS'] }
-                        },
-                        transaction
-                    });
-                    return { id: tech.id, count };
-                }));
-                technicianTasksCount.sort((a, b) => a.count - b.count);
-                technicianId = technicianTasksCount[0].id;
-            }
-
-            const taskCatalogs = [];
-            for (const d of allDetails) {
-                if (d.catalog_id) {
-                    taskCatalogs.push(d.catalog_id);
-                }
-                if (d.combo_id) {
-                    const comboCatalogs = await db.Service_Combo_Catalogs.findAll({
-                        where: { combo_id: d.combo_id },
-                        transaction
-                    });
-                    for (const cc of comboCatalogs) {
-                        taskCatalogs.push(cc.catalog_id);
-                    }
-                }
-            }
-
-            const uniqueTaskCatalogs = [...new Set(taskCatalogs)];
-
-            if (uniqueTaskCatalogs.length === 0) {
-                // Tạo một task khám xe chung nếu không có dịch vụ cụ thể nào
-                const task = await db.Task.create({
-                    service_order_id: serviceOrder.id,
-                    service_catalog_id: null,
-                    type: "INSPECTION",
-                    status: 'PENDING'
-                }, { transaction });
-
-                await db.Task_Assignment.create({
-                    task_id: task.id,
-                    technician_id: technicianId,
-                    bay_id: bayId,
-                    role_in_task: 'LEAD',
-                    contribution_percent: 100,
-                    status: 'ASSIGNED'
-                }, { transaction });
-            } else {
-                const freeCheckupCatalog = await db.Service_Catalog.findOne({
-                    where: { labor_price: 0 },
-                    transaction
-                });
-
-                // Tạo một Inspection Task đại diện để gắn kết báo giá
-                const inspectionTask = await db.Task.create({
-                    service_order_id: serviceOrder.id,
-                    service_catalog_id: null,
-                    type: "INSPECTION",
-                    status: 'COMPLETED'
-                }, { transaction });
-
-                await db.Task_Assignment.create({
-                    task_id: inspectionTask.id,
-                    technician_id: technicianId,
-                    bay_id: bayId,
-                    role_in_task: 'LEAD',
-                    contribution_percent: 100,
-                    status: 'COMPLETED'
-                }, { transaction });
-
-                // Tạo báo giá tự động đã APPROVED
-                const quotation = await db.Quotations.create({
-                    task_id: inspectionTask.id,
-                    created_by: receptionistId,
-                    total_amount: 0,
-                    deposit_amount: 0,
-                    status: "APPROVED",
-                    approved_at: new Date(),
-                    approval_method: "CUSTOMER_WEB"
-                }, { transaction });
-
-                let totalQuotationAmount = 0;
-
-                for (const catalogId of uniqueTaskCatalogs) {
-                    const isFreeCheckup = freeCheckupCatalog && catalogId === freeCheckupCatalog.id;
-
-                    const catalog = await db.Service_Catalog.findByPk(catalogId, {
-                        include: [{ model: db.Spare_Parts, as: 'sparePart' }],
-                        transaction
-                    });
-
-                    if (!catalog) continue;
-
-                    // Tạo issue để nhóm dịch vụ và phụ tùng liên quan
-                    const issue = await db.Vehicle_Issues.create({
-                        task_id: inspectionTask.id,
-                        error_description: `Đặt trước dịch vụ: ${catalog.service_name}`,
-                        status: 'RESOLVED'
-                    }, { transaction });
-
-                    // Tạo dòng Dịch vụ (Tiền công)
-                    const serviceDetail = await db.Quotation_Details.create({
-                        quotation_id: quotation.id,
-                        issue_id: issue.id,
-                        service_id: catalogId,
-                        quantity: 1,
-                        unit_price: 0,
-                        repair_price: catalog.labor_price || 0,
-                        amount: catalog.labor_price || 0,
-                        status: 'PENDING'
-                    }, { transaction });
-
-                    let partAmount = 0;
-                    // Tạo dòng Phụ tùng đi kèm (nếu có)
-                    if (catalog.spare_part_id && catalog.sparePart) {
-                        partAmount = Number(catalog.sparePart.retail_price || 0);
-                        await db.Quotation_Details.create({
-                            quotation_id: quotation.id,
-                            issue_id: issue.id,
-                            spare_part_id: catalog.spare_part_id,
-                            quantity: 1,
-                            unit_price: partAmount,
-                            repair_price: 0,
-                            amount: partAmount,
-                            status: 'PENDING'
-                        }, { transaction });
-                    }
-
-                    totalQuotationAmount += Number(catalog.labor_price || 0) + partAmount;
-
-                    // Tạo Task REPAIR thực thi và gắn với dòng dịch vụ vừa tạo
-                    const task = await db.Task.create({
-                        service_order_id: serviceOrder.id,
-                        quotation_item_id: serviceDetail.id,
-                        service_catalog_id: catalogId,
-                        type: isFreeCheckup ? "INSPECTION" : "REPAIR",
-                        status: 'PENDING'
-                    }, { transaction });
-
-                    await db.Task_Assignment.create({
-                        task_id: task.id,
-                        technician_id: technicianId,
-                        bay_id: bayId,
-                        role_in_task: 'LEAD',
-                        contribution_percent: 100,
-                        status: 'ASSIGNED'
-                    }, { transaction });
-                }
-
-                // Cập nhật tổng tiền cho Quotation
-                await quotation.update({ total_amount: totalQuotationAmount }, { transaction });
-
-                // Cập nhật Service Order sang trạng thái IN_PROGRESS vì đã được duyệt & bắt đầu làm việc
-                await serviceOrder.update({ status: 'IN_PROGRESS' }, { transaction });
-            }
-
-            if (data.payment_amount && Number(data.payment_amount) > 0) {
-                await db.Booking_Payments.create({
-                    order_id: serviceOrder.id,
-                    payment_method: 'ONLINE',
-                    payment_gateway: 'BANK',
-                    amount: Number(data.payment_amount),
-                    currency: 'VND',
-                    payment_status: 'PENDING'
-                }, { transaction });
-            }
-        }
-
         await transaction.commit();
 
         // --- Bắt đầu: Xử lý Socket và Thông báo cho Lễ tân ---
@@ -520,17 +312,6 @@ module.exports.createAppointment = async (userId, data) => {
             appointmentId: appointment.id,
             type: "APPOINTMENT"
         });
-        if (needsServiceOrder && technicianId) {
-            await notifyUser(technicianId, {
-                title: "Bạn được giao công việc mới",
-                content: "Bạn vừa được hệ thống tự động phân công tiếp nhận một xe mới.",
-                notificationType: "SERVICE_ORDER",
-                referenceId: serviceOrder.id
-            }, 'new_notification', {
-                type: "TASK_ASSIGNED",
-                serviceOrderId: serviceOrder.id
-            });
-        }
         // --- Kết thúc xử lý thông báo ---
 
         return await db.Appointments.findByPk(appointment.id, {
@@ -590,11 +371,6 @@ module.exports.createAppointment = async (userId, data) => {
                             ]
                         }
                     ]
-                },
-                {
-                    model: db.Service_Orders,
-                    as: 'serviceOrder',
-                    attributes: ['id', 'status']
                 }
             ]
         });

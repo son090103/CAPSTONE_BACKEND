@@ -41,12 +41,18 @@ const catalogIncludes = (lang) => [
     attributes: ["id", "category_name"],
     include: translationInclude(db.Service_Category_Translations, lang),
   },
+  {
+    model: db.Spare_Parts,
+    as: "sparePart",
+    attributes: ["id", "sku", "name", "retail_price"],
+  },
   ...translationInclude(db.Service_Catalog_Translations, lang),
 ];
 
 const catalogAttributes = [
   "id",
   "category_id",
+  "spare_part_id",
   "service_name",
   "description",
   "estimated_duration",
@@ -151,6 +157,11 @@ module.exports.getServiceCombos = async (lang = "vi") => {
             as: "category",
             attributes: ["id", "category_name"],
             include: translationInclude(db.Service_Category_Translations, lang),
+          },
+          {
+            model: db.Spare_Parts,
+            as: "sparePart",
+            attributes: ["id", "sku", "name", "retail_price"],
           },
           ...catalogTranslation,
         ],

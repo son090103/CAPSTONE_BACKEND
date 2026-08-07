@@ -12,6 +12,7 @@ const { Op } = require("sequelize");
 const { notifyRole,notifyUser } = require("../../util/notification.util");
 const { emitProgress } = require("../../util/socket.util");
 const ROLES = require("../../constants/roles");
+const assignQueuedOrders = require("../../util/assignQueuedOrders.util");
 
 module.exports.getServiceOrdersPendingFinalQC = async () => {
   const orders = await Service_Order.findAll({
@@ -121,7 +122,7 @@ module.exports.getInspectionStatistics = async () => {
 module.exports.approveFinalInspection = async (serviceOrderId) => {
   const serviceOrder = await db.sequelize.transaction(async (t) => {
     const serviceOrder = await Service_Order.findByPk(serviceOrderId, {
-      attributes: ["id", "status", "appointment_id"],
+      attributes: ["id", "status", "appointment_id", "bay_id"],
       include: [
         {
           model: Vehicles,
@@ -161,6 +162,13 @@ module.exports.approveFinalInspection = async (serviceOrderId) => {
       { status: "COMPLETED", actual_finish_time: new Date() },
       { transaction: t },
     );
+    if (serviceOrder.bay_id) {
+      await db.Service_Bays.update(
+        { status: "available", current_service_order_id: null },
+        { where: { id: serviceOrder.bay_id }, transaction: t },
+      );
+      await assignQueuedOrders(t);
+    }
     if (serviceOrder.appointment_id) {
       await db.Appointments.update(
         { status: "COMPLETED" },

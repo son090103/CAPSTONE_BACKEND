@@ -67,6 +67,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.TEXT,
       allowNull: true
     },
+    reception_condition: {
+      type: DataTypes.TEXT,
+      allowNull: true // Tình trạng xe do lễ tân ghi nhận lúc Tiếp nhận — tách biệt với notes (ghi chú/mô tả lỗi của khách)
+    },
 
     status: {
       type: DataTypes.STRING(50),

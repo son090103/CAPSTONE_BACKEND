@@ -30,7 +30,7 @@ module.exports = (sequelize, DataTypes) => {
     customer_lng: DataTypes.DECIMAL(11, 8),
     issue_description: DataTypes.TEXT,
     status: {
-      type: DataTypes.ENUM('PENDING', 'ASSIGNED', 'ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'COMPLETED', 'SERVICE_CREATED', 'CANCELLED'),
+      type: DataTypes.ENUM('PENDING', 'ASSIGNED', 'ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'TOWING', 'IN_PROGRESS', 'COMPLETED', 'SERVICE_CREATED', 'CANCELLED'),
       defaultValue: 'PENDING'
     }
   }, {

@@ -148,6 +148,24 @@ module.exports.getMyActiveRescue = async (req, res) => {
   }
 };
 
+module.exports.getMyRescueHistory = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const result = await taskAssignmentService.getMyRescueHistory(technicianId);
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    console.error("Error in getMyRescueHistory:", error);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi khi lấy lịch sử cứu hộ."
+    });
+  }
+};
+
 module.exports.getAllComponents = async (req, res) => {
   try {
     const result = await taskAssignmentService.getAllComponents();

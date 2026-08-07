@@ -17,6 +17,7 @@ router.get("/spare-parts", quoteManagementController.getSpareParts);
 router.get("/services", quoteManagementController.getAllService);
 
 router.get("/appointments", appointmentController.getAppointment);
+router.post("/appointment", appointmentController.createAppointmentForCustomer);
 router.get("/appointment/:key", appointmentController.getAppointmentByKey);
 router.put("/appointment/:key/receive", appointmentController.receiveAppointment);
 router.post("/appointment/:key/vin", appointmentController.updateVehicleVin);

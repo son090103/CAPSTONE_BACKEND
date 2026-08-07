@@ -68,6 +68,11 @@ module.exports = (sequelize, DataTypes) => {
     recommended_interval_days: {
       type: DataTypes.INTEGER,
       allowNull: true // NULL = dịch vụ không định kỳ, không tham gia nhắc bảo dưỡng
+    },
+    requires_bay: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true // false = dịch vụ không cần lên cầu nâng (rửa xe, kiểm tra nhanh...)
     }
   }, {
     sequelize,

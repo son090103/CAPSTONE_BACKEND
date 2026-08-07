@@ -48,4 +48,5 @@ router.get("/shifts", techShiftController.getMyShifts);
 // API nhận và bắt đầu cứu hộ
 router.patch("/rescue/start", taskAssignment.startRescueTask);
 router.get("/rescue/my-active", taskAssignment.getMyActiveRescue);
+router.get("/rescue/my-history", taskAssignment.getMyRescueHistory);
 module.exports = router;

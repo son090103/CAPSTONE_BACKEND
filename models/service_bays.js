@@ -34,7 +34,7 @@ module.exports = (sequelize, DataTypes) => {
     status: {
       type: DataTypes.STRING(50),
       allowNull: false,
-      defaultValue: 'AVAILABLE' // Trạng thái mặc định khi tạo mới là Sẵn sàng/Trống
+      defaultValue: 'available' // available | in_use | maintenance — khớp enum ở admin/serviceBay.validator.js
     },
     is_active: {
       type: DataTypes.BOOLEAN,

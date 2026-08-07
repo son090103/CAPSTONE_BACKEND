@@ -12,7 +12,7 @@ const createServiceOrderSchema = z.object({
         model_name: z.string().min(1, "Dòng xe không được để trống")
     }).optional(),
     bay_id: z.number({ required_error: "Vui lòng chọn cầu nâng" }).positive("ID cầu nâng không hợp lệ").nullable().optional(),
-    current_odo: z.number({ required_error: "Vui lòng nhập số km hiện tại" }).min(0, "Số ODO không hợp lệ"),
+    current_odo: z.number().min(0, "Số ODO không hợp lệ").nullable().optional(),
     appointment_id: z.number().positive("ID lịch hẹn không hợp lệ").nullable().optional(),
     estimated_finish_time: z.string().optional(),
     service_ids: z.array(z.number()).optional(),
