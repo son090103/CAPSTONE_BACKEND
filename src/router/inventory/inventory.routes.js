@@ -7,15 +7,16 @@ const sparePartCategoryManagementController = require("../../controller/inventor
 const supplierManagementController = require("../../controller/inventory/supplierManagement.controller");
 const importAndExportManagementController = require("../../controller/inventory/importAndExportManagement.controller");
 const notificationController = require("../../controller/inventory/notification.controller");
+const dashboardController = require("../../controller/inventory/dashboard.controller");
 
-
+router.get("/dashboard", dashboardController.getInventoryDashboard);
 router.post("/import/scan-invoice", upload.array("invoices"), importAndExportManagementController.scanInvoice);
 
 router.get("/export-requests", importAndExportManagementController.getExportRequests);
 router.post("/export-requests/approve", importAndExportManagementController.approveExportRequest);
 router.post("/export-requests/reject", importAndExportManagementController.rejectExportRequest);
 router.get("/export-requests/:receiptCode/receipt", importAndExportManagementController.getExportReceiptDetail);
-router.post("/export-requests/:receiptCode/sign", importAndExportManagementController.signExportReceipt);
+router.post("/export-requests/:receiptCode/sign", upload.single("proofPhoto"), importAndExportManagementController.signExportReceipt);
 
 router.get("/export", importAndExportManagementController.viewExportHistory);
 router.get("/export/:receiptCode", importAndExportManagementController.viewExportDetail);

@@ -15,17 +15,11 @@ const getGarageCapacity = async () => {
       where: { is_active: true }
     });
 
-    // 2. Tính số lượng cầu nâng đang BẬN
-    const busyBays = await db.Service_Orders.count({
-      distinct: true,
-      col: 'bay_id',
+    // 2. Tính số lượng cầu nâng đang BẬN — dựa trực tiếp vào Service_Bays.status
+    const busyBays = await db.Service_Bays.count({
       where: {
-        status: {
-          [db.Sequelize.Op.in]: ['INSPECTING', 'IN_PROGRESS', 'WAITING_FOR_PARTS']
-        },
-        bay_id: {
-          [db.Sequelize.Op.not]: null
-        }
+        is_active: true,
+        status: { [db.Sequelize.Op.ne]: 'available' }
       }
     });
 

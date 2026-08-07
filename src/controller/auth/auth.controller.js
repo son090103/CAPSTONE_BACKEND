@@ -52,6 +52,7 @@ module.exports.checkPhone = async (req,res) => {
         });
     } catch (error) {
         return res.status(error.status || 500).json({
+            code: error.code,
             message: error.message || "Internal server error"
         });
     }

@@ -67,6 +67,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: true,
       },
+      rejection_reason: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
 
       deposit_amount: {
         type: DataTypes.DECIMAL(12, 2),

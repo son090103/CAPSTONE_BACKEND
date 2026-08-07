@@ -3,6 +3,7 @@ const db = require("../../../models");
 const Issues = db.Vehicle_Issues;
 const { emitProgress } = require("../../util/socket.util");
 const { notifyRole, notifyUser } = require("../../util/notification.util");
+const assignQueuedOrders = require("../../util/assignQueuedOrders.util");
 const geminiClient = require("../../config/gemini.config");
 const Components = db.Vehicle_Components;
 const Tasks = db.Task;
@@ -483,6 +484,30 @@ module.exports.createIssueReports = async (
     { status: "PENDING_QUOTATION" },
     { where: { id: task.service_order_id } },
   );
+
+  // Kiểm tra xong (dù có lỗi hay không) thì chưa chắc khách sẽ duyệt sửa — trong lúc chờ
+  // báo giá/khách duyệt, xe không cần tiếp tục chiếm cầu nâng, nên nhả ngay cho đơn khác
+  // đang xếp hàng (nếu có). Khi khách duyệt và tạo Task REPAIR, đơn sẽ xin cầu nâng lại.
+  const serviceOrderForBay = await Service_Order.findByPk(task.service_order_id, {
+    attributes: ["id", "bay_id"],
+  });
+  if (serviceOrderForBay && serviceOrderForBay.bay_id) {
+    await db.sequelize.transaction(async (t) => {
+      await db.Service_Bays.update(
+        { status: "available", current_service_order_id: null },
+        { where: { id: serviceOrderForBay.bay_id }, transaction: t },
+      );
+      // "NOT_NEEDED" tạm thời — chưa biết khách có duyệt sửa hay không, nên KHÔNG xếp vào
+      // hàng đợi giành bay ngay. Khi khách duyệt báo giá và Task REPAIR được tạo, đơn sẽ
+      // xin cầu nâng lại lúc đó (ưu tiên đúng thời điểm thực sự cần).
+      await Service_Order.update(
+        { bay_id: null, bay_status: "NOT_NEEDED" },
+        { where: { id: serviceOrderForBay.id }, transaction: t },
+      );
+      await assignQueuedOrders(t);
+    });
+  }
+
   await notifyRole(
     "RECEPTIONIST",
     {
@@ -657,7 +682,7 @@ module.exports.getIssuesReportHistory = async (technicianId) => {
   return issues;
 };
 
-module.exports.startRescueTask = async (rescueId, technicianId, newStatus) => {
+module.exports.startRescueTask = async (rescueId, technicianId, newStatus, technicianLat, technicianLng) => {
   const rescue = await db.Rescue_Requests.findByPk(rescueId, {
     include: [{ model: db.Customers, as: "customer" }],
   });
@@ -687,9 +712,45 @@ module.exports.startRescueTask = async (rescueId, technicianId, newStatus) => {
 
   await rescue.save();
 
-  if (rescue.status === 'COMPLETED') {
-    const technician = await db.User.findByPk(technicianId);
+  // Lúc bắt đầu 1 đoạn di chuyển mới (EN_ROUTE: tới chỗ khách, TOWING: chở xe về Gara), lưu GPS
+  // hiện tại của KTV vào User.latitude/longitude — dùng chung field có sẵn (giống cách customer
+  // share vị trí) để khách hàng tính đúng route xuất phát từ vị trí THẬT của KTV lúc đó.
+  if ((rescue.status === "EN_ROUTE" || rescue.status === "TOWING") && technicianLat != null && technicianLng != null) {
+    await db.User.update(
+      { latitude: technicianLat, longitude: technicianLng },
+      { where: { id: technicianId } },
+    );
+  }
 
+  const technician = await db.User.findByPk(technicianId, {
+    attributes: ["id", "fullName", "latitude", "longitude"],
+  });
+  const statusMessages = {
+    ACCEPTED: "Kỹ thuật viên đã xác nhận nhận cứu hộ của bạn.",
+    EN_ROUTE: "Kỹ thuật viên đang trên đường tới vị trí của bạn.",
+    ARRIVED: "Kỹ thuật viên đã tới nơi.",
+    TOWING: "Kỹ thuật viên đang chở xe của bạn về Gara.",
+    COMPLETED: "Cứu hộ đã hoàn tất, xe đã được đưa về Gara.",
+  };
+
+  if (rescue.customer?.user_id && statusMessages[rescue.status]) {
+    await notifyUser(rescue.customer.user_id, {
+      title: "Cập nhật yêu cầu cứu hộ",
+      content: technician
+        ? `${statusMessages[rescue.status]} (KTV ${technician.fullName})`
+        : statusMessages[rescue.status],
+      notificationType: "SYSTEM",
+      priority: "HIGH",
+    }, "new_notification", {
+      type: "RESCUE_STATUS_UPDATED",
+      rescueId: rescue.id,
+      status: rescue.status,
+      technicianLat: technician?.latitude ?? null,
+      technicianLng: technician?.longitude ?? null,
+    });
+  }
+
+  if (rescue.status === 'COMPLETED') {
     // Clear customer coordinates
     if (rescue.customer && rescue.customer.user_id) {
       await db.User.update(
@@ -720,6 +781,7 @@ module.exports.getMyActiveRescue = async (technicianId) => {
           "ACCEPTED",
           "EN_ROUTE",
           "ARRIVED",
+          "TOWING",
           "IN_PROGRESS",
         ],
       },
@@ -742,6 +804,33 @@ module.exports.getMyActiveRescue = async (technicianId) => {
   });
 
   return rescue;
+};
+
+// Danh sách các cuốc cứu hộ đã hoàn tất của chính KTV đang đăng nhập — để họ xem lại lịch sử.
+module.exports.getMyRescueHistory = async (technicianId) => {
+  const rescues = await db.Rescue_Requests.findAll({
+    where: {
+      technician_id: technicianId,
+      status: { [db.Sequelize.Op.in]: ["COMPLETED", "SERVICE_CREATED"] },
+    },
+    include: [
+      {
+        model: db.Customers,
+        as: "customer",
+        attributes: ["id", "name", "phone"],
+        include: [
+          {
+            model: db.User,
+            as: "user",
+            attributes: ["id", "fullName", "phoneNumber"],
+          },
+        ],
+      },
+    ],
+    order: [["updatedAt", "DESC"]],
+  });
+
+  return rescues;
 };
 
 module.exports.getAllDiagnostics = async () => {
@@ -835,24 +924,19 @@ module.exports.getModels = async (makeId) => {
   });
 };
 
-// Bước 6 (Format AI Response): parse JSON thô từ Gemini và dựng lại thành text có cấu trúc rõ ràng cho FE hiển thị
 function formatAiCausesResponse(rawText) {
   const jsonMatch = rawText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    // AI không trả đúng JSON như yêu cầu -> fallback dùng nguyên văn bản
     return { causes: [], recommendations: [], formattedText: rawText.trim() };
   }
-
   let parsed;
   try {
     parsed = JSON.parse(jsonMatch[0]);
   } catch {
     return { causes: [], recommendations: [], formattedText: rawText.trim() };
   }
-
   const causes = Array.isArray(parsed.causes) ? parsed.causes : [];
   const recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
-
   const lines = [];
   if (causes.length > 0) {
     lines.push("Nguyên nhân khả dĩ:");
@@ -865,7 +949,6 @@ function formatAiCausesResponse(rawText) {
     lines.push("", "Khuyến nghị kiểm tra:");
     recommendations.forEach((r) => lines.push(`- ${r}`));
   }
-
   return {
     causes,
     recommendations,
@@ -1114,6 +1197,7 @@ module.exports.getAllInspectionHistory = async () => {
         model: Tasks,
         as: "task",
         attributes: ["id"],
+        where: { type: "INSPECTION", status: "COMPLETED" },
         required: true,
         include: [
           {
@@ -1172,6 +1256,7 @@ module.exports.searchInspectionHistory = async (keyword) => {
         model: Tasks,
         as: "task",
         attributes: ["id"],
+        where: { type: "INSPECTION", status: "COMPLETED" },
         required: true,
         include: [
           {
@@ -1238,6 +1323,7 @@ module.exports.filterInspectionHistory = async ({ makeId, modelId }) => {
         model: Tasks,
         as: "task",
         attributes: ["id"],
+        where: { type: "INSPECTION", status: "COMPLETED" },
         required: true,
         include: [
           {

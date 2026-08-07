@@ -98,7 +98,7 @@ module.exports.completeTask = async (req, res) => {
 
 module.exports.startRescueTask = async (req, res) => {
   try {
-    const { rescueId, status } = req.body;
+    const { rescueId, status, technicianLat, technicianLng } = req.body;
     const technicianId = res.locals.user.id;
 
     if (!rescueId) {
@@ -108,7 +108,13 @@ module.exports.startRescueTask = async (req, res) => {
       });
     }
 
-    const result = await taskAssignmentService.startRescueTask(rescueId, technicianId, status);
+    const result = await taskAssignmentService.startRescueTask(
+      rescueId,
+      technicianId,
+      status,
+      technicianLat,
+      technicianLng,
+    );
 
     return res.status(200).json({
       success: true,
@@ -138,6 +144,24 @@ module.exports.getMyActiveRescue = async (req, res) => {
     return res.status(error.status || 500).json({
       success: false,
       message: error.message || "Đã xảy ra lỗi khi lấy nhiệm vụ cứu hộ."
+    });
+  }
+};
+
+module.exports.getMyRescueHistory = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const result = await taskAssignmentService.getMyRescueHistory(technicianId);
+
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    console.error("Error in getMyRescueHistory:", error);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi khi lấy lịch sử cứu hộ."
     });
   }
 };

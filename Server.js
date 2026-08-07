@@ -10,6 +10,7 @@ const configureGoogle = require("././src/config/google.config");
 const whitelist = [
   "http://localhost:3000",
   "http://localhost:5173",
+  "http://127.0.0.1:5173",
   "https://agm-garage.id.vn",
   "https://www.agm-garage.id.vn",
   "192.168.0.191:8081",
@@ -70,13 +71,6 @@ io.on('connection', (socket) => {
     socket.join(roomId);
   });
 
-  // Lễ tân điều phối xe cứu hộ
-  socket.on('dispatch-rescue-vehicle', (data) => {
-    // Phát tọa độ xe cứu hộ CHỈ RIÊNG cho Khách hàng đó thông qua Room (Bảo mật vị trí)
-    io.to(`customer_${data.customerId}`).emit('rescue-vehicle-dispatched', data);
-    // Đồng thời phát cho Kỹ thuật viên để họ nhận thông báo
-    io.to(`technician_${data.technicianId}`).emit('incoming-rescue-task', data);
-  });
   socket.on('join-role', (roleCode) => {
     socket.join(`role-${roleCode}`);
   });
@@ -90,6 +84,11 @@ io.on('connection', (socket) => {
   });
   socket.on('leave-vehicle-tracking', (serviceOrderId) => {
     socket.leave(`service-order-${serviceOrderId}`);
+  });
+
+  socket.on('update-rescue-location', (data) => {
+    const { customerId, latitude, longitude } = data;
+    io.to(`customer_${customerId}`).emit('rescue-location-updated', { latitude, longitude });
   });
 });
 const ROUTES = require("./src/router/registry.routes");

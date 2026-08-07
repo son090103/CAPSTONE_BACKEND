@@ -36,6 +36,14 @@ module.exports = (sequelize, DataTypes) => {
           as: 'appointmentDetails'
         });
       }
+
+      // 6. Một lịch hẹn có thể liên kết với một yêu cầu cứu hộ
+      if (models.Rescue_Requests) {
+        this.hasOne(models.Rescue_Requests, {
+          foreignKey: 'appointment_id',
+          as: 'rescueRequest'
+        });
+      }
     }
   }
   Appointments.init({
@@ -58,6 +66,10 @@ module.exports = (sequelize, DataTypes) => {
     notes: {
       type: DataTypes.TEXT,
       allowNull: true
+    },
+    reception_condition: {
+      type: DataTypes.TEXT,
+      allowNull: true // Tình trạng xe do lễ tân ghi nhận lúc Tiếp nhận — tách biệt với notes (ghi chú/mô tả lỗi của khách)
     },
 
     status: {

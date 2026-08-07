@@ -17,6 +17,7 @@ router.get("/spare-parts", quoteManagementController.getSpareParts);
 router.get("/services", quoteManagementController.getAllService);
 
 router.get("/appointments", appointmentController.getAppointment);
+router.post("/appointment", appointmentController.createAppointmentForCustomer);
 router.get("/appointment/:key", appointmentController.getAppointmentByKey);
 router.put("/appointment/:key/receive", appointmentController.receiveAppointment);
 router.post("/appointment/:key/vin", appointmentController.updateVehicleVin);
@@ -39,12 +40,13 @@ router.get("/notification/:id", notificationController.getNotificationById)
 router.put("/notification/:id/read", notificationController.markAsRead)
 
 router.get("/quotation/:id", quoteManagementController.getQuotationById);
-router.patch("/quotation/:id/approve-otp", quoteManagementController.approveQuoteByOTP);
+router.patch("/quotation/:id/approve", quoteManagementController.approveQuote);
 // lấy ra toàn bộ technician làm hôm nay 
 router.get("/technicians/working-today", technicianController.getTechniciansWorkingToday);
 
 // Phân công technician cho 1 yêu cầu cứu hộ
 router.post("/rescue/assign", technicianController.assignRescueTechnician);
+router.post("/rescue/create", technicianController.createRescueRequest);
 
 router.get("/chat/conversations", chatController.getConversationsForReception);
 router.get("/chat/conversations/:id", chatController.getConversationDetailForReception);

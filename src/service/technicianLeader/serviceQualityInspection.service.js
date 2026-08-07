@@ -12,6 +12,7 @@ const { Op } = require("sequelize");
 const { notifyRole,notifyUser } = require("../../util/notification.util");
 const { emitProgress } = require("../../util/socket.util");
 const ROLES = require("../../constants/roles");
+const assignQueuedOrders = require("../../util/assignQueuedOrders.util");
 
 module.exports.getServiceOrdersPendingFinalQC = async () => {
   const orders = await Service_Order.findAll({
@@ -72,10 +73,56 @@ module.exports.getServiceOrdersPendingFinalQC = async () => {
   return orders;
 };
 
+// Thống kê nghiệm thu trong ngày hôm nay cho màn "Tổng quan phân công" của tổ trưởng.
+// - pendingQC: đang chờ nghiệm thu (không phụ thuộc ngày, vì đây là hàng đợi hiện tại)
+// - approvedToday: số lệnh sửa chữa nghiệm thu ĐẠT hôm nay (dựa trên actual_finish_time)
+// - rejectedToday: số lệnh sửa chữa bị từ chối nghiệm thu (cần sửa lại) hôm nay - đếm theo
+//   service_order_id duy nhất trong Task_Assignments bị reject, tránh đếm trùng khi 1 lệnh
+//   có nhiều task cùng bị từ chối 1 lần.
+module.exports.getInspectionStatistics = async () => {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const pendingQC = await Service_Order.count({
+    where: { status: "PENDING_FINAL_QC" },
+  });
+
+  const approvedToday = await Service_Order.count({
+    where: {
+      status: "COMPLETED",
+      actual_finish_time: { [Op.between]: [startOfDay, endOfDay] },
+    },
+  });
+
+  const rejectedAssignments = await Task_Assignments.findAll({
+    attributes: ["id"],
+    where: {
+      status: "IN_PROGRESS",
+      remarks: { [Op.ne]: null },
+      updatedAt: { [Op.between]: [startOfDay, endOfDay] },
+    },
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["service_order_id"],
+        required: true,
+      },
+    ],
+  });
+  const rejectedToday = new Set(
+    rejectedAssignments.map((a) => a.task.service_order_id),
+  ).size;
+
+  return { pendingQC, approvedToday, rejectedToday };
+};
+
 module.exports.approveFinalInspection = async (serviceOrderId) => {
   const serviceOrder = await db.sequelize.transaction(async (t) => {
     const serviceOrder = await Service_Order.findByPk(serviceOrderId, {
-      attributes: ["id", "status", "appointment_id"],
+      attributes: ["id", "status", "appointment_id", "bay_id"],
       include: [
         {
           model: Vehicles,
@@ -115,6 +162,13 @@ module.exports.approveFinalInspection = async (serviceOrderId) => {
       { status: "COMPLETED", actual_finish_time: new Date() },
       { transaction: t },
     );
+    if (serviceOrder.bay_id) {
+      await db.Service_Bays.update(
+        { status: "available", current_service_order_id: null },
+        { where: { id: serviceOrder.bay_id }, transaction: t },
+      );
+      await assignQueuedOrders(t);
+    }
     if (serviceOrder.appointment_id) {
       await db.Appointments.update(
         { status: "COMPLETED" },

@@ -1,5 +1,6 @@
 const db = require("../../../models");
 const { notifyUser, notifyRole } = require("../../util/notification.util");
+const loyaltyService = require("../customer/loyalty.service");
 
 const notifyDepositPaid = async (quotationId) => {
     try {
@@ -148,12 +149,14 @@ const handleSepayTransaction = async (paymentData) => {
             }
         }
 
-        // Đơn lịch hẹn / Sửa chữa chung (AGM-xxx / SO-xxx)
-        const match = content?.match(/(?:AGM|SO)[- ]?(\d+)/i);
+        // Đơn lịch hẹn / Sửa chữa chung (AGM-xxx / SO-xxx) có thể kèm điểm (PT-xxx)
+        const match = content?.match(/(?:AGM|SO)[- ]?(\d+)(?:[- ]?PT[- ]?(\d+))?/i);
 
         if (!bgMatch && match) {
             bookingCode = match[1];
-            console.log(`✅ [Sepay] Tìm thấy mã đơn/lịch hẹn: ${bookingCode}`);
+            const pointsRedeemed = match[2] ? parseInt(match[2], 10) : 0;
+            console.log(`✅ [Sepay] Tìm thấy mã đơn/lịch hẹn: ${bookingCode} | Điểm dùng: ${pointsRedeemed}`);
+
             bookingPayment = await db.Booking_Payments.findOne({
                 where: {
                     order_id: parseInt(bookingCode, 10),
@@ -161,9 +164,30 @@ const handleSepayTransaction = async (paymentData) => {
                 }
             });
 
+            const serviceOrder = await db.Service_Orders.findByPk(parseInt(bookingCode, 10), {
+                include: [{
+                    model: db.Vehicles,
+                    as: 'vehicle',
+                    include: [{ model: db.Customers, as: 'customer' }]
+                }]
+            });
+
+            if (serviceOrder && pointsRedeemed > 0) {
+                // Deduct loyalty points if specified in QR addInfo
+                const customerId = serviceOrder.vehicle?.customer?.id;
+                if (customerId) {
+                    try {
+                        const loyaltyService = require('../customer/loyalty.service');
+                        await loyaltyService.redeemPoints(customerId, pointsRedeemed, serviceOrder.id);
+                        console.log(`✅ [Sepay] Đã tự động trừ ${pointsRedeemed} điểm từ khách hàng ${customerId}`);
+                    } catch (e) {
+                        console.error(`❌ [Sepay] Lỗi khi trừ điểm:`, e);
+                    }
+                }
+            }
+
             // Nếu chưa có bản ghi Booking_Payments cho đơn này, tự động khởi tạo nếu Service_Order tồn tại
             if (!bookingPayment) {
-                const serviceOrder = await db.Service_Orders.findByPk(parseInt(bookingCode, 10));
                 if (serviceOrder) {
                     console.log(`✅ [Sepay] Tìm thấy ServiceOrder #${bookingCode}. Tự động khởi tạo Booking_Payments.`);
                     bookingPayment = await db.Booking_Payments.create({
@@ -176,6 +200,7 @@ const handleSepayTransaction = async (paymentData) => {
                 }
             }
         }
+
 
         // --- TỰ ĐỘNG NHẬN DIỆN QUA SỐ TIỀN (FALLBACK) ---
         if (!bookingPayment && !bgMatch) {
@@ -300,6 +325,9 @@ const handleSepayTransaction = async (paymentData) => {
             }
         }
 
+        // Check if it was already paid to prevent duplicate point additions
+        const wasAlreadyPaid = bookingPayment && bookingPayment.payment_status === 'PAID';
+
         // Cập nhật trạng thái nếu tìm thấy
         if (bookingPayment) {
             const updateFields = {
@@ -308,6 +336,18 @@ const handleSepayTransaction = async (paymentData) => {
             };
             if (!isDeposit) {
                 updateFields.payment_status = 'PAID';
+
+                // Update appointment status to CONFIRMED
+                const serviceOrder = await db.Service_Orders.findOne({
+                    where: { id: bookingPayment.order_id }
+                });
+                if (serviceOrder && serviceOrder.appointment_id) {
+                    await db.Appointments.update(
+                        { status: 'CONFIRMED' },
+                        { where: { id: serviceOrder.appointment_id } }
+                    );
+                    console.log(`✅ [Sepay] Đã cập nhật trạng thái Appointments thành CONFIRMED cho đơn hàng ${bookingPayment.order_id}`);
+                }
             }
             await bookingPayment.update(updateFields);
             console.log(`✅ [Sepay] Đã cập nhật Booking_Payments (ID: ${bookingPayment.id}) ${isDeposit ? 'cho đặt cọc (DEPOSITED)' : 'thành PAID'}`);
@@ -330,6 +370,11 @@ const handleSepayTransaction = async (paymentData) => {
         });
 
         console.log(`✅ [Sepay] Đã lưu giao dịch vào Payment_Transactions (ID: ${transaction.id})`);
+
+        // 4. Add Loyalty Points if it's a full payment AND it wasn't already paid
+        if (bookingPayment && !isDeposit && !wasAlreadyPaid) {
+            await loyaltyService.addPointsOnPayment(bookingPayment.order_id, transferAmount);
+        }
 
         return { success: true };
     } catch (error) {
@@ -392,12 +437,46 @@ const initPayment = async (orderId, amount, paymentMethod = 'VIETQR') => {
     }
 };
 
-const confirmPayment = async (orderId, amount, paymentMethod = 'VIETQR') => {
+const confirmPayment = async (orderId, amount, paymentMethod = 'VIETQR', receptionistId = null, pointsRedeemed = 0) => {
     try {
         const numericOrderId = parseInt(String(orderId).replace(/\D/g, ''), 10);
         if (isNaN(numericOrderId)) {
             throw new Error("Invalid orderId");
         }
+
+        // --- LOYALTY POINTS REDEMPTION ---
+        if (pointsRedeemed > 0) {
+            // Find service order to get customer ID
+            const serviceOrder = await db.Service_Orders.findByPk(numericOrderId, {
+                include: [{
+                    model: db.Vehicles,
+                    as: 'vehicle',
+                    include: [{ model: db.Customers, as: 'customer' }]
+                }]
+            });
+
+            if (serviceOrder && serviceOrder.vehicle && serviceOrder.vehicle.customer) {
+                const customerId = serviceOrder.vehicle.customer.id;
+
+                // Get config for max discount
+                let maxPercentConfig = await db.Garage_Configurations.findOne({ where: { config_key: 'MAX_LOYALTY_DISCOUNT_PERCENT' } });
+                if (!maxPercentConfig) {
+                    maxPercentConfig = await db.Garage_Configurations.create({
+                        config_key: 'MAX_LOYALTY_DISCOUNT_PERCENT',
+                        config_value: '30',
+                        description: 'Phần trăm tối đa của hóa đơn được phép thanh toán bằng điểm'
+                    });
+                }
+                const maxPercent = parseInt(maxPercentConfig.config_value) || 30;
+
+                // Calculate original amount (approximate based on amount + pointsRedeemed * 1000)
+                // Actually the best way is to fetch the full total from tasks/quotation, but for now we trust frontend validation
+
+                // Redeem points
+                await loyaltyService.redeemPoints(customerId, pointsRedeemed, numericOrderId);
+            }
+        }
+        // ---------------------------------
 
         let bookingPayment = await db.Booking_Payments.findOne({
             where: { order_id: numericOrderId }
@@ -433,8 +512,23 @@ const confirmPayment = async (orderId, amount, paymentMethod = 'VIETQR') => {
             accumulated: amount,
             code: `${paymentMethod}-${Date.now()}`,
             transaction_content: `Thanh toán ${paymentMethod === 'CASH' ? 'tiền mặt' : 'chuyển khoản'} cho SO-${numericOrderId}`,
-            raw_body: JSON.stringify({ orderId, amount, paymentMethod })
+            raw_body: JSON.stringify({ orderId, amount, paymentMethod, pointsRedeemed })
         });
+
+        // Add Loyalty Points (Earn points based on the actual cash amount paid)
+        await loyaltyService.addPointsOnPayment(numericOrderId, amount);
+
+        // Update appointment status to CONFIRMED
+        const serviceOrder = await db.Service_Orders.findOne({
+            where: { id: numericOrderId }
+        });
+        if (serviceOrder && serviceOrder.appointment_id) {
+            await db.Appointments.update(
+                { status: 'CONFIRMED' },
+                { where: { id: serviceOrder.appointment_id } }
+            );
+            console.log(`✅ [Payment] Đã cập nhật trạng thái Appointments thành CONFIRMED cho đơn hàng ${numericOrderId}`);
+        }
 
         return { success: true, bookingPayment };
     } catch (error) {

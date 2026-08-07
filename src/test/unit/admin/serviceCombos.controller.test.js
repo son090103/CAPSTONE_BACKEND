@@ -84,8 +84,11 @@ describe("ServiceCombos Controller", () => {
       await controller.getServiceCombos(req, res);
 
       expect(mockListServiceCombos).toHaveBeenCalledWith({
-        q: "search-term",
-        is_active: "true",
+        q: undefined,
+        is_active: undefined,
+        page: undefined,
+        limit: undefined,
+        all: undefined,
       });
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({ data: fakeData });

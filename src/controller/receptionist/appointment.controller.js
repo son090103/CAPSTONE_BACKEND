@@ -58,9 +58,29 @@ module.exports.getAppointmentByKey = async (req, res) => {
     }
 };
 
+module.exports.createAppointmentForCustomer = async (req, res) => {
+    try {
+        const requestUser = res.locals.user;
+        if (!requestUser) {
+            return res.status(401).json({ message: "Unauthorized" });
+        }
+
+        const result = await appointmentService.createAppointmentForCustomer(req.body, requestUser.id);
+        return res.status(201).json({
+            success: true,
+            message: "Đặt lịch hẹn cho khách hàng thành công",
+            data: result
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
 module.exports.receiveAppointment = async (req, res) => {
     try {
-        console.log("chạy vào tiêp nhận xe")
         const requestUser = res.locals.user;
         if (!requestUser) {
             return res.status(401).json({ message: "Unauthorized" });
@@ -75,7 +95,8 @@ module.exports.receiveAppointment = async (req, res) => {
             });
         }
 
-        const result = await appointmentService.receiveAppointment(key);
+        const { vehicleCondition } = req.body;
+        const result = await appointmentService.receiveAppointment(key, vehicleCondition);
         return res.status(200).json({
             success: true,
             message: "Tiếp nhận lịch hẹn thành công",

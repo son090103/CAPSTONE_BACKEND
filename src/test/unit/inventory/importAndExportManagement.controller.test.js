@@ -1,15 +1,29 @@
 const mockImportSparePart = jest.fn();
 const mockViewImportHistory = jest.fn();
-const mockGetApprovedQuotesWithParts = jest.fn();
-const mockApproveExportByQuotation = jest.fn();
+const mockGetExportRequests = jest.fn();
+const mockApproveExportRequest = jest.fn();
+const mockRejectExportRequest = jest.fn();
+const mockGetExportReceiptDetail = jest.fn();
+const mockSignExportReceipt = jest.fn();
+const mockViewImportDetail = jest.fn();
 const mockViewExportHistory = jest.fn();
+const mockViewExportDetail = jest.fn();
+const mockGetWaitingStockItems = jest.fn();
+const mockImportSparePartForOrderItem = jest.fn();
 
 jest.mock("../../../service/inventory/importAndExportManagement.service", () => ({
   importSparePart: mockImportSparePart,
   viewImportHistory: mockViewImportHistory,
-  getApprovedQuotesWithParts: mockGetApprovedQuotesWithParts,
-  approveExportByQuotation: mockApproveExportByQuotation,
+  getExportRequests: mockGetExportRequests,
+  approveExportRequest: mockApproveExportRequest,
+  rejectExportRequest: mockRejectExportRequest,
+  getExportReceiptDetail: mockGetExportReceiptDetail,
+  signExportReceipt: mockSignExportReceipt,
+  viewImportDetail: mockViewImportDetail,
   viewExportHistory: mockViewExportHistory,
+  viewExportDetail: mockViewExportDetail,
+  getWaitingStockItems: mockGetWaitingStockItems,
+  importSparePartForOrderItem: mockImportSparePartForOrderItem,
 }));
 
 jest.mock("jsonwebtoken");
@@ -324,85 +338,220 @@ describe("ImportAndExportManagement Controller", () => {
     });
   });
 
-  // ==================== getApprovedQuotesWithParts ====================
-  describe("getApprovedQuotesWithParts", () => {
-    it("should return 200 and approved quotes", async () => {
-      const fakeData = [{ id: 1, status: "approved" }];
-      mockGetApprovedQuotesWithParts.mockResolvedValue(fakeData);
+  // ==================== getExportRequests ====================
+  describe("getExportRequests", () => {
+    it("should return 200 and export requests", async () => {
+      const fakeData = [{ id: 1, status: "pending" }];
+      mockGetExportRequests.mockResolvedValue(fakeData);
       const req = {};
       const res = createMockResponse();
 
-      await controller.getApprovedQuotesWithParts(req, res);
+      await controller.getExportRequests(req, res);
 
-      expect(mockGetApprovedQuotesWithParts).toHaveBeenCalledTimes(1);
+      expect(mockGetExportRequests).toHaveBeenCalledTimes(1);
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith({ data: fakeData });
+      expect(res.json).toHaveBeenCalledWith({ success: true, data: fakeData });
     });
 
     it("should return error when service throws", async () => {
       const error = new Error("DB error");
       error.status = 500;
-      mockGetApprovedQuotesWithParts.mockRejectedValue(error);
+      mockGetExportRequests.mockRejectedValue(error);
       const req = {};
       const res = createMockResponse();
 
-      await controller.getApprovedQuotesWithParts(req, res);
+      await controller.getExportRequests(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ message: "DB error" });
     });
   });
 
-  // ==================== approveExportByQuotation ====================
-  describe("approveExportByQuotation", () => {
-    it("should return 400 when quotationId is missing", async () => {
-      const req = { params: {} };
+  // ==================== approveExportRequest ====================
+  describe("approveExportRequest", () => {
+    it("should return 400 when detailIds is missing", async () => {
+      const req = { body: {} };
       const res = createMockResponse();
 
-      await controller.approveExportByQuotation(req, res);
+      await controller.approveExportRequest(req, res);
 
       expect(res.status).toHaveBeenCalledWith(400);
-      expect(mockApproveExportByQuotation).not.toHaveBeenCalled();
+      expect(mockApproveExportRequest).not.toHaveBeenCalled();
     });
 
-    it("should return 400 when quotationId is not a number", async () => {
-      const req = { params: { quotationId: "abc" } };
+    it("should return 200 when export request approved successfully", async () => {
+      const fakeResult = { id: 1, status: "approved" };
+      mockApproveExportRequest.mockResolvedValue(fakeResult);
+      const req = { body: { detailIds: [1, 2] } };
       const res = createMockResponse();
 
-      await controller.approveExportByQuotation(req, res);
+      await controller.approveExportRequest(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(mockApproveExportByQuotation).not.toHaveBeenCalled();
-    });
-
-    it("should return 200 when export approved successfully", async () => {
-      const fakeResult = { id: 1, status: "exported" };
-      mockApproveExportByQuotation.mockResolvedValue(fakeResult);
-      const req = { params: { quotationId: "5" } };
-      const res = createMockResponse();
-
-      await controller.approveExportByQuotation(req, res);
-
-      expect(mockApproveExportByQuotation).toHaveBeenCalledWith(5, 1);
+      expect(mockApproveExportRequest).toHaveBeenCalledWith([1, 2], 1);
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({
         message: "Xuất kho thành công",
         data: fakeResult,
       });
     });
+  });
 
-    it("should return error when service throws", async () => {
-      const error = new Error("Báo giá không tồn tại");
-      error.status = 404;
-      mockApproveExportByQuotation.mockRejectedValue(error);
-      const req = { params: { quotationId: "999" } };
+  // ==================== rejectExportRequest ====================
+  describe("rejectExportRequest", () => {
+    it("should return 400 when detailIds is missing", async () => {
+      const req = { body: {} };
       const res = createMockResponse();
 
-      await controller.approveExportByQuotation(req, res);
+      await controller.rejectExportRequest(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockRejectExportRequest).not.toHaveBeenCalled();
+    });
+
+    it("should return 200 when reject export request succeeds", async () => {
+      const fakeResult = { id: 1, status: "rejected" };
+      mockRejectExportRequest.mockResolvedValue(fakeResult);
+      const req = { body: { detailIds: [1], reason: "Không đủ hàng" } };
+      const res = createMockResponse();
+
+      await controller.rejectExportRequest(req, res);
+
+      expect(mockRejectExportRequest).toHaveBeenCalledWith([1], "Không đủ hàng");
+      expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({
-        message: "Báo giá không tồn tại",
+        message: "Đã từ chối yêu cầu xuất kho",
+        data: fakeResult,
+      });
+    });
+  });
+
+  // ==================== getExportReceiptDetail ====================
+  describe("getExportReceiptDetail", () => {
+    it("should return 200 and export receipt detail", async () => {
+      const fakeData = { id: 1, receiptCode: "RC-001" };
+      mockGetExportReceiptDetail.mockResolvedValue(fakeData);
+      const req = { params: { receiptCode: "RC-001" } };
+      const res = createMockResponse();
+
+      await controller.getExportReceiptDetail(req, res);
+
+      expect(mockGetExportReceiptDetail).toHaveBeenCalledWith("RC-001");
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ success: true, data: fakeData });
+    });
+  });
+
+  // ==================== signExportReceipt ====================
+  describe("signExportReceipt", () => {
+    it("should return 400 when signature image is missing", async () => {
+      const req = { params: { receiptCode: "RC-001" }, body: {} };
+      const res = createMockResponse();
+
+      await controller.signExportReceipt(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockSignExportReceipt).not.toHaveBeenCalled();
+    });
+
+    it("should return 200 when signature is valid", async () => {
+      const fakeResult = { id: 1 };
+      mockSignExportReceipt.mockResolvedValue(fakeResult);
+      const req = {
+        params: { receiptCode: "RC-001" },
+        body: { signatureImage: "data:image/png;base64,AAAA" },
+      };
+      const res = createMockResponse();
+
+      await controller.signExportReceipt(req, res);
+
+      expect(mockSignExportReceipt).toHaveBeenCalledWith("RC-001", expect.any(Buffer));
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        message: "Ký nhận phụ tùng thành công",
+        data: fakeResult,
+      });
+    });
+  });
+
+  // ==================== viewImportDetail ====================
+  describe("viewImportDetail", () => {
+    it("should return 200 and import detail", async () => {
+      const fakeData = { id: 1, receiptCode: "RC-001" };
+      mockViewImportDetail.mockResolvedValue(fakeData);
+      const req = { params: { receiptCode: "RC-001" } };
+      const res = createMockResponse();
+
+      await controller.viewImportDetail(req, res);
+
+      expect(mockViewImportDetail).toHaveBeenCalledWith("RC-001");
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ data: fakeData });
+    });
+  });
+
+  // ==================== viewExportDetail ====================
+  describe("viewExportDetail", () => {
+    it("should return 200 and export detail", async () => {
+      const fakeData = { id: 1, receiptCode: "RC-001" };
+      mockViewExportDetail.mockResolvedValue(fakeData);
+      const req = { params: { receiptCode: "RC-001" } };
+      const res = createMockResponse();
+
+      await controller.viewExportDetail(req, res);
+
+      expect(mockViewExportDetail).toHaveBeenCalledWith("RC-001");
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ data: fakeData });
+    });
+  });
+
+  // ==================== getWaitingStockItems ====================
+  describe("getWaitingStockItems", () => {
+    it("should return 200 and waiting stock items", async () => {
+      const fakeData = [{ id: 1, part_id: 1, quantity: 3 }];
+      mockGetWaitingStockItems.mockResolvedValue(fakeData);
+      const req = {};
+      const res = createMockResponse();
+
+      await controller.getWaitingStockItems(req, res);
+
+      expect(mockGetWaitingStockItems).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ data: fakeData });
+    });
+  });
+
+  // ==================== importSparePartForOrderItem ====================
+  describe("importSparePartForOrderItem", () => {
+    it("should return 400 when validation fails", async () => {
+      const req = { body: { supplier_id: 1, items: [] } };
+      const res = createMockResponse();
+
+      await controller.importSparePartForOrderItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockImportSparePartForOrderItem).not.toHaveBeenCalled();
+    });
+
+    it("should return 201 when import for order item succeeds", async () => {
+      const fakeResult = { id: 5 };
+      mockImportSparePartForOrderItem.mockResolvedValue(fakeResult);
+      const req = {
+        body: {
+          supplier_id: 1,
+          items: [{ quotation_item_id: 12, quantity: 2, unit_price: 50000, part_id: 1 }],
+        },
+      };
+      const res = createMockResponse();
+
+      await controller.importSparePartForOrderItem(req, res);
+
+      expect(mockImportSparePartForOrderItem).toHaveBeenCalledWith(1, 1, [{ quotation_item_id: 12, quantity: 2, unit_price: 50000, part_id: 1 }]);
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(res.json).toHaveBeenCalledWith({
+        message: "Nhập kho cho đơn đặt riêng thành công",
+        data: fakeResult,
       });
     });
   });

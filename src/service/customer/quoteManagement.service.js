@@ -3,6 +3,7 @@ const Quotation = db.Quotations;
 const QuotationDetail = db.Quotation_Details;
 const Task = db.Task;
 const { notifyRole } = require("../../util/notification.util");
+const assignQueuedOrders = require("../../util/assignQueuedOrders.util");
 
 const getQuotationInclude = (customerId) => [
   {
@@ -189,6 +190,15 @@ module.exports.approveQuotation = async (userId, quotationId) => {
           transaction: t,
         },
       );
+
+      // Báo giá được duyệt -> phát sinh Task REPAIR mới -> xe cần cầu nâng trở lại (đã nhả lúc
+      // kiểm tra xong chờ duyệt). Xếp vào hàng đợi và để assignQueuedOrders tự gán ngay nếu có
+      // cầu nâng + KTV rảnh.
+      await db.Service_Orders.update(
+        { bay_status: "WAITING" },
+        { where: { id: inspectionTask.service_order_id }, transaction: t },
+      );
+      await assignQueuedOrders(t);
     }
     await quotation.update(
       { status: "APPROVED", approved_at: new Date() },
@@ -269,7 +279,7 @@ module.exports.rejectQuotation = async (userId, quotationId, reason) => {
       message: "Báo giá đã được xử lý, không thể thay đổi",
     };
   }
-  await quotation.update({ status: "REJECTED", note: reason.trim() });
+  await quotation.update({ status: "REJECTED", rejection_reason: reason.trim() });
 
   const serviceOrderId = quotation.task.service_order_id;
   await notifyRole(
@@ -302,6 +312,7 @@ module.exports.getQuotationById = async (userId, quotationId) => {
       "status",
       "approval_method",
       "note",
+      "rejection_reason",
       "approved_at",
       "createdAt",
     ],
@@ -324,6 +335,7 @@ module.exports.getQuotationHistory = async (userId) => {
       "status",
       "approval_method",
       "note",
+      "rejection_reason",
       "approved_at",
       "createdAt",
     ],

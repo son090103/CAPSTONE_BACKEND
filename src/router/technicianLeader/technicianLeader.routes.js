@@ -5,6 +5,7 @@ const serviceQualityInspectionController = require("../../controller/technicianL
 const notificationController = require("../../controller/technicianLeader/notification.controller");
 
 router.get("/quality-inspection", serviceQualityInspectionController.getServiceOrdersPendingQC);
+router.get("/quality-inspection/statistics", serviceQualityInspectionController.getInspectionStatistics);
 router.patch("/final-inspection/:serviceOrderId/approve", serviceQualityInspectionController.approveFinalInspection);
 router.patch("/final-inspection/:serviceOrderId/reject", serviceQualityInspectionController.rejectFinalInspection);
 router.get("/tasks", taskAssignmentController.getAllTasks);

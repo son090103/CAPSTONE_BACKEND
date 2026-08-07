@@ -137,3 +137,4 @@ module.exports.checkLicensePlate = async (req, res) => {
     return sendError(res, error);
   }
 };
+

@@ -1,7 +1,7 @@
 const db = require("../../../models");
 const { Op } = require("sequelize");
 const getGarageCapacity = require("../../util/getGarageCapacity.util");
-const { notifyRole, notifyUser } = require("../../util/notification.util");
+const { notifyRole } = require("../../util/notification.util");
 
 module.exports.getAppointments = async (userId) => {
     let customer = await db.Customers.findOne({ where: { user_id: userId } });
@@ -105,6 +105,9 @@ module.exports.getAppointments = async (userId) => {
     return appointments;
 };
 
+// Đặt lịch hẹn: chỉ giữ chỗ (Appointment + Appointment_Details), KHÔNG tạo Service_Order/Task/Quotation
+// và KHÔNG chiếm cầu nâng/gán KTV — vì xe chưa thực sự có mặt tại garage. Service_Order chỉ được tạo
+// sau khi khách đến và lễ tân bấm "Tiếp nhận" (receiveAppointment).
 module.exports.createAppointment = async (userId, data) => {
     // Kiểm tra sức chứa của gara
     const capacityData = await getGarageCapacity();
@@ -294,128 +297,6 @@ module.exports.createAppointment = async (userId, data) => {
             await db.Appointment_Details.bulkCreate(detailsToCreate, { transaction });
         }
 
-        const needsServiceOrder = ['CUSTOMER_SPECIFIC', 'RECEPTIONIST_SPECIFIC', 'CUSTOMER_REPAIR', 'RECEPTIONIST_REPAIR'].includes(data.booking_type);
-        let serviceOrder = null;
-        let technicianId = null;
-        if (needsServiceOrder) {
-            const recRole = await db.Role.findOne({ where: { roleCode: 'RECEPTIONIST' }, transaction });
-            let receptionistId = 1;
-            if (recRole) {
-                const receptionist = await db.User.findOne({ where: { roleId: recRole.id }, transaction });
-                if (receptionist) receptionistId = receptionist.id;
-            }
-
-            const bays = await db.Service_Bays.findAll({ where: { is_active: true }, transaction });
-            let bayId = 1;
-            if (bays.length > 0) {
-                const bayUsageCount = await Promise.all(bays.map(async (b) => {
-                    const count = await db.Service_Orders.count({
-                        where: { bay_id: b.id, status: { [Op.in]: ['INSPECTING', 'IN_PROGRESS', 'WAITING_FOR_PARTS'] } },
-                        transaction
-                    });
-                    return { id: b.id, count };
-                }));
-                bayUsageCount.sort((a, b) => a.count - b.count);
-                bayId = bayUsageCount[0].id;
-            }
-
-            serviceOrder = await db.Service_Orders.create({
-                appointment_id: appointment.id,
-                vehicle_id: resolvedVehicleId,
-                receptionist_id: receptionistId,
-                bay_id: bayId,
-                current_odo: 0,
-                status: 'INSPECTING',
-                entry_time: appointment.scheduled_time,
-                symptoms: "Chưa cập nhật"
-            }, { transaction });
-
-            const { findAvailableTechnicians } = require("../../util/findAvailableTechnicians.util");
-            technicianId = 1;
-
-            const technicians = await findAvailableTechnicians(data.scheduled_time, transaction);
-            if (technicians.length > 0) {
-                const technicianTasksCount = await Promise.all(technicians.map(async (tech) => {
-                    const count = await db.Task_Assignment.count({
-                        where: {
-                            technician_id: tech.id,
-                            status: { [Op.in]: ['ASSIGNED', 'IN_PROGRESS'] }
-                        },
-                        transaction
-                    });
-                    return { id: tech.id, count };
-                }));
-                technicianTasksCount.sort((a, b) => a.count - b.count);
-                technicianId = technicianTasksCount[0].id;
-            }
-
-            const taskCatalogs = [];
-            for (const d of allDetails) {
-                if (d.catalog_id) {
-                    taskCatalogs.push(d.catalog_id);
-                }
-                if (d.combo_id) {
-                    const comboCatalogs = await db.Service_Combo_Catalogs.findAll({
-                        where: { combo_id: d.combo_id },
-                        transaction
-                    });
-                    for (const cc of comboCatalogs) {
-                        taskCatalogs.push(cc.catalog_id);
-                    }
-                }
-            }
-
-            const uniqueTaskCatalogs = [...new Set(taskCatalogs)];
-
-            if (uniqueTaskCatalogs.length === 0) {
-                // Tạo một task khám xe chung nếu không có dịch vụ cụ thể nào
-                const task = await db.Task.create({
-                    service_order_id: serviceOrder.id,
-                    service_catalog_id: null,
-                    type: "INSPECTION",
-                    status: 'PENDING'
-                }, { transaction });
-
-                await db.Task_Assignment.create({
-                    task_id: task.id,
-                    technician_id: technicianId,
-                    bay_id: bayId,
-                    role_in_task: 'LEAD',
-                    contribution_percent: 100,
-                    status: 'ASSIGNED'
-                }, { transaction });
-            } else {
-                for (const catalogId of uniqueTaskCatalogs) {
-                    const task = await db.Task.create({
-                        service_order_id: serviceOrder.id,
-                        service_catalog_id: catalogId,
-                        type: "REPAIR",
-                        status: 'PENDING'
-                    }, { transaction });
-
-                    await db.Task_Assignment.create({
-                        task_id: task.id,
-                        technician_id: technicianId,
-                        bay_id: bayId,
-                        role_in_task: 'LEAD',
-                        contribution_percent: 100,
-                        status: 'ASSIGNED'
-                    }, { transaction });
-                }
-            }
-
-            if (data.payment_amount && Number(data.payment_amount) > 0) {
-                await db.Booking_Payments.create({
-                    order_id: serviceOrder.id,
-                    payment_method: 'ONLINE',
-                    payment_gateway: 'BANK',
-                    amount: Number(data.payment_amount),
-                    currency: 'VND',
-                    payment_status: 'PENDING'
-                }, { transaction });
-            }
-        }
-
         await transaction.commit();
 
         // --- Bắt đầu: Xử lý Socket và Thông báo cho Lễ tân ---
@@ -431,17 +312,6 @@ module.exports.createAppointment = async (userId, data) => {
             appointmentId: appointment.id,
             type: "APPOINTMENT"
         });
-        if (needsServiceOrder && technicianId) {
-            await notifyUser(technicianId, {
-                title: "Bạn được giao công việc mới",
-                content: "Bạn vừa được hệ thống tự động phân công tiếp nhận một xe mới.",
-                notificationType: "SERVICE_ORDER",
-                referenceId: serviceOrder.id
-            }, 'new_notification', {
-                type: "TASK_ASSIGNED",
-                serviceOrderId: serviceOrder.id
-            });
-        }
         // --- Kết thúc xử lý thông báo ---
 
         return await db.Appointments.findByPk(appointment.id, {
@@ -501,11 +371,6 @@ module.exports.createAppointment = async (userId, data) => {
                             ]
                         }
                     ]
-                },
-                {
-                    model: db.Service_Orders,
-                    as: 'serviceOrder',
-                    attributes: ['id', 'status']
                 }
             ]
         });
@@ -590,11 +455,11 @@ module.exports.getAppointmentVehicles = async (userId) => {
     const availableVehicles = [];
 
     for (const vehicle of vehicles) {
-        // Kiểm tra xem xe có đang có lịch hẹn chờ xử lý hoặc đang xử lý không
+        // Kiểm tra xem xe có đang có lịch hẹn chờ xử lý hoặc đang xử lý không (chỉ khóa khi lịch hẹn đã được CONFIRMED thanh toán)
         const activeAppointment = await db.Appointments.findOne({
             where: {
                 vehicle_id: vehicle.id,
-                status: { [db.Sequelize.Op.in]: ['PENDING', 'CONFIRMED'] }
+                status: 'CONFIRMED'
             }
         });
 
@@ -603,15 +468,25 @@ module.exports.getAppointmentVehicles = async (userId) => {
             where: {
                 vehicle_id: vehicle.id,
                 status: { [db.Sequelize.Op.in]: ['INSPECTING', 'WAITING_FOR_PARTS', 'IN_PROGRESS'] }
-            }
+            },
+            include: [{
+                model: db.Appointments,
+                as: 'appointment',
+                required: false
+            }]
         });
+
+        const isServiceOrderActive = activeServiceOrder && (
+            !activeServiceOrder.appointment ||
+            activeServiceOrder.appointment.status !== 'PENDING'
+        );
 
         const vehicleData = vehicle.toJSON();
 
         if (activeAppointment) {
             vehicleData.isDisabled = true;
             vehicleData.disableReason = 'Xe đang có lịch hẹn chờ xử lý';
-        } else if (activeServiceOrder) {
+        } else if (isServiceOrderActive) {
             vehicleData.isDisabled = true;
             vehicleData.disableReason = 'Xe đang được sửa tại xưởng';
         } else {

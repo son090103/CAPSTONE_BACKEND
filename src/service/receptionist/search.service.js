@@ -14,7 +14,7 @@ module.exports.getCustomerInfoByPhone = async (phone) => {
             {
                 model: db.Vehicles,
                 as: 'vehicles',
-                attributes: ['id', 'license_plate', 'vin_number', 'year'],
+                attributes: ['id', 'license_plate', 'vin_number', 'year', 'color'],
                 include: [
                     {
                         model: db.Vehicle_Models,
@@ -98,6 +98,7 @@ module.exports.getCustomerInfoByPhone = async (phone) => {
             license_plate: v.license_plate,
             vin_number: v.vin_number,
             year: v.year,
+            color: v.color,
             brand: v.model?.make?.make_name || '',
             model: v.model?.model_name || '',
             isInGarage: v.serviceOrders && v.serviceOrders.length > 0
