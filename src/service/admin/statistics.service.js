@@ -631,7 +631,12 @@ LƯU Ý QUAN TRỌNG: Không viết lời chào ("Chào bạn...", "Với vai tr
     console.warn("Python microservice offline or failed, falling back to cached report file. Error:", error.message);
     const fs = require('fs');
     const path = require('path');
-    const jsonPath = path.resolve('D:/Do_An_Gara_oto/AI_Static_V1/data/advanced_analysis_report.json');
+    // Đường dẫn khác nhau giữa máy dev (Windows) và VPS production (Linux) — dùng biến môi
+    // trường để cấu hình đúng theo từng máy, không hardcode 1 đường dẫn duy nhất.
+    const jsonPath = path.resolve(
+      process.env.ADVANCED_ANALYSIS_REPORT_PATH ||
+        'D:/Do_An_Gara_oto/AI_Static_V1/data/advanced_analysis_report.json',
+    );
     if (fs.existsSync(jsonPath)) {
       const rawData = fs.readFileSync(jsonPath, 'utf8');
       return JSON.parse(rawData);
