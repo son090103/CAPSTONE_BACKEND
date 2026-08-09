@@ -71,8 +71,8 @@ module.exports.getReceivedAppointments = async () => {
         ],
         order: [
             [db.Sequelize.literal(`CASE WHEN "Appointments"."priority_type" = 'EMERGENCY' THEN 0 ELSE 1 END`), 'ASC'],
-            [db.Sequelize.literal(`CASE WHEN "Appointments"."booking_type" LIKE '%WALK%' THEN 1 ELSE 0 END`), 'ASC'],
-            [db.Sequelize.literal(`COALESCE("Appointments"."scheduled_time", "Appointments"."created_at")`), 'ASC']
+            [db.Sequelize.literal(`COALESCE("Appointments"."scheduled_time", "Appointments"."created_at")`), 'ASC'],
+            ['id', 'ASC']
         ]
     });
 
