@@ -4,7 +4,6 @@ const mockGetExportRequests = jest.fn();
 const mockApproveExportRequest = jest.fn();
 const mockRejectExportRequest = jest.fn();
 const mockGetExportReceiptDetail = jest.fn();
-const mockSignExportReceipt = jest.fn();
 const mockViewImportDetail = jest.fn();
 const mockViewExportHistory = jest.fn();
 const mockViewExportDetail = jest.fn();
@@ -18,7 +17,6 @@ jest.mock("../../../service/inventory/importAndExportManagement.service", () => 
   approveExportRequest: mockApproveExportRequest,
   rejectExportRequest: mockRejectExportRequest,
   getExportReceiptDetail: mockGetExportReceiptDetail,
-  signExportReceipt: mockSignExportReceipt,
   viewImportDetail: mockViewImportDetail,
   viewExportHistory: mockViewExportHistory,
   viewExportDetail: mockViewExportDetail,
@@ -438,39 +436,6 @@ describe("ImportAndExportManagement Controller", () => {
       expect(mockGetExportReceiptDetail).toHaveBeenCalledWith("RC-001");
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({ success: true, data: fakeData });
-    });
-  });
-
-  // ==================== signExportReceipt ====================
-  describe("signExportReceipt", () => {
-    it("should return 400 when signature image is missing", async () => {
-      const req = { params: { receiptCode: "RC-001" }, body: {} };
-      const res = createMockResponse();
-
-      await controller.signExportReceipt(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(mockSignExportReceipt).not.toHaveBeenCalled();
-    });
-
-    it("should return 200 when signature is valid", async () => {
-      const fakeResult = { id: 1 };
-      mockSignExportReceipt.mockResolvedValue(fakeResult);
-      const req = {
-        params: { receiptCode: "RC-001" },
-        body: { signatureImage: "data:image/png;base64,AAAA" },
-      };
-      const res = createMockResponse();
-
-      await controller.signExportReceipt(req, res);
-
-      expect(mockSignExportReceipt).toHaveBeenCalledWith("RC-001", expect.any(Buffer));
-      expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith({
-        success: true,
-        message: "Ký nhận phụ tùng thành công",
-        data: fakeResult,
-      });
     });
   });
 

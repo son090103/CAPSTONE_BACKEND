@@ -16,7 +16,6 @@ router.get("/export-requests", importAndExportManagementController.getExportRequ
 router.post("/export-requests/approve", importAndExportManagementController.approveExportRequest);
 router.post("/export-requests/reject", importAndExportManagementController.rejectExportRequest);
 router.get("/export-requests/:receiptCode/receipt", importAndExportManagementController.getExportReceiptDetail);
-router.post("/export-requests/:receiptCode/sign", upload.single("proofPhoto"), importAndExportManagementController.signExportReceipt);
 
 router.get("/export", importAndExportManagementController.viewExportHistory);
 router.get("/export/:receiptCode", importAndExportManagementController.viewExportDetail);
@@ -38,6 +37,7 @@ router.post("/supplier", supplierManagementController.createSupplier);
 router.patch("/supplier/:id", supplierManagementController.updateSupplier);
 
 router.get("/inventory/waiting-stock", importAndExportManagementController.getWaitingStockItems);
+router.get("/restock-suggestions", importAndExportManagementController.getRestockSuggestions);
 
 router.get("/notifications", notificationController.getNotifications);
 router.get("/notifications/unread-count", notificationController.getUnreadCount);

@@ -27,6 +27,11 @@ const updateSparePart = z.object({
   category_id: z
     .number({ required_error: "Danh mục là bắt buộc" })
     .optional(),
+  min_threshold: z
+    .number({ invalid_type_error: "Ngưỡng cảnh báo tồn kho phải là số" })
+    .int("Ngưỡng cảnh báo tồn kho phải là số nguyên")
+    .min(0, "Ngưỡng cảnh báo tồn kho không được âm")
+    .optional(),
   });
 
 module.exports = { createSparePart, updateSparePart };

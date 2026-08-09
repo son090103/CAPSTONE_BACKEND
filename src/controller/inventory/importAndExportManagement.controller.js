@@ -121,25 +121,6 @@ module.exports.getExportReceiptDetail = async (req, res) => {
   }
 };
 
-module.exports.signExportReceipt = async (req, res) => {
-  try {
-    const { receiptCode } = req.params;
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ message: "Vui lòng chụp ảnh xác nhận nhận phụ tùng" });
-    }
-    const result = await ImportAndExportManagement.signExportReceipt(receiptCode, req.file.buffer);
-    return res.status(200).json({
-      success: true,
-      message: "Xác nhận nhận phụ tùng thành công",
-      data: result,
-    });
-  } catch (error) {
-    return res.status(error.status || 500).json({
-      message: error.message || "Internal server error",
-    });
-  }
-};
-
 module.exports.viewImportHistory = async (req, res) => {
   try {
     const result = await ImportAndExportManagement.viewImportHistory();
@@ -200,6 +181,18 @@ module.exports.getWaitingStockItems = async (req, res) => {
     });
   }
 };
+
+module.exports.getRestockSuggestions = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getRestockSuggestions();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
 
 module.exports.importSparePartForOrderItem = async (req, res) => {
   try {

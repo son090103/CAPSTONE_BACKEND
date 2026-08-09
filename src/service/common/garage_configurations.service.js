@@ -119,3 +119,14 @@ module.exports.getConfigurationByKey = async (key) => {
 
     return config;
 };
+
+module.exports.updateConfiguration = async (key, value) => {
+    const config = await db.Garage_Configurations.findOne({ where: { config_key: key } });
+
+    if (!config) {
+        throw { status: 404, message: `Không tìm thấy cấu hình với key: ${key}` };
+    }
+
+    await config.update({ config_value: value });
+    return config;
+};

@@ -254,6 +254,46 @@ const resolveStartStatus = async (task) => {
   return needsPart ? "WAITING_STOCK" : "IN_PROGRESS";
 };
 
+// Khi 1 task REPAIR được bắt đầu và rơi vào WAITING_STOCK (còn phụ tùng chưa xuất), tự động
+// gửi yêu cầu xuất kho cho các phụ tùng đó — KTV không cần bấm nút yêu cầu xuất kho riêng nữa.
+const autoRequestPartsForTask = async (task, technicianId, startStatus) => {
+  if (startStatus !== "WAITING_STOCK") return;
+  if (!task.quotation_item_id) return;
+  const quotationItem = await db.Quotation_Details.findByPk(task.quotation_item_id, {
+    attributes: ["id", "issue_id"],
+  });
+  if (!quotationItem || !quotationItem.issue_id) return;
+
+  const items = await db.Quotation_Details.findAll({
+    where: {
+      issue_id: quotationItem.issue_id,
+      status: "PENDING",
+      [Op.or]: [
+        { spare_part_id: { [Op.ne]: null } },
+        { custom_item_name: { [Op.ne]: null } },
+      ],
+    },
+  });
+  if (items.length === 0) return;
+
+  await db.Quotation_Details.update(
+    { status: "REQUESTED", requested_by: technicianId },
+    { where: { id: items.map((i) => i.id) } },
+  );
+
+  await notifyRole(
+    "INVENTORY_MANAGER",
+    {
+      title: "Yêu cầu xuất kho mới",
+      content: `Kỹ thuật viên bắt đầu công việc, tự động yêu cầu xuất ${items.length} phụ tùng cho lệnh sửa chữa #${task.service_order_id}.`,
+      notificationType: "SERVICE_ORDER",
+      referenceId: task.service_order_id,
+    },
+    "new_notification",
+    { type: "PARTS_EXPORT_REQUESTED", serviceOrderId: task.service_order_id },
+  );
+};
+
 module.exports.startTask = async (taskAssignmentId, technicianId) => {
   // 1. Tìm assignment gốc để lấy thông tin Service Order và Appointment
   const assignment = await db.Task_Assignment.findOne({
@@ -320,12 +360,14 @@ module.exports.startTask = async (taskAssignmentId, technicianId) => {
         task.status = startStatus;
         await task.save();
         assignmentStatus = startStatus;
+        await autoRequestPartsForTask(task, technicianId, startStatus);
       } else {
         // Có nhiều người làm
         if (asg.role_in_task === "LEAD") {
           task.status = startStatus;
           await task.save();
           assignmentStatus = startStatus;
+          await autoRequestPartsForTask(task, technicianId, startStatus);
         } else {
           // Nếu là thợ phụ, chỉ start assignment, task giữ nguyên trừ khi task đã IN_PROGRESS
           if (task.status !== "IN_PROGRESS") {
@@ -956,12 +998,59 @@ function formatAiCausesResponse(rawText) {
   };
 }
 
-module.exports.aiSuggestCauses = async (symptom, modelName) => {
+// KTV không tự nhập triệu chứng ban đầu — AI tự lấy từ Service_Order.symptoms (do giám sát ghi
+// lúc tạo đơn dịch vụ) gắn với chính Task đang xem, tránh phải gõ tay trên tablet. Sau câu trả
+// lời đầu tiên, KTV vẫn có thể gõ followUpQuestion để hỏi thêm/làm rõ (vd "còn nguyên nhân nào
+// khác không", "cách kiểm tra ra sao") mà không cần gõ lại triệu chứng từ đầu.
+module.exports.aiSuggestCauses = async (taskAssignmentId, technicianId, followUpQuestion) => {
+  const assignment = await Task_Assignments.findOne({
+    where: { id: taskAssignmentId, technician_id: technicianId },
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        include: [
+          {
+            model: Service_Order,
+            as: "serviceOrder",
+            attributes: ["id", "symptoms"],
+            include: [
+              {
+                model: Vehicles,
+                as: "vehicle",
+                attributes: ["id"],
+                include: [
+                  { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  if (!assignment) {
+    throw { status: 404, message: "Không tìm thấy công việc được giao cho bạn." };
+  }
+  const symptom = assignment.task?.serviceOrder?.symptoms;
+  const modelName = assignment.task?.serviceOrder?.vehicle?.model?.model_name;
   if (!symptom || !symptom.trim()) {
-    throw { status: 400, message: "Vui lòng nhập triệu chứng" };
+    throw { status: 400, message: "Lệnh sửa chữa chưa ghi nhận triệu chứng." };
   }
   const model = geminiClient.getGenerativeModel({ model: "gemini-2.5-flash" });
-  const prompt = `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm.
+  const prompt = followUpQuestion && followUpQuestion.trim()
+    ? `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm.
+    Xe: ${modelName || "không xác định"}.
+    Triệu chứng ban đầu: "${symptom.trim()}".
+    Kỹ thuật viên hỏi thêm: "${followUpQuestion.trim()}".
+    Trả lời ngắn gọn, đúng trọng tâm câu hỏi, dựa trên triệu chứng ban đầu.
+    Chỉ trả lời bằng MỘT khối JSON hợp lệ duy nhất, không kèm markdown hay giải thích thêm, theo đúng cấu trúc:
+    {
+      "causes": [ { "cause": "Tên nguyên nhân ngắn gọn", "part_to_check": "Bộ phận cần kiểm tra" } ],
+      "recommendations": [ "Khuyến nghị kiểm tra ngắn gọn" ]
+    }
+    Tất cả nội dung bằng tiếng Việt.`
+    : `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm.
     Xe: ${modelName || "không xác định"}.
     Triệu chứng: "${symptom.trim()}".
     Liệt kê 3-5 nguyên nhân khả dĩ phổ biến nhất, sắp theo khả năng cao nhất trước, và các khuyến nghị kiểm tra đi kèm.
@@ -1293,6 +1382,119 @@ module.exports.searchInspectionHistory = async (keyword) => {
     order: [["createdAt", "DESC"]],
     limit: 100,
   });
+};
+
+// Các từ quá ngắn/quá chung chung, tách ra thì không còn giá trị lọc (vd "xe bị" trong
+// "xe bị má phanh" sẽ match gần như mọi bản ghi) — loại bỏ trước khi dùng làm điều kiện ILIKE.
+const SYMPTOM_STOPWORDS = new Set([
+  "xe", "bi", "bị", "la", "là", "co", "có", "va", "và", "khi", "bi", "hay",
+  "duoc", "được", "can", "cần", "the", "thế", "nay", "này", "do", "đó", "cua", "của",
+]);
+
+// Tách triệu chứng gốc thành các từ khóa (không dùng AI để tránh chờ lâu), lọc bỏ từ quá
+// ngắn/chung chung, rồi dùng để lọc kinh nghiệm sửa lỗi cũ (OR nhiều điều kiện ILIKE) — KTV
+// không cần gõ đúng khớp chuỗi chính xác như tra cứu thường.
+const extractSymptomKeywords = (symptom) => {
+  const words = symptom
+    .trim()
+    .toLowerCase()
+    .split(/[\s,.;:!?()]+/)
+    .filter((w) => w.length >= 2 && !SYMPTOM_STOPWORDS.has(w));
+  const keywords = [...new Set(words)];
+  return keywords.length ? keywords : [symptom.trim()];
+};
+
+// KTV bấm "Tra cứu sửa lỗi" -> tự lấy triệu chứng gốc (Service_Order.symptoms) của task REPAIR
+// đang xem, tách thành từ khóa, rồi lọc kinh nghiệm sửa chữa cũ (Tasks REPAIR đã hoàn thành +
+// repairNotes) theo các từ khóa đó — không cần khớp đúng từ như tra cứu ILIKE nguyên văn.
+module.exports.searchRepairHistorySmart = async (taskAssignmentId, technicianId) => {
+  const assignment = await Task_Assignments.findOne({
+    where: { id: taskAssignmentId, technician_id: technicianId },
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        include: [
+          {
+            model: Service_Order,
+            as: "serviceOrder",
+            attributes: ["id", "symptoms"],
+          },
+        ],
+      },
+    ],
+  });
+  if (!assignment) {
+    throw { status: 404, message: "Không tìm thấy công việc được giao cho bạn." };
+  }
+  const symptom = assignment.task?.serviceOrder?.symptoms;
+  if (!symptom || !symptom.trim()) {
+    throw { status: 400, message: "Lệnh sửa chữa chưa ghi nhận triệu chứng." };
+  }
+
+  const keywords = extractSymptomKeywords(symptom);
+  const orConditions = keywords.flatMap((kw) => [
+    { "$catalog.service_name$": { [Op.iLike]: `%${kw.trim()}%` } },
+    { "$quotationItem.issue.error_description$": { [Op.iLike]: `%${kw.trim()}%` } },
+    { "$quotationItem.issue.component.name$": { [Op.iLike]: `%${kw.trim()}%` } },
+    { "$repairNotes.content$": { [Op.iLike]: `%${kw.trim()}%` } },
+  ]);
+
+  const rows = await Tasks.findAll({
+    where: { type: "REPAIR", status: "COMPLETED", [Op.or]: orConditions },
+    attributes: ["id", "createdAt"],
+    subQuery: false,
+    include: [
+      { model: Service_Catalog, as: "catalog", attributes: ["id", "service_name"] },
+      {
+        model: db.Quotation_Details,
+        as: "quotationItem",
+        attributes: ["id"],
+        required: false,
+        include: [
+          {
+            model: Issues,
+            as: "issue",
+            attributes: ["id", "error_description"],
+            include: [{ model: Components, as: "component", attributes: ["id", "name"] }],
+          },
+        ],
+      },
+      {
+        model: Repair_Notes,
+        as: "repairNotes",
+        attributes: ["id", "content", "createdAt"],
+        required: false,
+      },
+      {
+        model: Task_Assignments,
+        as: "assignments",
+        attributes: ["id"],
+        include: [{ model: db.User, as: "technician", attributes: ["id", "fullName"] }],
+      },
+      {
+        model: Service_Order,
+        as: "serviceOrder",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Vehicles,
+            as: "vehicle",
+            attributes: ["id", "license_plate", "model_id"],
+            required: true,
+            include: [
+              { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+  });
+
+  return { symptom: symptom.trim(), keywords, results: rows };
 };
 
 module.exports.filterInspectionHistory = async ({ makeId, modelId }) => {

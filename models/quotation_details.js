@@ -79,7 +79,6 @@ module.exports = (sequelize, DataTypes) => {
           isIn: [[
             "PENDING",
             "REQUESTED",
-            "WAITING_SIGNATURE",
             "EXPORTED",
             "RECEIVED",
             "WAITING_DEPOSIT",

@@ -378,8 +378,10 @@ module.exports.getExportRequests = async () => {
   });
 };
 
-// Thủ kho duyệt yêu cầu xuất kho của kỹ thuật viên. Mỗi yêu cầu vốn đã gắn với đúng 1 KTV
+// Thủ kho xác nhận xuất kho cho yêu cầu của kỹ thuật viên. Mỗi yêu cầu vốn đã gắn với đúng 1 KTV
 // (requested_by ghi từ lúc KTV gửi yêu cầu), nên không cần suy luận lại qua Task_Assignment.
+// Không còn bước ký nhận riêng - bấm xác nhận xuất kho là coi như đã giao xong, resume ngay
+// các Task/Task_Assignment đang WAITING_STOCK của KTV đó trong lệnh sửa chữa này.
 module.exports.approveExportRequest = async (detailIds, managerId) => {
   return await db.sequelize.transaction(async (t) => {
     const items = await QuotationDetail.findAll({
@@ -427,8 +429,7 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
         };
       }
       await part.decrement("stock_quantity", { by: item.quantity, transaction: t });
-      // Chưa EXPORTED ngay - chờ KTV ký tên xác nhận tại quầy (xem signExportReceipt)
-      await item.update({ status: "WAITING_SIGNATURE" }, { transaction: t });
+      await item.update({ status: "EXPORTED" }, { transaction: t });
       logsData.push({
         receipt_code,
         part_id: part.id,
@@ -438,22 +439,36 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
         unit_price: item.unit_price,
         manager_id: managerId,
         requested_technician_id: technicianId,
+        received_by: technicianId,
+        received_at: new Date(),
       });
     }
     await InventoryLog.bulkCreate(logsData, { transaction: t });
+
+    const waitingAssignments = await db.Task_Assignment.findAll({
+      where: { technician_id: technicianId, status: "WAITING_STOCK" },
+      include: [
+        { model: Task, as: "task", attributes: ["id"], where: { service_order_id: serviceOrderId }, required: true },
+      ],
+      transaction: t,
+    });
+    for (const assignment of waitingAssignments) {
+      await assignment.update({ status: "IN_PROGRESS" }, { transaction: t });
+      await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
+    }
 
     return { receipt_code, exported_count: logsData.length, technicianId, serviceOrderId };
   }).then(async (result) => {
     await notifyUser(
       result.technicianId,
       {
-        title: "Phụ tùng đã xuất kho - cần xác nhận nhận hàng",
-        content: `Kho đã chuẩn bị ${result.exported_count} phụ tùng (phiếu ${result.receipt_code}). Vui lòng ký nhận trên phiếu giấy tại quầy kho để hoàn tất.`,
+        title: "Phụ tùng đã xuất kho",
+        content: `Kho đã xuất ${result.exported_count} phụ tùng (phiếu ${result.receipt_code}) cho công việc của bạn.`,
         notificationType: "SERVICE_ORDER",
         referenceId: result.serviceOrderId,
       },
       "new_notification",
-      { type: "PARTS_EXPORTED_WAITING_SIGNATURE", serviceOrderId: result.serviceOrderId, receiptCode: result.receipt_code },
+      { type: "PARTS_EXPORTED", serviceOrderId: result.serviceOrderId, receiptCode: result.receipt_code },
     );
     return {
       receipt_code: result.receipt_code,
@@ -533,80 +548,6 @@ module.exports.getExportReceiptDetail = async (receiptCode) => {
   return { receipt_code: receiptCode, logs, technician };
 };
 
-// Kỹ thuật viên vẽ chữ ký tay ngay trên màn hình thủ kho để xác nhận đã nhận phụ tùng.
-// Đây là bước hoàn tất cuối cùng - không cần thao tác gì thêm sau đó (không có bước
-// "xác nhận nhận hàng" riêng như luồng cũ).
-module.exports.signExportReceipt = async (receiptCode, proofPhotoBuffer) => {
-  if (!proofPhotoBuffer) {
-    throw { status: 400, message: "Vui lòng chụp ảnh xác nhận nhận phụ tùng" };
-  }
-  return await db.sequelize.transaction(async (t) => {
-    const logs = await InventoryLog.findAll({
-      where: { receipt_code: receiptCode, type: "OUT" },
-      transaction: t,
-      lock: t.LOCK.UPDATE,
-    });
-    if (logs.length === 0) {
-      throw { status: 404, message: "Không tìm thấy phiếu xuất kho này" };
-    }
-    const firstLog = logs[0];
-    if (firstLog.received_by) {
-      throw { status: 400, message: "Phiếu xuất kho này đã được xác nhận nhận hàng" };
-    }
-    const technicianId = firstLog.requested_technician_id;
-    if (!technicianId) {
-      throw { status: 400, message: "Không xác định được kỹ thuật viên nhận phiếu này" };
-    }
-    const serviceOrderId = firstLog.service_order_id;
-    const partIds = logs.map((log) => log.part_id);
-
-    const uploadResult = await uploadToCloudinary(proofPhotoBuffer, "inventory-proof-photos");
-    const now = new Date();
-    await InventoryLog.update(
-      {
-        received_by: technicianId,
-        received_at: now,
-        signature_method: "PHOTO",
-        proof_image_url: uploadResult.secure_url,
-      },
-      { where: { receipt_code: receiptCode, type: "OUT" }, transaction: t },
-    );
-
-    await QuotationDetail.update(
-      { status: "EXPORTED" },
-      { where: { spare_part_id: partIds, status: "WAITING_SIGNATURE" }, transaction: t },
-    );
-
-    // Chỉ resume công việc SAU KHI đã ký xong - đúng tinh thần "ký nhận mới coi là đã nhận hàng"
-    const waitingAssignments = await db.Task_Assignment.findAll({
-      where: { technician_id: technicianId, status: "WAITING_STOCK" },
-      include: [
-        { model: Task, as: "task", attributes: ["id"], where: { service_order_id: serviceOrderId }, required: true },
-      ],
-      transaction: t,
-    });
-    for (const assignment of waitingAssignments) {
-      await assignment.update({ status: "IN_PROGRESS" }, { transaction: t });
-      await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
-    }
-
-    return { receipt_code: receiptCode, technicianId, part_count: logs.length, serviceOrderId };
-  }).then(async (result) => {
-    await notifyUser(
-      result.technicianId,
-      {
-        title: "Đã xác nhận nhận phụ tùng thành công",
-        content: `Bạn đã nhận ${result.part_count} phụ tùng theo phiếu ${result.receipt_code}.`,
-        notificationType: "SERVICE_ORDER",
-        referenceId: result.serviceOrderId,
-      },
-      "new_notification",
-      { type: "PARTS_EXPORT_SIGNED", serviceOrderId: result.serviceOrderId },
-    );
-    return { receipt_code: result.receipt_code, part_count: result.part_count };
-  });
-};
-
 module.exports.viewImportHistory = async () => {
   const result = await InventoryLog.findAll({
     where: { type: "IN" },
@@ -684,6 +625,139 @@ module.exports.viewExportDetail = async (receiptCode) => {
     order: [["id", "ASC"]],
   });
   return result;
+};
+
+// Đề xuất nhập hàng thông minh: không chỉ dựa vào ngưỡng min_threshold cố định, mà tính nhu
+// cầu thực tế dựa trên xu hướng tiêu thụ gần đây so với giai đoạn trước đó.
+//
+// Chia lịch sử xuất kho 30 ngày gần nhất thành 2 nửa (mỗi nửa 15 ngày):
+//   - "recent"   = 15 ngày gần nhất  -> phản ánh nhu cầu HIỆN TẠI
+//   - "previous" = 15 ngày trước đó  -> làm mốc so sánh xu hướng
+// Nếu recentRate cao hơn previousRate (nhu cầu đang tăng), tốc độ dự đoán sẽ nghiêng về
+// recentRate để không đề xuất thiếu. Nếu phụ tùng chỉ có dữ liệu ở 1 nửa (mới bắt đầu bán
+// chạy hoặc đã ngừng dùng gần đây), dùng thẳng tốc độ của nửa có dữ liệu, không suy diễn.
+// Trọng số 70/30 (nghiêng về gần đây) là cách làm mượt phổ biến (giống EWMA đơn giản) để
+// một ngày xuất đột biến không làm lệch hẳn dự đoán, nhưng vẫn ưu tiên xu hướng mới nhất.
+//
+// Nhu cầu dự kiến = tốc độ dự đoán/ngày x RESTOCK_DAYS (cấu hình trong Garage_Configurations,
+// mặc định 14 ngày) - trừ đi tồn kho khả dụng thực tế (đã trừ phần đang bị giữ chỗ cho các
+// yêu cầu xuất kho REQUESTED/WAITING_STOCK chưa xuất xong).
+const CONSUMPTION_WINDOW_DAYS = 30;
+const RECENT_WINDOW_DAYS = 15;
+const RECENT_WEIGHT = 0.7;
+const DEFAULT_RESTOCK_DAYS = 14;
+
+// Tính toán đầy đủ cho TẤT CẢ phụ tùng (không lọc suggested_quantity > 0) - dùng chung cho
+// cả trang "Đề xuất nhập hàng" (chỉ hiện phần cần nhập) và widget "Tình trạng tồn kho" trên
+// dashboard (cần đếm cả phụ tùng đang ổn định, không chỉ phần cần nhập).
+const computeRestockAnalysis = async () => {
+  const restockDaysConfig = await db.Garage_Configurations.findOne({
+    where: { config_key: "RESTOCK_DAYS" },
+    attributes: ["config_value"],
+  });
+  const restockDays = Number(restockDaysConfig?.config_value) > 0
+    ? Number(restockDaysConfig.config_value)
+    : DEFAULT_RESTOCK_DAYS;
+
+  const windowStart = new Date();
+  windowStart.setDate(windowStart.getDate() - CONSUMPTION_WINDOW_DAYS);
+  const recentStart = new Date();
+  recentStart.setDate(recentStart.getDate() - RECENT_WINDOW_DAYS);
+
+  const [parts, consumptionLogs, heldRows] = await Promise.all([
+    SparePart.findAll({
+      attributes: ["id", "sku", "name", "brand", "stock_quantity", "min_threshold"],
+    }),
+    InventoryLog.findAll({
+      where: { type: "OUT", createdAt: { [Op.gte]: windowStart } },
+      attributes: ["part_id", "quantity", "createdAt"],
+      raw: true,
+    }),
+    QuotationDetail.findAll({
+      where: {
+        status: { [Op.in]: ["REQUESTED", "WAITING_STOCK"] },
+        spare_part_id: { [Op.ne]: null },
+      },
+      attributes: [
+        "spare_part_id",
+        [db.sequelize.fn("SUM", db.sequelize.col("quantity")), "total_held"],
+      ],
+      group: ["spare_part_id"],
+      raw: true,
+    }),
+  ]);
+
+  // Gộp tổng xuất kho theo từng phụ tùng, tách riêng nửa gần đây (recent) và nửa trước đó
+  // (previous) để so sánh xu hướng thay vì chỉ lấy 1 con số trung bình phẳng cho cả 30 ngày.
+  const consumptionByPart = new Map();
+  for (const log of consumptionLogs) {
+    const entry = consumptionByPart.get(log.part_id) ?? { recentTotal: 0, previousTotal: 0 };
+    const isRecent = new Date(log.createdAt) >= recentStart;
+    if (isRecent) {
+      entry.recentTotal += Number(log.quantity);
+    } else {
+      entry.previousTotal += Number(log.quantity);
+    }
+    consumptionByPart.set(log.part_id, entry);
+  }
+
+  const heldByPart = new Map(
+    heldRows.map((row) => [row.spare_part_id, Number(row.total_held)]),
+  );
+
+  const previousWindowDays = CONSUMPTION_WINDOW_DAYS - RECENT_WINDOW_DAYS;
+
+  const items = parts
+    .map((part) => {
+      const consumption = consumptionByPart.get(part.id);
+      const recentRate = (consumption?.recentTotal ?? 0) / RECENT_WINDOW_DAYS;
+      const previousRate = (consumption?.previousTotal ?? 0) / previousWindowDays;
+
+      // Chỉ pha trộn 2 giai đoạn khi cả 2 đều có dữ liệu thực tế; nếu 1 trong 2 giai đoạn
+      // không có xuất kho nào thì dùng thẳng tốc độ của giai đoạn còn lại, tránh pha loãng
+      // sai (vd phụ tùng chỉ mới bắt đầu bán chạy trong 15 ngày gần đây).
+      let predictedRate;
+      if ((consumption?.recentTotal ?? 0) > 0 && (consumption?.previousTotal ?? 0) > 0) {
+        predictedRate = recentRate * RECENT_WEIGHT + previousRate * (1 - RECENT_WEIGHT);
+      } else {
+        predictedRate = recentRate > 0 ? recentRate : previousRate;
+      }
+
+      const trend = previousRate > 0
+        ? Number((((recentRate - previousRate) / previousRate) * 100).toFixed(0))
+        : null;
+
+      const held = heldByPart.get(part.id) ?? 0;
+      const availableStock = part.stock_quantity - held;
+      const projectedDemand = predictedRate * restockDays;
+      const suggestedQuantity = Math.max(0, Math.ceil(projectedDemand - availableStock));
+
+      return {
+        part_id: part.id,
+        sku: part.sku,
+        name: part.name,
+        brand: part.brand,
+        stock_quantity: part.stock_quantity,
+        held_quantity: held,
+        available_stock: availableStock,
+        daily_consumption: Number(predictedRate.toFixed(2)),
+        trend_percent: trend,
+        restock_days: restockDays,
+        projected_demand: Math.ceil(projectedDemand),
+        suggested_quantity: suggestedQuantity,
+      };
+    });
+
+  return { restock_days: restockDays, consumption_window_days: CONSUMPTION_WINDOW_DAYS, items };
+};
+
+module.exports.getRestockSuggestions = async () => {
+  const { restock_days, consumption_window_days, items } = await computeRestockAnalysis();
+  const suggestions = items
+    .filter((item) => item.suggested_quantity > 0)
+    .sort((a, b) => b.suggested_quantity - a.suggested_quantity);
+
+  return { restock_days, consumption_window_days, suggestions };
 };
 
 module.exports.getWaitingStockItems = async () => {
