@@ -54,7 +54,7 @@ const getGarageCapacity = async () => {
     // Trả về cả sức chứa tối đa và sức chứa hiện tại
     return {
       availableCapacity,
-      maxCapacity: maxCapacity > 0 ? maxCapacity : 1
+      maxCapacity
     };
   } catch (error) {
     console.error("Lỗi khi tính toán sức chứa garage:", error);

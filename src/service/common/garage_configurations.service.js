@@ -48,11 +48,10 @@ module.exports.getAvailability = async (dateStr) => {
         // 1. Check tương lai (Appointments)
         const appointments = await db.Appointments.findAll({
             where: {
-                scheduled_time: {
-                    [Op.between]: [startOfDay, endOfDay]
-                },
+                scheduled_time: { [Op.between]: [startOfDay, endOfDay] },
+                booking_type: { [Op.notLike]: '%WALK%' },
                 status: {
-                    [Op.in]: ['PENDING', 'CONFIRMED']
+                    [Op.in]: ['PENDING', 'CONFIRMED', 'Technicaian_recieved', 'INFORMATION_RECIEVED']
                 }
             },
             attributes: ['id', 'scheduled_time'],
@@ -68,8 +67,9 @@ module.exports.getAvailability = async (dateStr) => {
         const { calculateAppointmentTime } = require("../../util/calculateAppointmentTime.util");
 
         await Promise.all(appointments.map(async (app) => {
-            const { endTime } = await calculateAppointmentTime(app.appointmentDetails, app.scheduled_time);
-            const occupiedHours = getOccupiedHours(app.scheduled_time, endTime);
+            const timeStart = app.scheduled_time;
+            const { endTime } = await calculateAppointmentTime(app.appointmentDetails, timeStart);
+            const occupiedHours = getOccupiedHours(timeStart, endTime);
             occupiedHours.forEach(h => {
                 bookedCounts[h] = (bookedCounts[h] || 0) + 1;
             });
@@ -81,6 +81,8 @@ module.exports.getAvailability = async (dateStr) => {
                 status: {
                     [Op.in]: ['INSPECTING', 'IN_PROGRESS', 'WAITING_FOR_PARTS']
                 },
+                bay_status: 'ASSIGNED',
+                bay_id: { [Op.ne]: null },
                 estimated_finish_time: {
                     [Op.ne]: null,
                     [Op.gt]: startOfDay

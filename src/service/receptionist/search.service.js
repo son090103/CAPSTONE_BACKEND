@@ -1,7 +1,65 @@
 const db = require("../../../models");
 const { Op } = require("sequelize");
 
-module.exports.getCustomerInfoByPhone = async (phone) => {
+module.exports.getCustomerInfoByPhone = async (phone, partial = false) => {
+    if (partial) {
+        const customers = await db.Customers.findAll({
+            where: {
+                phone: { [Op.like]: `%${String(phone).replace(/\D/g, '')}%` }
+            },
+            include: [
+                {
+                    model: db.User,
+                    as: 'user',
+                    attributes: ['fullName', 'phoneNumber']
+                },
+                {
+                    model: db.Vehicles,
+                    as: 'vehicles',
+                    attributes: ['id', 'license_plate', 'vin_number', 'year', 'color'],
+                    include: [
+                        {
+                            model: db.Vehicle_Models,
+                            as: 'model',
+                            attributes: ['id', 'model_name'],
+                            include: [{
+                                model: db.Vehicle_Makes,
+                                as: 'make',
+                                attributes: ['id', 'make_name']
+                            }]
+                        },
+                        {
+                            model: db.Service_Orders,
+                            as: 'serviceOrders',
+                            where: { status: { [Op.notIn]: ['COMPLETED', 'CANCELLED', 'PAID'] } },
+                            required: false
+                        }
+                    ]
+                }
+            ],
+            order: [['id', 'DESC']],
+            limit: 10
+        });
+
+        return {
+            customers: customers.map(customer => ({
+                id: customer.id,
+                customer_name: customer.user?.fullName || customer.name || '',
+                phone: customer.phone,
+                vehicles: customer.vehicles ? customer.vehicles.map(v => ({
+                    id: v.id,
+                    license_plate: v.license_plate,
+                    vin_number: v.vin_number,
+                    year: v.year,
+                    color: v.color,
+                    brand: v.model?.make?.make_name || '',
+                    model: v.model?.model_name || '',
+                    isInGarage: v.serviceOrders && v.serviceOrders.length > 0
+                })) : []
+            }))
+        };
+    }
+
     // 1. Tìm Customer by phone
     const customer = await db.Customers.findOne({
         where: { phone: phone },

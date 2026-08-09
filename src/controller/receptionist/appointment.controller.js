@@ -95,8 +95,8 @@ module.exports.receiveAppointment = async (req, res) => {
             });
         }
 
-        const { vehicleCondition } = req.body;
-        const result = await appointmentService.receiveAppointment(key, vehicleCondition);
+        const { status } = req.body;
+        const result = await appointmentService.receiveAppointment(key, status);
         return res.status(200).json({
             success: true,
             message: "Tiếp nhận lịch hẹn thành công",
@@ -142,6 +142,7 @@ module.exports.updateVehicleVin = async (req, res) => {
     }
 };
 
+
 module.exports.checkVehicleInfo = async (req, res) => {
     try {
         const requestUser = res.locals.user;
@@ -164,3 +165,23 @@ module.exports.checkVehicleInfo = async (req, res) => {
     }
 };
 
+module.exports.createWalkInTicket = async (req, res) => {
+    try {
+        const requestUser = res.locals.user;
+        if (!requestUser) {
+            return res.status(401).json({ message: "Unauthorized" });
+        }
+
+        const result = await appointmentService.createWalkInTicket(req.body, requestUser.id);
+        return res.status(201).json({
+            success: true,
+            message: "Tiếp nhận thông tin khách vãng lai thành công",
+            data: result
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
