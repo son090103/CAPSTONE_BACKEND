@@ -1,5 +1,6 @@
 const serviceOrderService = require("../../service/receptionist/serviceOrder.service");
 const { createServiceOrderSchema } = require("../../validation/receptionist/serviceOrder.validation");
+const { notifyRole } = require("../../util/notification.util");
 
 module.exports.createServiceOrder = async (req, res) => {
     try {
@@ -17,6 +18,33 @@ module.exports.createServiceOrder = async (req, res) => {
 
         // 2. Call service
         const result = await serviceOrderService.createServiceOrder(parsedBody.data, receptionistId);
+
+        // Khách đến trực tiếp không có appointment trước đó: báo realtime sau khi tạo phiếu.
+        // Lịch hẹn có sẵn đã được báo ở endpoint /appointment/:key/receive để tránh phát hai lần.
+        if (!parsedBody.data.appointment_id) await notifyRole(
+            "TECHNICIAN_LEADER",
+            {
+                title: "Có khách hàng vừa được tiếp nhận",
+                content: `Lễ tân vừa tạo phiếu tiếp nhận SO-${result.id}. Vui lòng kiểm tra và phân công.`,
+                notificationType: "SERVICE_ORDER",
+                referenceId: result.id,
+                link: "/leader/appointments",
+                priority: "HIGH"
+            },
+            "new_notification",
+            {
+                type: "CUSTOMER_RECEIVED",
+                serviceOrderId: result.id,
+                message: `Có khách hàng mới vừa được lễ tân tiếp nhận (SO-${result.id}).`
+            }
+        );
+        if (!parsedBody.data.appointment_id && global._io) {
+            global._io.emit("customer_received", {
+                type: "CUSTOMER_RECEIVED",
+                serviceOrderId: result.id,
+                message: `Có khách hàng mới vừa được lễ tân tiếp nhận (SO-${result.id}).`
+            });
+        }
 
         // 3. Return response
         return res.status(201).json({

@@ -33,6 +33,17 @@ module.exports.getCustomerInfoByPhone = async (phone, partial = false) => {
                             as: 'serviceOrders',
                             where: { status: { [Op.notIn]: ['COMPLETED', 'CANCELLED', 'PAID'] } },
                             required: false
+                        },
+                        {
+                            model: db.Appointments,
+                            as: 'appointments',
+                            attributes: ['id', 'status'],
+                            where: {
+                                status: {
+                                    [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECIEVED', 'Technicaian_recieved']
+                                }
+                            },
+                            required: false
                         }
                     ]
                 }
@@ -46,16 +57,30 @@ module.exports.getCustomerInfoByPhone = async (phone, partial = false) => {
                 id: customer.id,
                 customer_name: customer.user?.fullName || customer.name || '',
                 phone: customer.phone,
-                vehicles: customer.vehicles ? customer.vehicles.map(v => ({
-                    id: v.id,
-                    license_plate: v.license_plate,
-                    vin_number: v.vin_number,
-                    year: v.year,
-                    color: v.color,
-                    brand: v.model?.make?.make_name || '',
-                    model: v.model?.model_name || '',
-                    isInGarage: v.serviceOrders && v.serviceOrders.length > 0
-                })) : []
+                vehicles: customer.vehicles ? customer.vehicles.map(v => {
+                    const activeAppointment = v.appointments?.[0];
+                    const isInGarage = Boolean(v.serviceOrders?.length) ||
+                        ['INFORMATION_RECIEVED', 'Technicaian_recieved'].includes(activeAppointment?.status);
+                    const hasActiveAppointment = Boolean(activeAppointment);
+
+                    return {
+                        id: v.id,
+                        license_plate: v.license_plate,
+                        vin_number: v.vin_number,
+                        year: v.year,
+                        color: v.color,
+                        brand: v.model?.make?.make_name || '',
+                        model: v.model?.model_name || '',
+                        isInGarage,
+                        hasActiveAppointment,
+                        isDisabled: isInGarage || hasActiveAppointment,
+                        disableReason: isInGarage
+                            ? 'Xe đã được tiếp nhận hoặc đang ở trong gara'
+                            : hasActiveAppointment
+                                ? 'Xe đang có lịch hẹn chờ xử lý'
+                                : null
+                    };
+                }) : []
             }))
         };
     }
@@ -92,6 +117,17 @@ module.exports.getCustomerInfoByPhone = async (phone, partial = false) => {
                         where: {
                             status: {
                                 [Op.notIn]: ['COMPLETED', 'CANCELLED', 'PAID']
+                            }
+                        },
+                        required: false
+                    },
+                    {
+                        model: db.Appointments,
+                        as: 'appointments',
+                        attributes: ['id', 'status'],
+                        where: {
+                            status: {
+                                [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECIEVED', 'Technicaian_recieved']
                             }
                         },
                         required: false
@@ -151,16 +187,30 @@ module.exports.getCustomerInfoByPhone = async (phone, partial = false) => {
         id: customer.id,
         customer_name: customer.user?.fullName || customer.name || '',
         phone: customer.phone,
-        vehicles: customer.vehicles ? customer.vehicles.map(v => ({
-            id: v.id,
-            license_plate: v.license_plate,
-            vin_number: v.vin_number,
-            year: v.year,
-            color: v.color,
-            brand: v.model?.make?.make_name || '',
-            model: v.model?.model_name || '',
-            isInGarage: v.serviceOrders && v.serviceOrders.length > 0
-        })) : []
+        vehicles: customer.vehicles ? customer.vehicles.map(v => {
+            const activeAppointment = v.appointments?.[0];
+            const isInGarage = Boolean(v.serviceOrders?.length) ||
+                ['INFORMATION_RECIEVED', 'Technicaian_recieved'].includes(activeAppointment?.status);
+            const hasActiveAppointment = Boolean(activeAppointment);
+
+            return {
+                id: v.id,
+                license_plate: v.license_plate,
+                vin_number: v.vin_number,
+                year: v.year,
+                color: v.color,
+                brand: v.model?.make?.make_name || '',
+                model: v.model?.model_name || '',
+                isInGarage,
+                hasActiveAppointment,
+                isDisabled: isInGarage || hasActiveAppointment,
+                disableReason: isInGarage
+                    ? 'Xe đã được tiếp nhận hoặc đang ở trong gara'
+                    : hasActiveAppointment
+                        ? 'Xe đang có lịch hẹn chờ xử lý'
+                        : null
+            };
+        }) : []
     } : null;
 
     const formattedAppointments = appointments.map(apt => {
@@ -177,6 +227,7 @@ module.exports.getCustomerInfoByPhone = async (phone, partial = false) => {
             status: apt.status,
             appointmentDate,
             appointmentTime,
+            bookingType: apt.booking_type,
             customer_name: apt.customer?.user?.fullName || apt.customer?.name || '',
             phone: apt.customer?.phone || '',
             vehicle: apt.vehicle ? {

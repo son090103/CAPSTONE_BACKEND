@@ -34,11 +34,13 @@ const notifyRole = async (
       }
     }
 
-    if (global._io) {
-      global._io.to(`role-${roleCode}`).emit(socketEvent, socketPayload);
-    }
   } catch (error) {
     console.error(`Lỗi khi tạo thông báo cho role ${roleCode}:`, error);
+  }
+
+  // Việc lưu notification DB không được phép chặn realtime nếu DB notification gặp lỗi.
+  if (global._io) {
+    global._io.to(`role-${roleCode}`).emit(socketEvent, socketPayload);
   }
 };
 const notifyUser = async (userId, notificationData, socketEvent = 'new_notification', socketPayload = {}) => {

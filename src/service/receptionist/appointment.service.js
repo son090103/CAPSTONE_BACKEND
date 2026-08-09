@@ -542,6 +542,44 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
             if (!customer) {
                 throw { status: 400, message: "Khách hàng không tồn tại" };
             }
+
+            const activeAppointment = await db.Appointments.findOne({
+                where: {
+                    vehicle_id: resolvedVehicleId,
+                    status: {
+                        [db.Sequelize.Op.in]: [
+                            'PENDING',
+                            'CONFIRMED',
+                            'INFORMATION_RECIEVED',
+                            'Technicaian_recieved'
+                        ]
+                    }
+                },
+                transaction
+            });
+            if (activeAppointment) {
+                const isReceived = ['INFORMATION_RECIEVED', 'Technicaian_recieved']
+                    .includes(activeAppointment.status);
+                throw {
+                    status: 400,
+                    message: isReceived
+                        ? "Xe đã được tiếp nhận tại gara, không thể đặt thêm lịch"
+                        : "Xe đang có lịch hẹn chờ xử lý, không thể đặt thêm lịch"
+                };
+            }
+
+            const activeServiceOrder = await db.Service_Orders.findOne({
+                where: {
+                    vehicle_id: resolvedVehicleId,
+                    status: {
+                        [db.Sequelize.Op.notIn]: ['COMPLETED', 'CANCELLED', 'PAID']
+                    }
+                },
+                transaction
+            });
+            if (activeServiceOrder) {
+                throw { status: 400, message: "Xe đang ở trong gara, không thể đặt thêm lịch" };
+            }
         } else if (data.walk_in) {
             // Khách hàng mới hoặc xe mới
             const phoneToUse = data.walk_in.customer_phone;
