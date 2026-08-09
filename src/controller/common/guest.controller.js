@@ -64,6 +64,10 @@ module.exports.getServiceCatalog = async (req, res) => {
 
 module.exports.searchServiceCatalog = async (req, res) => {
   try {
+    const fs = require('fs');
+    const logPath = "C:/Users/son/.gemini/antigravity-ide/brain/752070f6-e3a8-4875-a697-13bdb7dbf137/scratch/request_log.txt";
+    fs.appendFileSync(logPath, `${new Date().toISOString()} - ${req.url} - ${JSON.stringify(req.query)}\n`);
+    console.log("=== GUEST SEARCH REQUEST QUERY ===", req.query);
     const page = parsePositiveInteger(req.query.page, 1, "page");
     const limit = parsePositiveInteger(req.query.limit, 8, "limit", 100);
     const categoryId = req.query.category_id
@@ -72,7 +76,7 @@ module.exports.searchServiceCatalog = async (req, res) => {
 
     const data = await guestService.searchServiceCatalog({
       lang: getLanguage(req.query.lang),
-      q: String(req.query.q || "").trim(),
+      q: String(req.query.q || req.query.search || "").trim(),
       categoryId,
       page,
       limit,

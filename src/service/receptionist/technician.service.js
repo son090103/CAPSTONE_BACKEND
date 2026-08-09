@@ -12,17 +12,30 @@ module.exports.assignRescueTechnician = async (customerId, technicianId, custome
     }
 
     // Tìm xem khách hàng này có cuốc cứu hộ nào đang dang dở không
-    let rescue = await db.Rescue_Requests.findOne({
+    const activeRescues = await db.Rescue_Requests.findAll({
         where: {
             customer_id: customer.id,
             status: {
-                [db.Sequelize.Op.in]: ['PENDING', 'ASSIGNED', 'ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']
+                [db.Sequelize.Op.in]: ['PENDING', 'ASSIGNED', 'ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'TOWING', 'IN_PROGRESS']
             }
-        }
+        },
+        order: [['createdAt', 'DESC']]
     });
 
+    let rescue = activeRescues[0];
+
+    if (activeRescues.length > 1) {
+        const otherIds = activeRescues.slice(1).map(r => r.id);
+        await db.Rescue_Requests.update(
+            { status: 'CANCELLED' },
+            {
+                where: { id: { [db.Sequelize.Op.in]: otherIds } }
+            }
+        );
+    }
+
     if (rescue) {
-        if (['ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS', 'COMPLETED'].includes(rescue.status)) {
+        if (['ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'TOWING', 'IN_PROGRESS', 'COMPLETED'].includes(rescue.status)) {
             throw new Error("Kỹ thuật viên đã tiếp nhận hoặc đang di chuyển cứu hộ. Không thể gán lại!");
         }
         // Cập nhật technician và status

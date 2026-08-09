@@ -65,11 +65,26 @@ const mapCatalogs = (catalogs) => mapServicePrices(catalogs.map(localizeCatalog)
 module.exports.getServiceCategories = async (lang = "vi") => {
   const categories = await ServiceCategories.findAll({
     where: { is_active: true },
-    attributes: ["id", "category_name"],
+    attributes: [
+      "id",
+      "category_name",
+      [
+        db.Sequelize.literal(`(
+          SELECT COUNT(*)
+          FROM "Service_Catalogs" AS sc
+          WHERE sc.category_id = "Service_Categories".id AND sc.is_active = true
+        )`),
+        "service_count"
+      ]
+    ],
     include: translationInclude(db.Service_Category_Translations, lang),
     order: [["id", "ASC"]],
   });
-  return categories.map(localizeCategory);
+  return categories.map((cat) => {
+    const localized = localizeCategory(cat);
+    localized.service_count = Number(localized.service_count || 0);
+    return localized;
+  });
 };
 
 module.exports.getServiceCatalog = async ({ lang = "vi", categoryId = null } = {}) => {

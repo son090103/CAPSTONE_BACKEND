@@ -3,7 +3,13 @@ const taskAssignmentController = require("../../controller/technicianLeader/task
 const router = express.Router();
 const serviceQualityInspectionController = require("../../controller/technicianLeader/serviceQualityInspection.controller");
 const notificationController = require("../../controller/technicianLeader/notification.controller");
+const appointmentController = require("../../controller/technicianLeader/appointment.controller");
+const serviceOrderController = require("../../controller/technicianLeader/serviceOrder.controller");
 
+router.post("/service-order", serviceOrderController.createServiceOrder);
+router.get("/service-order/:id", serviceOrderController.getServiceOrderById);
+router.patch("/service-order/:id/close-early", serviceOrderController.closeServiceOrderEarly);
+router.get("/appointments", appointmentController.getReceivedAppointments);
 router.get("/quality-inspection", serviceQualityInspectionController.getServiceOrdersPendingQC);
 router.get("/quality-inspection/statistics", serviceQualityInspectionController.getInspectionStatistics);
 router.patch("/final-inspection/:serviceOrderId/approve", serviceQualityInspectionController.approveFinalInspection);
