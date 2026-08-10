@@ -463,8 +463,7 @@ module.exports.getAppointmentVehicles = async (userId) => {
                     [db.Sequelize.Op.in]: [
                         'PENDING',
                         'CONFIRMED',
-                        'INFORMATION_RECIEVED',
-                        'Technicaian_recieved'
+                        'INFORMATION_RECEIVED'
                     ]
                 }
             },
@@ -493,8 +492,7 @@ module.exports.getAppointmentVehicles = async (userId) => {
 
         if (activeAppointment) {
             vehicleData.isDisabled = true;
-            const hasArrivedAtGarage = ['INFORMATION_RECIEVED', 'Technicaian_recieved']
-                .includes(activeAppointment.status);
+            const hasArrivedAtGarage = activeAppointment.status === 'INFORMATION_RECEIVED';
             vehicleData.disableReason = hasArrivedAtGarage
                 ? 'Xe đã được tiếp nhận tại gara'
                 : 'Xe đang có lịch hẹn chờ xử lý';

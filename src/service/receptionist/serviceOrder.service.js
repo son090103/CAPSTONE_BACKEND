@@ -44,17 +44,27 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
     if (!actualVehicleId && data.walk_in) {
       let phoneToUse = data.walk_in.customer_phone;
 
-      // 1. Tạo hoặc lấy Customer
-      let [customer] = await db.Customers.findOrCreate({
+      // SĐT đã có khách hàng trong hệ thống — không âm thầm dùng lại/ghi đè tên, bắt lễ tân
+      // chuyển qua chọn khách hàng có sẵn (tránh lưu nhầm tên khác cho cùng 1 khách).
+      const existingCustomer = await db.Customers.findOne({
         where: { phone: phoneToUse },
-        defaults: {
-          user_id: null,
-          name: data.walk_in.customer_name || null,
-          membership_tier: "BRONZE",
-          loyalty_points: 0,
-        },
         transaction,
       });
+      if (existingCustomer) {
+        throw {
+          status: 409,
+          message: `Số điện thoại này đã thuộc về khách hàng "${existingCustomer.name || 'chưa rõ tên'}" trong hệ thống. Vui lòng chọn khách hàng có sẵn thay vì tạo mới.`,
+        };
+      }
+
+      // 1. Tạo Customer mới
+      let customer = await db.Customers.create({
+        phone: phoneToUse,
+        user_id: null,
+        name: data.walk_in.customer_name || null,
+        membership_tier: "BRONZE",
+        loyalty_points: 0,
+      }, { transaction });
 
       // 2. Lấy hoặc tạo Brand (Make)
       let [make] = await db.Vehicle_Makes.findOrCreate({
@@ -215,7 +225,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         where: {
           scheduled_time: { [Op.between]: [startOfDay, endOfDay] },
           booking_type: { [Op.notLike]: '%WALK%' },
-          status: { [Op.in]: ['PENDING', 'CONFIRMED', 'Technicaian_recieved', 'INFORMATION_RECIEVED'] },
+          status: { [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECEIVED'] },
           id: { [Op.ne]: actualAppointmentId || 0 }
         },
         include: [{ model: db.Appointment_Details, as: 'appointmentDetails' }],

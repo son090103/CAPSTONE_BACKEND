@@ -268,6 +268,7 @@ module.exports.createQuotation = async (data, leaderId) => {
       let unitPrice = 0;
       let repairPrice = 0;
       let amount = 0;
+      let partOutOfStock = false;
       if (item.spare_part_id) {
         const part = await SparePart.findByPk(item.spare_part_id, { transaction: t });
         if (!part) {
@@ -280,12 +281,9 @@ module.exports.createQuotation = async (data, leaderId) => {
           transaction: t,
         });
         const availableQuantity = Number(part.stock_quantity) - Number(heldQuantity || 0);
-        if (availableQuantity < item.quantity) {
-          throw {
-            status: 400,
-            message: `Phụ tùng "${part.name}" không đủ tồn kho khả dụng (còn ${availableQuantity}, cần ${item.quantity}). Vui lòng gửi yêu cầu nhập kho.`,
-          };
-        }
+        // Thiếu tồn vẫn được thêm vào báo giá bình thường (khách vẫn cần thấy đầy đủ hạng mục) —
+        // chỉ đánh dấu WAITING_STOCK để tạo Restock_Requests sau khi khách duyệt báo giá.
+        partOutOfStock = availableQuantity < item.quantity;
         unitPrice = part.retail_price;
         amount = item.quantity * unitPrice;
       } else if (item.custom_item_name) {
@@ -315,7 +313,7 @@ module.exports.createQuotation = async (data, leaderId) => {
         unit_price: unitPrice || 0,
         repair_price: repairPrice || 0,
         amount,
-        status: item.custom_item_name ? "CUSTOM_ORDERED" : "PENDING",
+        status: item.custom_item_name ? "CUSTOM_ORDERED" : partOutOfStock ? "WAITING_STOCK" : "PENDING",
       });
       if (item.custom_item_name) {
         customPartOrdersToCreate.push({
@@ -445,6 +443,7 @@ module.exports.updateQuotation = async (id, data, leaderId) => {
       let unitPrice = 0;
       let repairPrice = 0;
       let amount = 0;
+      let partOutOfStock = false;
       if (item.spare_part_id) {
         const part = await SparePart.findByPk(item.spare_part_id, { transaction: t });
         if (!part) {
@@ -456,12 +455,7 @@ module.exports.updateQuotation = async (id, data, leaderId) => {
           transaction: t,
         });
         const availableQuantity = Number(part.stock_quantity) - Number(heldQuantity || 0);
-        if (availableQuantity < item.quantity) {
-          throw {
-            status: 400,
-            message: `Phụ tùng "${part.name}" không đủ tồn kho khả dụng (còn ${availableQuantity}, cần ${item.quantity}). Vui lòng gửi yêu cầu nhập kho.`,
-          };
-        }
+        partOutOfStock = availableQuantity < item.quantity;
         unitPrice = part.retail_price;
         amount = item.quantity * unitPrice;
       } else if (item.custom_item_name) {
@@ -490,7 +484,7 @@ module.exports.updateQuotation = async (id, data, leaderId) => {
         unit_price: unitPrice || 0,
         repair_price: repairPrice || 0,
         amount,
-        status: item.custom_item_name ? "CUSTOM_ORDERED" : "PENDING",
+        status: item.custom_item_name ? "CUSTOM_ORDERED" : partOutOfStock ? "WAITING_STOCK" : "PENDING",
       });
       if (item.custom_item_name) {
         customPartOrdersToCreate.push({
@@ -722,7 +716,7 @@ module.exports.getQuotationById = async (id) => {
 module.exports.approveQuotation = async (id, approvedByRole = "TECHNICIAN_LEADER") => {
   return await db.sequelize.transaction(async (t) => {
     const quotation = await Quotation.findByPk(id, {
-      include: [{ model: QuotationDetail, as: "items", attributes: ["id", "service_id", "issue_id"] }],
+      include: [{ model: QuotationDetail, as: "items", attributes: ["id", "service_id", "issue_id", "spare_part_id", "quantity", "status"] }],
       transaction: t,
     });
     if (!quotation) {
@@ -751,17 +745,33 @@ module.exports.approveQuotation = async (id, approvedByRole = "TECHNICIAN_LEADER
         { status: "IN_PROGRESS" },
         { where: { id: inspectionTask.service_order_id, status: "PENDING_QUOTATION" }, transaction: t },
       );
+      // Xếp vào hàng đợi, chờ kỹ thuật viên trưởng tự gán cầu nâng + KTV thủ công (assignTask)
+      // — không còn tự động gán ngay khi duyệt.
       await Service_Order.update(
         { bay_status: "WAITING" },
         { where: { id: inspectionTask.service_order_id }, transaction: t },
       );
-      const assignQueuedOrders = require("../../util/assignQueuedOrders.util");
-      await assignQueuedOrders(t);
     }
     await quotation.update(
       { status: "APPROVED", approved_at: new Date(), approval_method: approvedByRole },
       { transaction: t },
     );
+
+    // Phụ tùng kho thiếu tồn được giữ nguyên trong báo giá (không chặn lúc soạn) — chỉ khi
+    // báo giá thực sự được duyệt mới tạo yêu cầu nhập kho cho thủ kho xử lý.
+    const waitingStockItems = quotation.items.filter((item) => item.status === "WAITING_STOCK" && item.spare_part_id);
+    if (waitingStockItems.length > 0) {
+      await db.Restock_Requests.bulkCreate(
+        waitingStockItems.map((item) => ({
+          spare_part_id: item.spare_part_id,
+          quotation_detail_id: item.id,
+          quantity_needed: item.quantity,
+          requested_by: quotation.created_by,
+          status: "PENDING",
+        })),
+        { transaction: t },
+      );
+    }
     return quotation;
   }).then(async (quotation) => {
     const approverLabel = approvedByRole === "RECEPTIONIST" ? "lễ tân" : "kỹ thuật viên trưởng";

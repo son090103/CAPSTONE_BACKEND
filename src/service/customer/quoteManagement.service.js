@@ -3,7 +3,6 @@ const Quotation = db.Quotations;
 const QuotationDetail = db.Quotation_Details;
 const Task = db.Task;
 const { notifyRole } = require("../../util/notification.util");
-const assignQueuedOrders = require("../../util/assignQueuedOrders.util");
 
 const getQuotationInclude = (customerId) => [
   {
@@ -127,7 +126,7 @@ module.exports.approveQuotation = async (userId, quotationId) => {
         {
           model: QuotationDetail,
           as: "items",
-          attributes: ["id", "service_id", "issue_id"],
+          attributes: ["id", "service_id", "issue_id", "spare_part_id", "quantity", "status"],
         },
         {
           model: Task,
@@ -197,18 +196,33 @@ module.exports.approveQuotation = async (userId, quotationId) => {
       );
 
       // Báo giá được duyệt -> phát sinh Task REPAIR mới -> xe cần cầu nâng trở lại (đã nhả lúc
-      // kiểm tra xong chờ duyệt). Xếp vào hàng đợi và để assignQueuedOrders tự gán ngay nếu có
-      // cầu nâng + KTV rảnh.
+      // kiểm tra xong chờ duyệt). Xếp vào hàng đợi, chờ kỹ thuật viên trưởng tự gán cầu nâng +
+      // KTV thủ công (assignTask) — không còn tự động gán ngay khi duyệt.
       await db.Service_Orders.update(
         { bay_status: "WAITING" },
         { where: { id: inspectionTask.service_order_id }, transaction: t },
       );
-      await assignQueuedOrders(t);
     }
     await quotation.update(
       { status: "APPROVED", approved_at: new Date() },
       { transaction: t },
     );
+
+    // Phụ tùng kho thiếu tồn được giữ nguyên trong báo giá (không chặn lúc soạn) — chỉ khi
+    // khách thực sự duyệt mới tạo yêu cầu nhập kho cho thủ kho xử lý.
+    const waitingStockItems = quotation.items.filter((item) => item.status === "WAITING_STOCK" && item.spare_part_id);
+    if (waitingStockItems.length > 0) {
+      await db.Restock_Requests.bulkCreate(
+        waitingStockItems.map((item) => ({
+          spare_part_id: item.spare_part_id,
+          quotation_detail_id: item.id,
+          quantity_needed: item.quantity,
+          requested_by: quotation.created_by,
+          status: "PENDING",
+        })),
+        { transaction: t },
+      );
+    }
     return quotation;
   }).then(async (quotation) => {
     await notifyRole(

@@ -67,6 +67,37 @@ module.exports.startTask = async (req, res) => {
   }
 };
 
+module.exports.requestPartsExport = async (req, res) => {
+  try {
+    const { serviceOrderId } = req.body;
+    const technicianId = res.locals.user.id;
+
+    if (!serviceOrderId) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng truyền serviceOrderId vào body.",
+      });
+    }
+
+    const result = await taskAssignmentService.requestPartsExport(
+      serviceOrderId,
+      technicianId,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Đã gửi yêu cầu xuất kho cho ${result.requestedCount} phụ tùng.`,
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error in requestPartsExport:", error);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi khi gửi yêu cầu xuất kho.",
+    });
+  }
+};
+
 module.exports.completeTask = async (req, res) => {
   try {
     const { taskAssignmentId, content } = req.body;

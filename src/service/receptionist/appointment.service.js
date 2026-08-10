@@ -335,16 +335,26 @@ module.exports.createAppointmentForCustomer = async (data, receptionistId) => {
                 throw { status: 400, message: "Vui lòng nhập số điện thoại khách hàng" };
             }
 
-            [customer] = await db.Customers.findOrCreate({
+            // SĐT đã có khách hàng trong hệ thống — không âm thầm dùng lại/ghi đè tên, bắt lễ tân
+            // chuyển qua chọn khách hàng có sẵn (tránh lưu nhầm tên khác cho cùng 1 khách).
+            const existingCustomer = await db.Customers.findOne({
                 where: { phone: phoneToUse },
-                defaults: {
-                    user_id: null,
-                    name: data.walk_in.customer_name || null,
-                    membership_tier: "BRONZE",
-                    loyalty_points: 0,
-                },
                 transaction,
             });
+            if (existingCustomer) {
+                throw {
+                    status: 409,
+                    message: `Số điện thoại này đã thuộc về khách hàng "${existingCustomer.name || 'chưa rõ tên'}" trong hệ thống. Vui lòng chọn khách hàng có sẵn thay vì tạo mới.`,
+                };
+            }
+
+            customer = await db.Customers.create({
+                phone: phoneToUse,
+                user_id: null,
+                name: data.walk_in.customer_name || null,
+                membership_tier: "BRONZE",
+                loyalty_points: 0,
+            }, { transaction });
 
             let [make] = await db.Vehicle_Makes.findOrCreate({
                 where: { make_name: data.walk_in.brand_name || 'Khác' },
@@ -426,9 +436,7 @@ module.exports.receiveAppointment = async (key, status) => {
         throw { status: 400, message: "Lịch hẹn này đã được tiếp nhận hoặc đã hủy, không thể tiếp nhận lại." };
     }
 
-    appointment.status = status === 'Technicaian_recieved'
-        ? status
-        : 'Technicaian_recieved';
+    appointment.status = 'INFORMATION_RECEIVED';
     await appointment.save();
     return appointment;
 };
@@ -550,16 +558,14 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
                         [db.Sequelize.Op.in]: [
                             'PENDING',
                             'CONFIRMED',
-                            'INFORMATION_RECIEVED',
-                            'Technicaian_recieved'
+                            'INFORMATION_RECEIVED'
                         ]
                     }
                 },
                 transaction
             });
             if (activeAppointment) {
-                const isReceived = ['INFORMATION_RECIEVED', 'Technicaian_recieved']
-                    .includes(activeAppointment.status);
+                const isReceived = activeAppointment.status === 'INFORMATION_RECEIVED';
                 throw {
                     status: 400,
                     message: isReceived
@@ -587,16 +593,26 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
                 throw { status: 400, message: "Vui lòng nhập số điện thoại khách hàng" };
             }
 
-            [customer] = await db.Customers.findOrCreate({
+            // SĐT đã có khách hàng trong hệ thống — không âm thầm dùng lại/ghi đè tên, bắt lễ tân
+            // chuyển qua chọn khách hàng có sẵn (tránh lưu nhầm tên khác cho cùng 1 khách).
+            const existingCustomer = await db.Customers.findOne({
                 where: { phone: phoneToUse },
-                defaults: {
-                    user_id: null,
-                    name: data.walk_in.customer_name || null,
-                    membership_tier: "BRONZE",
-                    loyalty_points: 0,
-                },
                 transaction,
             });
+            if (existingCustomer) {
+                throw {
+                    status: 409,
+                    message: `Số điện thoại này đã thuộc về khách hàng "${existingCustomer.name || 'chưa rõ tên'}" trong hệ thống. Vui lòng chọn khách hàng có sẵn thay vì tạo mới.`,
+                };
+            }
+
+            customer = await db.Customers.create({
+                phone: phoneToUse,
+                user_id: null,
+                name: data.walk_in.customer_name || null,
+                membership_tier: "BRONZE",
+                loyalty_points: 0,
+            }, { transaction });
 
             let [make] = await db.Vehicle_Makes.findOrCreate({
                 where: { make_name: data.walk_in.brand_name || 'Khác' },
@@ -648,7 +664,7 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
             booking_type: bookingType,
             scheduled_time: null,
             notes: data.notes || null,
-            status: 'INFORMATION_RECIEVED',
+            status: 'INFORMATION_RECEIVED',
             priority_type: data.priority_type || 'NORMAL',
         }, { transaction });
 

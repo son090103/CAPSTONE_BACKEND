@@ -51,7 +51,7 @@ module.exports.getAvailability = async (dateStr) => {
                 scheduled_time: { [Op.between]: [startOfDay, endOfDay] },
                 booking_type: { [Op.notLike]: '%WALK%' },
                 status: {
-                    [Op.in]: ['PENDING', 'CONFIRMED', 'Technicaian_recieved', 'INFORMATION_RECIEVED']
+                    [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECEIVED']
                 }
             },
             attributes: ['id', 'scheduled_time'],

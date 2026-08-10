@@ -12,6 +12,9 @@ const CustomPartOrder = db.Custom_Part_Orders;
 const RestockRequest = db.Restock_Requests;
 const sparePartService = require("../../service/inventory/sparePartManagement.service");
 const geminiClient = require("../../config/gemini.config");
+const xlsx = require("xlsx");
+const ExcelJS = require("exceljs");
+const { normalizeRow, parseNumber } = require("../admin/serviceCatalog.service");
 const Task = db.Task;
 const Service_Orders = db.Service_Orders;
 const Vehicles = db.Vehicles;
@@ -507,14 +510,23 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
         await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
         continue;
       }
-      const remainingUnready = await QuotationDetail.count({
-        where: {
-          issue_id: ownQuotationItem.issue_id,
-          status: { [Op.notIn]: ["EXPORTED", "RECEIVED", "CANCELLED"] },
-        },
+      // service_id: null loại trừ dòng dịch vụ (status mãi mãi PENDING, không qua state machine
+      // xuất kho) — thiếu điều kiện này khiến hasReadyPart luôn tính sai. Cùng tiêu chí đã
+      // dùng ở resolveStartStatus/hasAllPartsReady.
+      //
+      // Đồng nhất với resolveStartStatus: Task đang WAITING_STOCK (0/N sẵn sàng lúc bắt đầu)
+      // chỉ cần CÓ ÍT NHẤT 1 phụ tùng vừa được xuất là resume IN_PROGRESS ngay — không đợi
+      // xuất hết 100%. KTV tự quyết định làm phần nào trước, phần còn thiếu tiếp tục chờ song
+      // song (không cần bấm lại "Bắt đầu"). Việc chặn "hoàn thành khi còn thiếu" đã có riêng ở
+      // hasAllPartsReady (completeTask/completeTaskByLeader), không phụ thuộc vào bước resume
+      // này.
+      const partRows = await QuotationDetail.findAll({
+        where: { issue_id: ownQuotationItem.issue_id, service_id: null },
+        attributes: ["id", "status"],
         transaction: t,
       });
-      if (remainingUnready > 0) continue;
+      const hasReadyPart = partRows.some((p) => ["EXPORTED", "RECEIVED"].includes(p.status));
+      if (!hasReadyPart) continue;
       await assignment.update({ status: "IN_PROGRESS" }, { transaction: t });
       await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
     }
@@ -1071,4 +1083,362 @@ module.exports.resolveRestockRequest = async (id) => {
   }
   await request.update({ status: "RESOLVED" });
   return request;
+};
+
+// Include dùng chung để lấy Service Order gắn với 1 Restock_Requests — đi qua
+// quotation_detail_id -> Quotation_Details -> quotation -> task -> serviceOrder, cùng pattern
+// với getExportRequests. quotation_detail_id có thể NULL (model cho phép) nên required: false.
+const restockRequestServiceOrderInclude = {
+  model: QuotationDetail,
+  as: "quotationDetail",
+  attributes: ["id"],
+  required: false,
+  include: [
+    {
+      model: Quotation,
+      as: "quotation",
+      attributes: ["id"],
+      required: false,
+      include: [
+        {
+          model: Task,
+          as: "task",
+          attributes: ["id", "service_order_id"],
+          required: false,
+          include: [
+            {
+              model: Service_Orders,
+              as: "serviceOrder",
+              attributes: ["id"],
+              required: false,
+              include: [
+                {
+                  model: Vehicles,
+                  as: "vehicle",
+                  attributes: ["id", "license_plate"],
+                  required: false,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+// Thủ kho xem tổng hợp nhu cầu bổ sung — vừa theo từng đơn (Service Order) để biết ai đang
+// chờ, vừa gộp theo phụ tùng để biết cần mua tổng bao nhiêu (dùng chung cho xuất Excel).
+module.exports.getRestockRequestsSummary = async () => {
+  const requests = await RestockRequest.findAll({
+    where: { status: "PENDING" },
+    include: [
+      { model: SparePart, as: "sparePart", attributes: ["id", "sku", "name", "brand", "stock_quantity"] },
+      { model: User, as: "requestedByUser", attributes: ["id", "fullName"] },
+      restockRequestServiceOrderInclude,
+    ],
+    order: [["createdAt", "ASC"]],
+  });
+
+  const byServiceOrder = requests.map((r) => {
+    const serviceOrder = r.quotationDetail?.quotation?.task?.serviceOrder;
+    return {
+      id: r.id,
+      spare_part_id: r.spare_part_id,
+      sparePart: r.sparePart,
+      quantity_needed: r.quantity_needed,
+      requestedByUser: r.requestedByUser,
+      createdAt: r.createdAt,
+      serviceOrderId: serviceOrder?.id ?? null,
+      vehiclePlate: serviceOrder?.vehicle?.license_plate ?? null,
+    };
+  });
+
+  const bySparePartMap = new Map();
+  for (const r of requests) {
+    const key = r.spare_part_id;
+    if (!bySparePartMap.has(key)) {
+      bySparePartMap.set(key, {
+        spare_part_id: key,
+        sparePart: r.sparePart,
+        stock_quantity: r.sparePart?.stock_quantity ?? 0,
+        total_quantity_needed: 0,
+        request_ids: [],
+      });
+    }
+    const entry = bySparePartMap.get(key);
+    entry.total_quantity_needed += r.quantity_needed;
+    entry.request_ids.push(r.id);
+  }
+
+  return {
+    byServiceOrder,
+    bySparePart: Array.from(bySparePartMap.values()),
+  };
+};
+
+// Lịch sử — request đã xử lý xong (đủ hàng, hoặc bị huỷ/đánh dấu thủ công qua resolve cũ).
+module.exports.getRestockRequestsHistory = async () => {
+  const requests = await RestockRequest.findAll({
+    where: { status: { [Op.in]: ["FULFILLED", "RESOLVED", "CANCELLED"] } },
+    include: [
+      { model: SparePart, as: "sparePart", attributes: ["id", "sku", "name", "brand"] },
+      { model: User, as: "requestedByUser", attributes: ["id", "fullName"] },
+      restockRequestServiceOrderInclude,
+    ],
+    order: [["updatedAt", "DESC"]],
+  });
+
+  return requests.map((r) => {
+    const serviceOrder = r.quotationDetail?.quotation?.task?.serviceOrder;
+    return {
+      id: r.id,
+      spare_part_id: r.spare_part_id,
+      sparePart: r.sparePart,
+      quantity_needed: r.quantity_needed,
+      status: r.status,
+      requestedByUser: r.requestedByUser,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      serviceOrderId: serviceOrder?.id ?? null,
+      vehiclePlate: serviceOrder?.vehicle?.license_plate ?? null,
+    };
+  });
+};
+
+// Xuất Excel danh sách phụ tùng cần mua — gộp theo phụ tùng (giống getRestockRequestsSummary
+// .bySparePart), định dạng như 1 đơn đặt hàng gửi nhà cung cấp: tiêu đề, ngày xuất, cột SKU/
+// Tên phụ tùng/Số lượng (gợi ý = số lượng hệ thống đang cần, thủ kho có thể sửa lại theo thực
+// tế đã mua)/Đơn giá nhập/Giá bán — 2 cột giá để trống, thủ kho điền sau khi mua về rồi tải lên
+// lại (previewImportRestockExcel đọc đúng các cột này theo tên, không phụ thuộc thứ tự cột).
+//
+// Dùng exceljs (không phải xlsx) riêng cho hàm này vì cần border/tô màu/in đậm — xlsx (SheetJS)
+// bản community không hỗ trợ style khi ghi file.
+module.exports.exportRestockRequestsExcel = async () => {
+  const { bySparePart } = await module.exports.getRestockRequestsSummary();
+  if (bySparePart.length === 0) {
+    throw { status: 400, message: "Không có yêu cầu bổ sung phụ tùng nào đang chờ" };
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Don dat hang");
+  sheet.columns = [
+    { width: 16 },
+    { width: 36 },
+    { width: 12 },
+    { width: 16 },
+    { width: 16 },
+  ];
+
+  const thinBorder = { style: "thin", color: { argb: "FFB8C2CC" } };
+  const cellBorder = { top: thinBorder, left: thinBorder, bottom: thinBorder, right: thinBorder };
+
+  sheet.mergeCells("A1:E1");
+  const titleCell = sheet.getCell("A1");
+  titleCell.value = "PHIẾU ĐẶT HÀNG BỔ SUNG PHỤ TÙNG";
+  titleCell.font = { bold: true, size: 14, color: { argb: "FF00285E" } };
+  titleCell.alignment = { horizontal: "center", vertical: "middle" };
+  sheet.getRow(1).height = 26;
+
+  sheet.mergeCells("A2:E2");
+  const subtitleCell = sheet.getCell("A2");
+  subtitleCell.value = `Ngày xuất: ${new Date().toLocaleDateString("vi-VN")}`;
+  subtitleCell.font = { italic: true, size: 10, color: { argb: "FF64748B" } };
+  subtitleCell.alignment = { horizontal: "center", vertical: "middle" };
+
+  const headerValues = ["SKU", "Tên phụ tùng", "Số lượng", "Đơn giá nhập", "Giá bán"];
+  const headerRow = sheet.addRow(headerValues);
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF00285E" } };
+    cell.alignment = { horizontal: "center", vertical: "middle" };
+    cell.border = cellBorder;
+  });
+  headerRow.height = 20;
+
+  bySparePart.forEach((item, index) => {
+    const row = sheet.addRow([
+      item.sparePart?.sku ?? "",
+      item.sparePart?.name ?? "",
+      item.total_quantity_needed,
+      null,
+      null,
+    ]);
+    const isEvenRow = index % 2 === 1;
+    // includeEmpty: true — 2 cột "Đơn giá nhập"/"Giá bán" luôn null (để trống cho thủ kho tự
+    // điền), eachCell mặc định bỏ qua cell rỗng nên sẽ không có border/fill nếu thiếu option này.
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      cell.border = cellBorder;
+      if (isEvenRow) {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
+      }
+      cell.alignment = { horizontal: colNumber === 2 ? "left" : "center", vertical: "middle" };
+    });
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return Buffer.from(buffer);
+};
+
+// Đọc file Excel thủ kho đã điền "Số lượng"/"Đơn giá nhập"/"Giá bán" sau khi mua về — chỉ đối
+// chiếu với phụ tùng ĐÃ CÓ SẴN trong danh mục (SKU phải khớp), không tạo phụ tùng mới như
+// importSparePart thường (ở đây chắc chắn phụ tùng đã tồn tại, chỉ đang thiếu tồn).
+//
+// File có thể là chính file đã xuất (exportRestockRequestsExcel), có 2 dòng tiêu đề + 1 dòng
+// trống phía trên bảng dữ liệu — nên KHÔNG dùng sheet_to_json mặc định (nó luôn lấy dòng đầu
+// tiên làm header, sẽ đọc nhầm dòng tiêu đề). Đọc thô dạng mảng (header:1), tự tìm dòng chứa
+// "SKU" làm header thật, rồi map các dòng phía sau theo đúng vị trí cột tìm được.
+module.exports.previewImportRestockExcel = async (fileBuffer) => {
+  if (!fileBuffer) {
+    throw { status: 400, message: "Không có dữ liệu file để import" };
+  }
+
+  const workbook = xlsx.read(fileBuffer, { type: "buffer" });
+  const sheetName = workbook.SheetNames[0];
+  if (!sheetName) {
+    throw { status: 400, message: "File không chứa sheet hợp lệ" };
+  }
+  const sheet = workbook.Sheets[sheetName];
+  const rawGrid = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: "", blankrows: false });
+  if (!Array.isArray(rawGrid) || rawGrid.length === 0) {
+    throw { status: 400, message: "File không chứa dữ liệu" };
+  }
+
+  const normalizeHeaderCell = (cell) =>
+    String(cell ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/đ/g, "d")
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+
+  const headerRowIndex = rawGrid.findIndex((row) =>
+    Array.isArray(row) && row.some((cell) => normalizeHeaderCell(cell) === "sku"),
+  );
+  if (headerRowIndex === -1) {
+    throw { status: 400, message: 'Không tìm thấy dòng tiêu đề chứa cột "SKU" trong file' };
+  }
+
+  const headerCells = rawGrid[headerRowIndex].map(normalizeHeaderCell);
+  const colIndex = {
+    sku: headerCells.indexOf("sku"),
+    name: headerCells.findIndex((h) => h === "ten_phu_tung"),
+    quantity: headerCells.findIndex((h) => h === "so_luong"),
+    unitPrice: headerCells.findIndex((h) => h === "don_gia_nhap"),
+    retailPrice: headerCells.findIndex((h) => h === "gia_ban"),
+  };
+  if (colIndex.sku === -1) {
+    throw { status: 400, message: 'Không tìm thấy cột "SKU" trong file' };
+  }
+
+  const dataRows = rawGrid.slice(headerRowIndex + 1);
+  const previewList = [];
+  for (let i = 0; i < dataRows.length; i += 1) {
+    const rawRow = dataRows[i];
+    const rowIndex = headerRowIndex + 2 + i + 1; // vị trí dòng thật trong Excel (1-based)
+    const sku = String(rawRow[colIndex.sku] ?? "").trim();
+    const quantity = parseNumber(rawRow[colIndex.quantity], 0) || 0;
+    const unitPrice = parseNumber(rawRow[colIndex.unitPrice], 0) || 0;
+    const retailPrice = colIndex.retailPrice !== -1 ? parseNumber(rawRow[colIndex.retailPrice], undefined) : undefined;
+
+    if (!sku) continue; // dòng trống cuối bảng — bỏ qua, không tính là lỗi
+
+    if (quantity <= 0) {
+      previewList.push({
+        row_index: rowIndex,
+        sku,
+        isValid: false,
+        error: "Số lượng phải lớn hơn 0 — bỏ trống dòng này nếu chưa mua",
+      });
+      continue;
+    }
+
+    const part = await SparePart.findOne({
+      where: { sku },
+      include: [{ model: PartCategory, as: "category", attributes: ["id", "category_name"] }],
+    });
+    if (!part) {
+      previewList.push({
+        row_index: rowIndex,
+        sku,
+        isValid: false,
+        error: `Không tìm thấy phụ tùng với SKU "${sku}" trong danh mục`,
+      });
+      continue;
+    }
+
+    previewList.push({
+      row_index: rowIndex,
+      spare_part_id: part.id,
+      sku: part.sku,
+      name: part.name,
+      quantity,
+      unit_price: unitPrice,
+      retail_price: retailPrice,
+      category_name: part.category?.category_name ?? null,
+      warranty_period_months: part.warranty_period_months ?? null,
+      warranty_km_limit: part.warranty_km_limit ?? null,
+      isValid: true,
+    });
+  }
+
+  return previewList;
+};
+
+// Thủ kho xác nhận nhập kho sau khi đã kiểm tra/chỉnh sửa bảng preview trên giao diện — tái
+// dùng nguyên logic tăng tồn kho + ghi Inventory_Logs/Inventory_Batches của importSparePart
+// (mọi item ở đây LUÔN có part_id vì đã được match SKU ở bước preview). Sau khi nhập xong, đối
+// chiếu Restock_Requests đang PENDING của từng phụ tùng: đủ tồn thì chuyển cả loạt sang
+// FULFILLED (không chia theo từng Service Order), thiếu thì giữ nguyên PENDING.
+module.exports.confirmRestockImport = async (manager_id, supplier_id, items) => {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw { status: 400, message: "Không có phụ tùng nào để nhập kho" };
+  }
+
+  const importResult = await module.exports.importSparePart(
+    manager_id,
+    supplier_id,
+    items.map((i) => ({
+      part_id: i.spare_part_id,
+      quantity: i.quantity,
+      unit_price: i.unit_price,
+      retail_price: i.retail_price != null && i.retail_price !== "" ? Number(i.retail_price) : undefined,
+    })),
+  );
+
+  const sparePartIds = [...new Set(items.map((i) => i.spare_part_id))];
+  const fulfilled = [];
+  const stillPending = [];
+
+  for (const sparePartId of sparePartIds) {
+    const part = await SparePart.findByPk(sparePartId, { attributes: ["id", "name", "stock_quantity"] });
+    const pendingRequests = await RestockRequest.findAll({
+      where: { spare_part_id: sparePartId, status: "PENDING" },
+      attributes: ["id", "quantity_needed"],
+    });
+    if (pendingRequests.length === 0) continue;
+
+    const totalNeeded = pendingRequests.reduce((sum, r) => sum + r.quantity_needed, 0);
+    if (part && part.stock_quantity >= totalNeeded) {
+      await RestockRequest.update(
+        { status: "FULFILLED" },
+        { where: { id: pendingRequests.map((r) => r.id) } },
+      );
+      fulfilled.push({ spare_part_id: sparePartId, name: part.name, count: pendingRequests.length });
+    } else {
+      stillPending.push({
+        spare_part_id: sparePartId,
+        name: part?.name,
+        stillNeeded: totalNeeded - (part?.stock_quantity ?? 0),
+      });
+    }
+  }
+
+  return {
+    receipt_code: importResult.receipt_code,
+    fulfilled,
+    stillPending,
+  };
 };
