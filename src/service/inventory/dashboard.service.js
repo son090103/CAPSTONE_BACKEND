@@ -31,7 +31,6 @@ module.exports.getInventoryDashboardSummary = async () => {
             where: { type: "OUT", createdAt: { [Op.gte]: startOfDay() } },
         }),
         InventoryLog.findAll({
-            where: { createdAt: { [Op.gte]: startOfDay() } },
             attributes: ["receipt_code", "type", "quantity", "unit_price", "createdAt"],
             include: [{ model: SparePart, as: "part", attributes: ["name", "sku"] }],
             order: [["createdAt", "DESC"]],
