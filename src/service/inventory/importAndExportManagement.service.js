@@ -8,6 +8,8 @@ const Supplier = db.Suppliers;
 const User = db.User;
 const Quotation = db.Quotations;
 const QuotationDetail = db.Quotation_Details;
+const CustomPartOrder = db.Custom_Part_Orders;
+const RestockRequest = db.Restock_Requests;
 const sparePartService = require("../../service/inventory/sparePartManagement.service");
 const geminiClient = require("../../config/gemini.config");
 const Task = db.Task;
@@ -15,7 +17,7 @@ const Service_Orders = db.Service_Orders;
 const Vehicles = db.Vehicles;
 const Vehicle_Models = db.Vehicle_Models;
 const Customers = db.Customers;
-const { notifyUser } = require("../../util/notification.util");
+const { notifyUser, notifyRole } = require("../../util/notification.util");
 const { uploadToCloudinary } = require("../../helper/uploadToCloudinary.helper");
 
 const normalizeName = (str) =>
@@ -393,6 +395,10 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
           as: "quotation",
           attributes: ["id"],
           required: true,
+          // Quotation.task_id trỏ tới Task INSPECTION gốc (nơi báo giá được lập), KHÔNG phải
+          // Task REPAIR sở hữu dòng phụ tùng này — chỉ dùng include này để lấy
+          // service_order_id (giống nhau cho mọi Task cùng đơn), không dùng để suy ra Task
+          // cần resume. Task REPAIR thật sự được tìm riêng bên dưới qua issue_id.
           include: [{ model: Task, as: "task", attributes: ["id", "service_order_id"], required: true }],
         },
       ],
@@ -445,14 +451,70 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
     }
     await InventoryLog.bulkCreate(logsData, { transaction: t });
 
-    const waitingAssignments = await db.Task_Assignment.findAll({
+    // Đưa đúng Task vừa xuất kho xong từ WAITING_STOCK (chờ phụ tùng) trở lại IN_PROGRESS —
+    // không liên quan tới nút Pause/Resume thủ công của KTV (trạng thái PAUSED khác hẳn).
+    // Không được xử lý hàng loạt mọi Task WAITING_STOCK khác của cùng KTV/cùng đơn, vì Task
+    // đó có thể còn phụ tùng KHÁC (ví dụ phụ tùng đặt riêng đang WAITING_DEPOSIT chờ khách
+    // cọc) chưa xuất được.
+    // Task REPAIR thực sự sở hữu dòng phụ tùng KHÔNG được suy ra qua Quotation.task_id (đó là
+    // Task INSPECTION gốc lập báo giá) mà qua issue_id: Task.quotation_item_id trỏ tới 1 dòng
+    // Quotation_Details cùng issue_id với phụ tùng vừa xuất.
+    const affectedIssueIds = [...new Set(items.map((item) => item.issue_id).filter(Boolean))];
+    const affectedTasks = affectedIssueIds.length
+      ? await Task.findAll({
+          attributes: ["id"],
+          where: { service_order_id: serviceOrderId },
+          include: [
+            {
+              model: QuotationDetail,
+              as: "quotationItem",
+              attributes: [],
+              required: true,
+              where: { issue_id: affectedIssueIds },
+            },
+          ],
+          transaction: t,
+        })
+      : [];
+    const affectedTaskIds = affectedTasks.map((task) => task.id);
+    const stockReadyAssignments = await db.Task_Assignment.findAll({
       where: { technician_id: technicianId, status: "WAITING_STOCK" },
       include: [
-        { model: Task, as: "task", attributes: ["id"], where: { service_order_id: serviceOrderId }, required: true },
+        {
+          model: Task,
+          as: "task",
+          attributes: ["id", "quotation_item_id"],
+          where: { service_order_id: serviceOrderId, id: affectedTaskIds },
+          required: true,
+        },
       ],
       transaction: t,
     });
-    for (const assignment of waitingAssignments) {
+    for (const assignment of stockReadyAssignments) {
+      // Task REPAIR sở hữu dòng phụ tùng qua issue_id (KHÔNG qua Quotation.task_id — trỏ sai
+      // tới Task INSPECTION gốc, xem comment ở đầu hàm). Lấy đúng issue_id của Task này rồi
+      // đếm mọi dòng (hàng kho lẫn shell của phụ tùng đặt riêng, spare_part_id có thể NULL)
+      // chưa sẵn sàng thuộc cùng issue đó. Shell của Custom_Part_Orders được đồng bộ status
+      // EXPORTED khi phụ tùng đặt riêng đã giao xong (xem exportCustomPartOrder).
+      const ownQuotationItem = assignment.task.quotation_item_id
+        ? await QuotationDetail.findByPk(assignment.task.quotation_item_id, {
+            attributes: ["issue_id"],
+            transaction: t,
+          })
+        : null;
+      if (!ownQuotationItem?.issue_id) {
+        await assignment.update({ status: "IN_PROGRESS" }, { transaction: t });
+        await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
+        continue;
+      }
+      const remainingUnready = await QuotationDetail.count({
+        where: {
+          issue_id: ownQuotationItem.issue_id,
+          status: { [Op.notIn]: ["EXPORTED", "RECEIVED", "CANCELLED"] },
+        },
+        transaction: t,
+      });
+      if (remainingUnready > 0) continue;
       await assignment.update({ status: "IN_PROGRESS" }, { transaction: t });
       await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
     }
@@ -675,7 +737,9 @@ const computeRestockAnalysis = async () => {
     }),
     QuotationDetail.findAll({
       where: {
-        status: { [Op.in]: ["REQUESTED", "WAITING_STOCK"] },
+        // WAITING_STOCK không còn được ghi mới cho hàng kho (giá trị này giờ chỉ tồn tại ở
+        // Custom_Part_Orders.status, phụ tùng đặt riêng không tính vào tồn kho chung).
+        status: { [Op.in]: ["REQUESTED"] },
         spare_part_id: { [Op.ne]: null },
       },
       attributes: [
@@ -760,55 +824,37 @@ module.exports.getRestockSuggestions = async () => {
   return { restock_days, consumption_window_days, suggestions };
 };
 
+// Danh sách phụ tùng đặt riêng đang chờ về hàng, cho thủ kho xử lý (xác nhận đã về / xuất
+// cho KTV). Nguồn dữ liệu là Custom_Part_Orders (không còn Quotation_Details.status =
+// WAITING_STOCK — giá trị đó không còn được ghi mới, chỉ còn tồn tại tạm ở dữ liệu cũ đã
+// migrate). Bao gồm cả WAITING_ARRIVAL (chưa về) lẫn READY_FOR_USE (đã về, chờ xuất).
 module.exports.getWaitingStockItems = async () => {
-  return await QuotationDetail.findAll({
-    where: { status: "WAITING_STOCK" },
-    attributes: ["id", "custom_item_name", "quantity", "unit_price", "status", "createdAt"],
+  // Include lồng quá sâu (customPartOrder -> quotationDetail -> quotation -> task -> serviceOrder
+  // -> vehicle -> customer -> user) khiến Postgres cắt ngắn alias tự sinh xuống 63 ký tự và tạo
+  // ra 2 alias trùng nhau ("specified more than once"). Tách làm 2 bước: lấy Custom_Part_Orders
+  // + quotation/task trước (4 tầng, an toàn), rồi lấy riêng Service_Orders/vehicle/khách hàng
+  // theo task_id đã có, ghép lại ở tầng JS.
+  const orders = await CustomPartOrder.findAll({
+    where: { status: { [Op.in]: ["WAITING_ARRIVAL", "READY_FOR_USE"] } },
+    attributes: ["id", "item_name", "quantity", "unit_price", "actual_unit_price", "arrived_at", "status", "createdAt"],
     include: [
       {
-        model: Quotation,
-        as: "quotation",
-        attributes: ["id", "deposit_amount", "deposit_paid_at"],
+        model: QuotationDetail,
+        as: "quotationDetail",
+        attributes: ["id"],
         required: true,
         include: [
           {
-            model: Task,
-            as: "task",
-            attributes: ["id"],
+            model: Quotation,
+            as: "quotation",
+            attributes: ["id", "deposit_amount", "deposit_paid_at"],
             required: true,
             include: [
               {
-                model: Service_Orders,
-                as: "serviceOrder",
-                attributes: ["id"],
+                model: Task,
+                as: "task",
+                attributes: ["id", "service_order_id"],
                 required: true,
-                include: [
-                  {
-                    model: Vehicles,
-                    as: "vehicle",
-                    attributes: ["id", "license_plate", "color"],
-                    required: true,
-                    include: [
-                      {
-                        model: Vehicle_Models,
-                        as: "model",
-                        attributes: ["id", "model_name"],
-                      },
-                      {
-                        model: Customers,
-                        as: "customer",
-                        attributes: ["id", "name", "phone"],
-                        include: [
-                          {
-                            model: User,
-                            as: "user",
-                            attributes: ["id", "fullName", "phoneNumber"],
-                          },
-                        ],
-                      },
-                    ],
-                  },
-                ],
               },
             ],
           },
@@ -817,253 +863,212 @@ module.exports.getWaitingStockItems = async () => {
     ],
     order: [["createdAt", "ASC"]],
   });
-};
 
-module.exports.importSparePartForOrderItem = async (manager_id, supplier_id, items) => {
-  return await db.sequelize.transaction(async (t) => {
-    const now = new Date();
-    const day = String(now.getDate()).padStart(2, "0");
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const year = now.getFullYear();
-    const prefix = `PN-${year}${month}${day}-`;
-    const last = await InventoryLog.findOne({
-      where: {
-        receipt_code: {
-          [Op.like]: `${prefix}%`,
-        },
-      },
-      order: [["receipt_code", "DESC"]],
-      transaction: t,
-    });
-    let next = 1;
-    if (last?.receipt_code) {
-      next = parseInt(last.receipt_code.slice(prefix.length), 10) + 1;
-    }
-    const receipt_code = `${prefix}${String(next).padStart(4, "0")}`;
-    const parts = [];
-    const logsData = [];
-    const linkedDetails = []; // NEW: theo dõi các dòng báo giá vừa được liên kết
-    for (const item of items) {
-      const {
-        quantity,
-        unit_price,
-        retail_price,
-        part_id,
-        name,
-        brand,
-        category_id,
-        warranty_period_months,
-        warranty_km_limit,
-        force,
-        quotation_item_id, // NEW
-      } = item;
-      let part;
-      if (part_id) {
-        part = await SparePart.findByPk(part_id, {
-          transaction: t,
-        });
-        if (!part) {
-          throw {
-            status: 404,
-            message: `Sản phẩm #${part_id} không tồn tại`,
-          };
-        }
-        await part.increment("stock_quantity", {
-          by: quantity,
-          transaction: t,
-        });
-        if (retail_price != null) {
-          await part.update(
-            {
-              retail_price,
-            },
-            {
-              transaction: t,
-            },
-          );
-        }
-      } else {
-        const normName = normalizeName(name);
-        const samePart = await SparePart.findAll({
-          where: {
-            category_id,
-          },
-          attributes: ["id", "sku", "name", "brand"],
-          transaction: t,
-        });
-        const sameBrand = (b1, b2) =>
-          (b1 || "").trim().toLowerCase() === (b2 || "").trim().toLowerCase();
-        const exactPart = samePart.find(
-          (p) =>
-            normalizeName(p.name) === normName && sameBrand(p.brand, brand),
-        );
-        if (exactPart) {
-          throw {
-            status: 409,
-            message: `Sản phẩm "${name}" đã tồn tại, vui lòng chọn từ danh sách`,
-            part: {
-              id: exactPart.id,
-              sku: exactPart.sku,
-              name: exactPart.name,
-              brand: exactPart.brand,
-            },
-          };
-        }
-        const candidateParts = samePart
-          .map((p) => ({
-            p,
-            score: similarity(normName, normalizeName(p.name)),
-          }))
-          .filter((x) => x.score >= 0.8)
-          .sort((a, b) => b.score - a.score)
-          .slice(0, 5)
-          .map((x) => ({
-            id: x.p.id,
-            sku: x.p.sku,
-            name: x.p.name,
-            brand: x.p.brand,
-          }));
-        if (!force && candidateParts.length) {
-          throw {
-            status: 409,
-            message: `Có sản phẩm gần giống "${name}". Kiểm tra lại trước khi tạo mới`,
-            part: candidateParts,
-          };
-        }
-        part = await sparePartService.createSparePart(
-          name,
-          brand,
-          category_id,
-          warranty_period_months,
-          warranty_km_limit,
-          t,
-        );
-        await part.update(
-          {
-            stock_quantity: quantity,
-            retail_price: retail_price,
-          },
-          {
-            transaction: t,
-          },
-        );
-      }
-      if (quotation_item_id) {
-        const detail = await QuotationDetail.findByPk(quotation_item_id, {
-          transaction: t,
-        });
-        if (!detail || detail.status !== "WAITING_STOCK") {
-          throw {
-            status: 400,
-            message: `Dòng báo giá #${quotation_item_id} không ở trạng thái chờ hàng`,
-          };
-        }
-          if (Number(unit_price) > Number(detail.unit_price)) {
-          throw {
-            status: 400,
-            message: `Giá nhập (${unit_price}) cao hơn giá đã báo khách (${detail.unit_price}) cho "${detail.custom_item_name}". Không thể nhập kho.`,
-          };
-        }
-        await detail.update(
-          { spare_part_id: part.id, status: "PENDING" },
-          { transaction: t },
-        );
-        linkedDetails.push(detail);
-      }
-      logsData.push({
-        receipt_code,
-        part_id: part.id,
-        supplier_id,
-        type: "IN",
-        quantity,
-        unit_price,
-        manager_id,
-      });
-      await part.reload({
-        transaction: t,
-      });
-      parts.push(part);
-    }
-    const logs = await InventoryLog.bulkCreate(logsData, {
-      transaction: t,
-      returning: true,
-    });
-    const batchData = logs.map((log, index) => ({
-      inventory_log_id: log.id,
-      unit_cost: items[index].unit_price,
-      remaining_quantity: items[index].quantity,
-    }));
-    await InventoryBatch.bulkCreate(batchData, {
-      transaction: t,
-    });
-    const results = parts.map((part, index) => ({
-      part,
-      importLog: logs[index],
-    }));
-
-    const issueIds = [
-      ...new Set(linkedDetails.map((d) => d.issue_id).filter(Boolean)),
-    ];
-    let serviceOrderIds = [];
-    if (issueIds.length > 0) {
-      const issues = await db.Vehicle_Issues.findAll({
-        where: { id: issueIds },
-        attributes: ["id", "task_id"],
-        transaction: t,
-      });
-      const taskIds = [...new Set(issues.map((i) => i.task_id).filter(Boolean))];
-      if (taskIds.length > 0) {
-        const relatedTasks = await Task.findAll({
-          where: { id: taskIds },
-          attributes: ["id", "service_order_id"],
-          transaction: t,
-        });
-        serviceOrderIds = [
-          ...new Set(relatedTasks.map((tsk) => tsk.service_order_id)),
-        ];
-      }
-    }
-
-    return {
-      receipt_code,
-      items: results,
-      linkedDetails,
-      serviceOrderIds,
-    };
-  }).then(async (result) => {
-    if (result.serviceOrderIds.length > 0) {
-      const assignments = await db.Task_Assignment.findAll({
-        attributes: ["technician_id"],
+  const taskIds = [...new Set(orders.map((o) => o.quotationDetail?.quotation?.task?.service_order_id).filter(Boolean))];
+  const serviceOrders = taskIds.length
+    ? await Service_Orders.findAll({
+        where: { id: taskIds },
+        attributes: ["id"],
         include: [
           {
-            model: Task,
-            as: "task",
-            attributes: [],
-            where: { service_order_id: result.serviceOrderIds },
+            model: Vehicles,
+            as: "vehicle",
+            attributes: ["id", "license_plate", "color"],
             required: true,
+            include: [
+              { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+              {
+                model: Customers,
+                as: "customer",
+                attributes: ["id", "name", "phone"],
+                include: [{ model: User, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+              },
+            ],
           },
         ],
+      })
+    : [];
+  const serviceOrderById = new Map(serviceOrders.map((so) => [so.id, so]));
+
+  return orders.map((order) => {
+    const data = order.toJSON();
+    const serviceOrderId = order.quotationDetail?.quotation?.task?.service_order_id;
+    if (data.quotationDetail?.quotation?.task) {
+      data.quotationDetail.quotation.task.serviceOrder = serviceOrderById.get(serviceOrderId)?.toJSON() ?? null;
+    }
+    return data;
+  });
+};
+
+// Thủ kho xác nhận phụ tùng đặt riêng đã mua về (mua ngoài hệ thống, KHÔNG cộng vào
+// Spare_Parts.stock_quantity — hàng này chỉ dành riêng cho đúng đơn đã đặt, không ai khác
+// dùng được). Chỉ đơn thuần ghi nhận giá nhập thực tế + thời điểm về, chuyển sang
+// READY_FOR_USE để chờ bước xuất riêng (exportCustomPartOrder).
+module.exports.confirmCustomPartArrival = async (manager_id, customPartOrderId, actualUnitPrice) => {
+  const order = await CustomPartOrder.findByPk(customPartOrderId, {
+    include: [{ model: QuotationDetail, as: "quotationDetail", attributes: ["id", "unit_price", "issue_id"] }],
+  });
+  if (!order) {
+    throw { status: 404, message: "Không tìm thấy đơn phụ tùng đặt riêng" };
+  }
+  if (order.status !== "WAITING_ARRIVAL") {
+    throw { status: 400, message: `Đơn "${order.item_name}" không ở trạng thái chờ về hàng` };
+  }
+  if (actualUnitPrice != null && Number(actualUnitPrice) > Number(order.quotationDetail.unit_price)) {
+    throw {
+      status: 400,
+      message: `Giá nhập (${actualUnitPrice}) cao hơn giá đã báo khách (${order.quotationDetail.unit_price}) cho "${order.item_name}". Không thể xác nhận.`,
+    };
+  }
+  await order.update({
+    status: "READY_FOR_USE",
+    actual_unit_price: actualUnitPrice ?? order.unit_price,
+    arrived_at: new Date(),
+  });
+
+  // Báo cho các KTV trong đơn biết hàng đã về, kho sẽ sớm xuất — dùng chung cách suy
+  // technicianId qua Task_Assignment như importSparePartForOrderItem cũ.
+  if (order.quotationDetail?.issue_id) {
+    const issue = await db.Vehicle_Issues.findByPk(order.quotationDetail.issue_id, {
+      attributes: ["id", "task_id"],
+    });
+    const task = issue?.task_id ? await Task.findByPk(issue.task_id, { attributes: ["id", "service_order_id"] }) : null;
+    if (task?.service_order_id) {
+      const assignments = await db.Task_Assignment.findAll({
+        attributes: ["technician_id"],
+        include: [{ model: Task, as: "task", attributes: [], where: { service_order_id: task.service_order_id }, required: true }],
       });
-      const technicianIds = [
-        ...new Set(assignments.map((a) => a.technician_id)),
-      ];
+      const technicianIds = [...new Set(assignments.map((a) => a.technician_id))];
       for (const technicianId of technicianIds) {
         await notifyUser(
           technicianId,
           {
             title: "Phụ tùng đặt riêng đã về kho",
-            content: "Phụ tùng đặt riêng bạn đang chờ đã nhập kho, kho sẽ sớm xuất cho bạn.",
+            content: `Phụ tùng "${order.item_name}" bạn đang chờ đã về, kho sẽ sớm xuất cho bạn.`,
             notificationType: "SERVICE_ORDER",
           },
           "new_notification",
-          { type: "PARTS_IMPORTED" },
+          { type: "CUSTOM_PART_ARRIVED", customPartOrderId: order.id },
         );
       }
     }
-    return {
-      receipt_code: result.receipt_code,
-      items: result.items,
-      linkedDetails: result.linkedDetails,
-    };
+  }
+
+  return order;
+};
+
+// Thủ kho xác nhận ĐÃ GIAO phụ tùng đặt riêng cho KTV (trực tiếp, khi KTV tới lấy) — 1 bước
+// duy nhất (READY_FOR_USE -> EXPORTED), KHÔNG phải nghiệp vụ xuất kho chính thức nên KHÔNG
+// qua lại luồng REQUESTED/duyệt xuất kho như hàng thường, và không trừ tồn kho chung (hàng
+// này đã mua riêng cho đúng đơn, chưa từng nhập vào kho chung). Đồng bộ status lên dòng shell
+// Quotation_Details để các nơi check NOT IN [EXPORTED, RECEIVED, CANCELLED] (resolveStartStatus,
+// remainingUnready trong approveExportRequest) tiếp tục hoạt động đúng mà không cần sửa lại.
+module.exports.exportCustomPartOrder = async (manager_id, customPartOrderId) => {
+  return await db.sequelize.transaction(async (t) => {
+    const order = await CustomPartOrder.findByPk(customPartOrderId, {
+      include: [{ model: QuotationDetail, as: "quotationDetail", attributes: ["id", "issue_id"] }],
+      transaction: t,
+    });
+    if (!order) {
+      throw { status: 404, message: "Không tìm thấy đơn phụ tùng đặt riêng" };
+    }
+    if (order.status !== "READY_FOR_USE") {
+      throw { status: 400, message: `Đơn "${order.item_name}" chưa sẵn sàng để xuất` };
+    }
+    await order.update({ status: "EXPORTED" }, { transaction: t });
+    await QuotationDetail.update(
+      { status: "EXPORTED" },
+      { where: { id: order.quotation_detail_id }, transaction: t },
+    );
+
+    let technicianIds = [];
+    let serviceOrderId = null;
+    if (order.quotationDetail?.issue_id) {
+      const issue = await db.Vehicle_Issues.findByPk(order.quotationDetail.issue_id, {
+        attributes: ["id", "task_id"],
+        transaction: t,
+      });
+      const task = issue?.task_id
+        ? await Task.findByPk(issue.task_id, { attributes: ["id", "service_order_id"], transaction: t })
+        : null;
+      serviceOrderId = task?.service_order_id ?? null;
+      if (serviceOrderId) {
+        const assignments = await db.Task_Assignment.findAll({
+          attributes: ["technician_id"],
+          include: [{ model: Task, as: "task", attributes: [], where: { service_order_id: serviceOrderId }, required: true }],
+          transaction: t,
+        });
+        technicianIds = [...new Set(assignments.map((a) => a.technician_id))];
+      }
+    }
+
+    return { order, technicianIds, serviceOrderId };
+  }).then(async (result) => {
+    for (const technicianId of result.technicianIds) {
+      await notifyUser(
+        technicianId,
+        {
+          title: "Phụ tùng đặt riêng đã được giao",
+          content: `Kho đã giao phụ tùng "${result.order.item_name}" cho công việc của bạn.`,
+          notificationType: "SERVICE_ORDER",
+          referenceId: result.serviceOrderId,
+        },
+        "new_notification",
+        { type: "CUSTOM_PART_EXPORTED", customPartOrderId: result.order.id },
+      );
+    }
+    return result.order;
   });
+};
+
+// Leader tạo yêu cầu nhập kho khi phát hiện phụ tùng có sẵn trong danh mục nhưng thiếu tồn
+// khả dụng để chọn vào báo giá. Chỉ ghi nhận cho thủ kho biết cần mua thêm — không tự động
+// tạo phiếu nhập kho (Inventory_Logs), thủ kho tự tạo phiếu nhập bình thường khi mua về.
+module.exports.createRestockRequest = async (requestedBy, spare_part_id, quantity_needed, quotation_detail_id) => {
+  const part = await SparePart.findByPk(spare_part_id);
+  if (!part) {
+    throw { status: 404, message: `Phụ tùng #${spare_part_id} không tồn tại` };
+  }
+  const request = await RestockRequest.create({
+    spare_part_id,
+    quotation_detail_id: quotation_detail_id || null,
+    quantity_needed,
+    requested_by: requestedBy,
+    status: "PENDING",
+  });
+  await notifyRole(
+    "INVENTORY_MANAGER",
+    {
+      title: "Yêu cầu bổ sung phụ tùng",
+      content: `Cần bổ sung ${quantity_needed} "${part.name}" — đang thiếu tồn khi lập báo giá.`,
+      notificationType: "SYSTEM",
+      referenceId: request.id,
+    },
+    "new_notification",
+    { type: "RESTOCK_REQUESTED", restockRequestId: request.id },
+  );
+  return request;
+};
+
+module.exports.getRestockRequests = async () => {
+  return await RestockRequest.findAll({
+    where: { status: "PENDING" },
+    include: [
+      { model: SparePart, as: "sparePart", attributes: ["id", "sku", "name", "brand", "stock_quantity"] },
+      { model: User, as: "requestedByUser", attributes: ["id", "fullName"] },
+    ],
+    order: [["createdAt", "ASC"]],
+  });
+};
+
+module.exports.resolveRestockRequest = async (id) => {
+  const request = await RestockRequest.findByPk(id);
+  if (!request) {
+    throw { status: 404, message: "Không tìm thấy yêu cầu bổ sung phụ tùng" };
+  }
+  if (request.status !== "PENDING") {
+    throw { status: 400, message: "Yêu cầu này đã được xử lý" };
+  }
+  await request.update({ status: "RESOLVED" });
+  return request;
 };

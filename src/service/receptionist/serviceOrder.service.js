@@ -24,6 +24,13 @@ const Vehicle_Components = db.Vehicle_Components;
 const Vehicle_Issues = db.Vehicle_Issues;
 
 module.exports.createServiceOrder = async (data, receptionistId) => {
+  if (!data.symptoms || !data.symptoms.trim()) {
+    throw {
+      status: 400,
+      message: "Vui lòng ghi mô tả tình trạng xe lúc tiếp nhận.",
+    };
+  }
+
   const transaction = await db.sequelize.transaction();
 
   try {
@@ -396,7 +403,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         status: "INSPECTING",
         entry_time: new Date(),
         estimated_finish_time: estimatedFinishTime,
-        symptoms: data.symptoms || "Chưa cập nhật", // Lưu tình trạng xe lúc tiếp nhận
+        symptoms: data.symptoms.trim(), // Lưu tình trạng xe lúc tiếp nhận — bắt buộc, đã validate ở đầu hàm
       },
       { transaction },
     );
@@ -922,6 +929,11 @@ module.exports.getServiceOrderById = async (id) => {
                 model: db.Service_Catalog,
                 as: "service_catalog",
                 attributes: ["id", "service_name"],
+              },
+              {
+                model: db.Custom_Part_Orders,
+                as: "customPartOrder",
+                attributes: ["id", "item_name", "quantity", "unit_price", "status"],
               }
             ]
           },
@@ -973,6 +985,11 @@ module.exports.getServiceOrderById = async (id) => {
             model: db.Service_Catalog,
             as: "service_catalog",
             attributes: ["id", "service_name", "labor_price"],
+          },
+          {
+            model: db.Custom_Part_Orders,
+            as: "customPartOrder",
+            attributes: ["id", "item_name", "quantity", "unit_price", "status"],
           }
         ]
       }]

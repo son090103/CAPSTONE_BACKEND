@@ -26,7 +26,13 @@ router.patch("/part/:id", sparePartManagementController.updateSparePart);
 router.post("/import", importAndExportManagementController.importSparePart);
 router.get("/import", importAndExportManagementController.viewImportHistory);
 router.get("/import/:receiptCode", importAndExportManagementController.viewImportDetail);
-router.post("/import/order-item", importAndExportManagementController.importSparePartForOrderItem);
+
+router.post("/custom-part-orders/:id/confirm-arrival", importAndExportManagementController.confirmCustomPartArrival);
+router.post("/custom-part-orders/:id/export", importAndExportManagementController.exportCustomPartOrder);
+
+router.post("/restock-requests", importAndExportManagementController.createRestockRequest);
+router.get("/restock-requests", importAndExportManagementController.getRestockRequests);
+router.post("/restock-requests/:id/resolve", importAndExportManagementController.resolveRestockRequest);
 
 router.get("/part-category", sparePartCategoryManagementController.getPartCategory);
 router.post("/part-category", sparePartCategoryManagementController.createPartCategory);

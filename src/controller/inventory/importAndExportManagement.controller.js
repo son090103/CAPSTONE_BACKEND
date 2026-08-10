@@ -1,7 +1,6 @@
 const ImportAndExportManagement = require("../../service/inventory/importAndExportManagement.service");
 const {
   importReceiptSchema,
-  importForOrderReceiptSchema,
 } = require("../../validation/inventory/importAndExportManagement.validation");
 const scanInvoiceService = require("../../service/inventory/importAndExportManagement.service");
 
@@ -194,32 +193,86 @@ module.exports.getRestockSuggestions = async (req, res) => {
 };
 
 
-module.exports.importSparePartForOrderItem = async (req, res) => {
+module.exports.confirmCustomPartArrival = async (req, res) => {
   try {
     const manager_id = res.locals.user.id;
-    const { supplier_id, items } = req.body;
-    const validation = importForOrderReceiptSchema.safeParse({
-      supplier_id,
-      items,
-    });
-    if (!validation.success) {
-      return res.status(400).json({
-        message: validation.error.issues[0].message,
-      });
-    }
-    const result = await ImportAndExportManagement.importSparePartForOrderItem(
+    const { id } = req.params;
+    const { actual_unit_price } = req.body;
+    const result = await ImportAndExportManagement.confirmCustomPartArrival(
       manager_id,
-      supplier_id,
-      items,
+      Number(id),
+      actual_unit_price != null ? Number(actual_unit_price) : undefined,
     );
-    return res.status(201).json({
-      message: "Nhập kho cho đơn đặt riêng thành công",
+    return res.status(200).json({
+      message: "Đã xác nhận phụ tùng đặt riêng đã về",
       data: result,
     });
   } catch (error) {
     return res.status(error.status || 500).json({
       message: error.message || "Internal server error",
-      part: error.part,
+    });
+  }
+};
+
+module.exports.exportCustomPartOrder = async (req, res) => {
+  try {
+    const manager_id = res.locals.user.id;
+    const { id } = req.params;
+    const result = await ImportAndExportManagement.exportCustomPartOrder(manager_id, Number(id));
+    return res.status(200).json({
+      message: "Đã xuất phụ tùng đặt riêng cho kỹ thuật viên",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.createRestockRequest = async (req, res) => {
+  try {
+    const requestedBy = res.locals.user.id;
+    const { spare_part_id, quantity_needed, quotation_detail_id } = req.body;
+    const result = await ImportAndExportManagement.createRestockRequest(
+      requestedBy,
+      Number(spare_part_id),
+      Number(quantity_needed),
+      quotation_detail_id ? Number(quotation_detail_id) : undefined,
+    );
+    return res.status(201).json({
+      message: "Đã gửi yêu cầu bổ sung phụ tùng",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getRestockRequests = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getRestockRequests();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.resolveRestockRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await ImportAndExportManagement.resolveRestockRequest(Number(id));
+    return res.status(200).json({
+      message: "Đã đánh dấu hoàn tất yêu cầu bổ sung",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
     });
   }
 };

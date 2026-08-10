@@ -32,6 +32,12 @@ module.exports = (sequelize, DataTypes) => {
           as: "requestedByUser",
         });
       }
+      if (models.Custom_Part_Orders) {
+        this.hasOne(models.Custom_Part_Orders, {
+          foreignKey: "quotation_detail_id",
+          as: "customPartOrder",
+        });
+      }
     }
   }
   Quotation_Details.init(
@@ -81,9 +87,13 @@ module.exports = (sequelize, DataTypes) => {
             "REQUESTED",
             "EXPORTED",
             "RECEIVED",
+            "CUSTOM_ORDERED",
+            "CANCELLED",
+            // WAITING_DEPOSIT/WAITING_STOCK: giữ tạm cho dòng dữ liệu cũ chưa migrate sang
+            // Custom_Part_Orders (xem migrate-custom-items-to-custom-part-orders). Không còn
+            // dòng mới nào được ghi 2 giá trị này — sẽ xóa khỏi danh sách sau khi migrate xong.
             "WAITING_DEPOSIT",
             "WAITING_STOCK",
-            "CANCELLED",
           ]],
         },
       },

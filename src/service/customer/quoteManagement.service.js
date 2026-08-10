@@ -81,6 +81,11 @@ const getQuotationInclude = (customerId) => [
         as: "service_catalog",
         attributes: ["id", "service_name"],
       },
+      {
+        model: db.Custom_Part_Orders,
+        as: "customPartOrder",
+        attributes: ["id", "item_name", "quantity", "unit_price", "status"],
+      },
     ],
   },
 ];
