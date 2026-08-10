@@ -105,6 +105,7 @@ module.exports.getSpareParts = async (filters = {}) => {
       "retail_price",
       "warranty_km_limit",
       "warranty_period_months",
+      "min_threshold",
     ],
     include: [
       {
