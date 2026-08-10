@@ -698,17 +698,23 @@ module.exports.startRescueTask = async (rescueId, technicianId, newStatus, techn
     };
   }
 
-  // Cho phép chuyển đổi linh hoạt: từ ASSIGNED -> ACCEPTED, từ ACCEPTED -> EN_ROUTE, ...
-  if (newStatus) {
-    rescue.status = newStatus;
-  } else {
-    // Mặc định nếu không truyền thì hiểu là Bắt đầu đi (EN_ROUTE) hoặc Nhận (ACCEPTED) tuỳ status hiện tại
-    if (rescue.status === "ASSIGNED") {
-      rescue.status = "ACCEPTED";
-    } else if (rescue.status === "ACCEPTED") {
-      rescue.status = "EN_ROUTE";
-    }
+  const allowedTransitions = {
+    ASSIGNED: ["EN_ROUTE", "CANCELLED"],
+    EN_ROUTE: ["ARRIVED", "CANCELLED"],
+    ARRIVED: ["TOWING", "CANCELLED"],
+    TOWING: ["COMPLETED"],
+  };
+  const targetStatus = newStatus || (rescue.status === "ASSIGNED" ? "EN_ROUTE" : null);
+  const allowedTargets = allowedTransitions[rescue.status] || [];
+
+  if (!targetStatus || !allowedTargets.includes(targetStatus)) {
+    throw {
+      status: 400,
+      message: `Không thể chuyển cứu hộ từ ${rescue.status} sang ${targetStatus || "trạng thái tiếp theo"}`,
+    };
   }
+
+  rescue.status = targetStatus;
 
   await rescue.save();
 
@@ -726,7 +732,6 @@ module.exports.startRescueTask = async (rescueId, technicianId, newStatus, techn
     attributes: ["id", "fullName", "latitude", "longitude"],
   });
   const statusMessages = {
-    ACCEPTED: "Kỹ thuật viên đã xác nhận nhận cứu hộ của bạn.",
     EN_ROUTE: "Kỹ thuật viên đang trên đường tới vị trí của bạn.",
     ARRIVED: "Kỹ thuật viên đã tới nơi.",
     TOWING: "Kỹ thuật viên đang chở xe của bạn về Gara.",
@@ -778,11 +783,9 @@ module.exports.getMyActiveRescue = async (technicianId) => {
       status: {
         [db.Sequelize.Op.in]: [
           "ASSIGNED",
-          "ACCEPTED",
           "EN_ROUTE",
           "ARRIVED",
           "TOWING",
-          "IN_PROGRESS",
         ],
       },
     },

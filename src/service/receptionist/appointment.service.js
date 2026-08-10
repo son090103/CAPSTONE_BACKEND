@@ -531,6 +531,23 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
     try {
         let customer;
         let resolvedVehicleId = data.vehicle_id || null;
+        let rescueRequest = null;
+
+        if (data.rescue_id) {
+            rescueRequest = await db.Rescue_Requests.findByPk(data.rescue_id, {
+                transaction,
+                lock: transaction.LOCK.UPDATE
+            });
+            if (!rescueRequest) {
+                throw { status: 404, message: "Không tìm thấy yêu cầu cứu hộ" };
+            }
+            if (rescueRequest.status !== 'COMPLETED') {
+                throw { status: 400, message: "Xe cứu hộ chưa được đưa về gara hoặc đã được tiếp nhận" };
+            }
+            if (rescueRequest.appointment_id) {
+                throw { status: 400, message: "Yêu cầu cứu hộ này đã có phiếu tiếp nhận" };
+            }
+        }
 
         if (resolvedVehicleId) {
             // Khách hàng cũ, xe đã có sẵn trong hệ thống
@@ -541,6 +558,9 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
             customer = await db.Customers.findByPk(vehicle.customer_id, { transaction });
             if (!customer) {
                 throw { status: 400, message: "Khách hàng không tồn tại" };
+            }
+            if (rescueRequest?.customer_id && rescueRequest.customer_id !== customer.id) {
+                throw { status: 400, message: "Xe không thuộc khách hàng của yêu cầu cứu hộ" };
             }
 
             const activeAppointment = await db.Appointments.findOne({
@@ -639,8 +659,19 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
             throw { status: 400, message: "Vui lòng chọn xe hoặc nhập thông tin khách hàng mới" };
         }
 
+        if (rescueRequest) {
+            if (rescueRequest.customer_id && rescueRequest.customer_id !== customer.id) {
+                throw { status: 400, message: "Khách hàng không khớp với yêu cầu cứu hộ" };
+            }
+            if (!rescueRequest.customer_id) {
+                rescueRequest.customer_id = customer.id;
+            }
+        }
+
         const hasSelectedServices = (data.service_ids && data.service_ids.length > 0) || (data.combo_ids && data.combo_ids.length > 0);
-        const bookingType = hasSelectedServices ? 'RECEPTIONIST_SPECIFIC_WALK' : 'RECEPTIONIST_REPAIR_WALK';
+        const bookingType = data.rescue_id
+            ? (hasSelectedServices ? 'RESCUE_SPECIFIC' : 'RESCUE_REPAIR')
+            : (hasSelectedServices ? 'RECEPTIONIST_SPECIFIC_WALK' : 'RECEPTIONIST_REPAIR_WALK');
 
         const appointment = await db.Appointments.create({
             customer_id: customer.id,
@@ -648,6 +679,7 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
             booking_type: bookingType,
             scheduled_time: null,
             notes: data.notes || null,
+            reception_condition: data.reception_condition || data.symptoms || null,
             status: 'INFORMATION_RECIEVED',
             priority_type: data.priority_type || 'NORMAL',
         }, { transaction });
@@ -658,6 +690,11 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
             combo_id: d.combo_id || null,
         }));
         await db.Appointment_Details.bulkCreate(detailsToCreate, { transaction });
+
+        if (rescueRequest) {
+            rescueRequest.appointment_id = appointment.id;
+            await rescueRequest.save({ transaction });
+        }
 
         await transaction.commit();
         return appointment;

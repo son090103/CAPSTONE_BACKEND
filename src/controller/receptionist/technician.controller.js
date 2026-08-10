@@ -5,7 +5,7 @@ module.exports.getTechniciansWorkingToday = async (req, res) => {
         const technicians = await technicianService.getTechniciansWorkingToday();
         res.status(200).json({ success: true, data: technicians });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        res.status(error.status || 500).json({ success: false, message: error.message });
     }
 };
 module.exports.assignRescueTechnician = async (req, res) => {
@@ -18,7 +18,7 @@ module.exports.assignRescueTechnician = async (req, res) => {
         const rescue = await technicianService.assignRescueTechnician(customerId, technicianId, customerLat, customerLng);
         res.status(200).json({ success: true, data: rescue, message: "Phân công kỹ thuật viên thành công" });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        res.status(error.status || 500).json({ success: false, message: error.message });
     }
 };
 module.exports.createRescueRequest = async (req, res) => {
@@ -26,6 +26,6 @@ module.exports.createRescueRequest = async (req, res) => {
         const rescue = await technicianService.createRescueRequest(req.body);
         res.status(201).json({ success: true, data: rescue, message: "Tạo yêu cầu cứu hộ thành công" });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        res.status(error.status || 500).json({ success: false, message: error.message });
     }
 };

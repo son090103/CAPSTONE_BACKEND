@@ -158,7 +158,7 @@ module.exports.updateLocation = async (userId, latitude, longitude, contactName,
                     where: {
                         customer_id: customer.id,
                         status: {
-                            [Op.in]: ['PENDING', 'ASSIGNED', 'ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']
+                            [Op.in]: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'TOWING']
                         }
                     }
                 }

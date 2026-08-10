@@ -1,6 +1,18 @@
 const db = require("../../../models");
 const { Op } = require("sequelize");
 
+const VIETNAM_TIME_ZONE = 'Asia/Ho_Chi_Minh';
+
+function getVietnamDateKey(value) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: VIETNAM_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date(value));
+  const dateParts = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
+}
 
 function getChartData(payments, timeframe, start, end) {
   const days = [];
@@ -35,14 +47,14 @@ function getChartData(payments, timeframe, start, end) {
     for (let i = 6; i >= 0; i--) {
       const d = new Date(end.getTime() - i * 24 * 60 * 60 * 1000);
       const label = dayNames[d.getDay()];
-      const key = d.toISOString().slice(0, 10); // YYYY-MM-DD
+      const key = getVietnamDateKey(d); // YYYY-MM-DD in Vietnam time
       days.push(label);
       revenueMap[key] = 0;
       ordersMap[key] = 0;
     }
 
     payments.forEach(p => {
-      const key = new Date(p.paid_at).toISOString().slice(0, 10);
+      const key = getVietnamDateKey(p.paid_at);
       if (revenueMap[key] !== undefined) {
         revenueMap[key] += parseFloat(p.amount || 0);
         ordersMap[key] += 1;
@@ -54,7 +66,7 @@ function getChartData(payments, timeframe, start, end) {
     const ordersList = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(end.getTime() - i * 24 * 60 * 60 * 1000);
-      const key = d.toISOString().slice(0, 10);
+      const key = getVietnamDateKey(d);
       revenueList.push(Number((revenueMap[key] / 1000000).toFixed(2))); // In Million VND
       ordersList.push(ordersMap[key]);
     }
@@ -149,13 +161,14 @@ function getChartData(payments, timeframe, start, end) {
     // Custom range: Group by Date
     // If range is <= 7 days, show day names, else show date DD/MM
     const diffTime = Math.abs(end - start);
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    // Include both startDate and endDate in the chart.
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24)) + 1;
 
     const dayNames = ['CN', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7'];
 
     for (let i = 0; i < diffDays; i++) {
       const d = new Date(start.getTime() + i * 24 * 60 * 60 * 1000);
-      const key = d.toISOString().slice(0, 10);
+      const key = getVietnamDateKey(d);
       const label = diffDays <= 7
         ? dayNames[d.getDay()]
         : `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -166,7 +179,7 @@ function getChartData(payments, timeframe, start, end) {
     }
 
     payments.forEach(p => {
-      const key = new Date(p.paid_at).toISOString().slice(0, 10);
+      const key = getVietnamDateKey(p.paid_at);
       if (revenueMap[key] !== undefined) {
         revenueMap[key] += parseFloat(p.amount || 0);
         ordersMap[key] += 1;
@@ -177,7 +190,7 @@ function getChartData(payments, timeframe, start, end) {
     const ordersList = [];
     for (let i = 0; i < diffDays; i++) {
       const d = new Date(start.getTime() + i * 24 * 60 * 60 * 1000);
-      const key = d.toISOString().slice(0, 10);
+      const key = getVietnamDateKey(d);
       revenueList.push(Number((revenueMap[key] / 1000000).toFixed(2)));
       ordersList.push(ordersMap[key]);
     }
@@ -410,106 +423,38 @@ module.exports.getAdminDashboardStats = async (query) => {
     durationAvg: parseInt(row['service_catalog.estimated_duration'] || 30, 10)
   }));
 
-  // Top Technicians (Hiệu suất nhân viên)
-  // Fetch COMPLETED task assignments in timeframe
-  const technicianStatsRows = await db.Task_Assignment.findAll({
-    attributes: [
-      'technician_id',
-      [db.sequelize.fn('COUNT', db.sequelize.col('Task_Assignment.id')), 'completedTasks']
-    ],
-    where: {
-      status: 'COMPLETED',
-      actual_end_time: {
-        [Op.between]: [start, end]
-      }
-    },
-    include: [
-      {
-        model: db.User,
-        as: 'technician',
-        attributes: ['fullName']
-      }
-    ],
-    group: [
-      'Task_Assignment.technician_id',
-      'technician.id',
-      'technician.fullName'
-    ],
-    raw: true
+  // Customers with the most paid service orders in the selected period.
+  // Revenue is based on the amount actually paid, not quotation estimates.
+  const topCustomerRows = await db.sequelize.query(`
+    SELECT
+      c.id AS "customerId",
+      COALESCE(NULLIF(u."fullName", ''), NULLIF(c.name, ''), 'Khách hàng') AS name,
+      COALESCE(NULLIF(c.phone, ''), u."phoneNumber", '') AS phone,
+      COUNT(DISTINCT so.id) AS "serviceCount",
+      COALESCE(SUM(bp.amount), 0) AS "totalPaid"
+    FROM "Service_Orders" so
+    INNER JOIN "Vehicles" v ON v.id = so.vehicle_id
+    INNER JOIN "Customers" c ON c.id = v.customer_id
+    LEFT JOIN "Users" u ON u.id = c.user_id
+    INNER JOIN "Booking_Payments" bp ON bp.order_id = so.id
+    WHERE bp.payment_status = 'PAID'
+      AND bp.paid_at BETWEEN :start AND :end
+      AND so.status IN ('COMPLETED', 'DELIVERED')
+    GROUP BY c.id, u.id, u."fullName", u."phoneNumber", c.name, c.phone
+    ORDER BY "serviceCount" DESC, "totalPaid" DESC
+    LIMIT 5
+  `, {
+    replacements: { start, end },
+    type: db.Sequelize.QueryTypes.SELECT
   });
 
-  // Calculate revenue contribution and ratings for each technician
-  const topTechnicians = [];
-  for (const techRow of technicianStatsRows) {
-    const techId = techRow.technician_id;
-    const name = techRow['technician.fullName'];
-    const completedTasks = parseInt(techRow.completedTasks, 10);
-
-    // Get completed tasks for this technician to map to their service orders
-    const assignments = await db.Task_Assignment.findAll({
-      where: { technician_id: techId, status: 'COMPLETED' },
-      include: [{
-        model: db.Task,
-        as: 'task',
-        attributes: ['service_order_id', 'service_catalog_id']
-      }]
-    });
-
-    const serviceOrderIds = [...new Set(assignments.map(a => a.task?.service_order_id).filter(Boolean))];
-
-    // Calculate rating based on Feedbacks of these service orders
-    let rating = 4.8; // Default mock rating for realism
-    if (serviceOrderIds.length > 0) {
-      const feedbacks = await db.Feedback.findAll({
-        where: {
-          service_order_id: { [Op.in]: serviceOrderIds }
-        }
-      });
-      if (feedbacks.length > 0) {
-        const sum = feedbacks.reduce((s, f) => s + f.rating, 0);
-        rating = Number((sum / feedbacks.length).toFixed(1));
-      } else {
-        // Deterministic mock rating based on techId so it varies per technician
-        rating = 4.5 + (techId % 5) * 0.1;
-      }
-    }
-
-    // Calculate revenue contribution (sum of Quotation_Details for the technician's completed services)
-    let revenueContribution = 0;
-    for (const a of assignments) {
-      if (a.task?.service_order_id && a.task?.service_catalog_id) {
-        const qDetail = await db.Quotation_Details.findOne({
-          where: {
-            service_id: a.task.service_catalog_id,
-            status: 'RECEIVED'
-          },
-          include: [{
-            model: db.Quotations,
-            as: 'quotation',
-            where: { status: 'APPROVED' },
-            include: [{
-              model: db.Task,
-              as: 'task',
-              where: { service_order_id: a.task.service_order_id }
-            }]
-          }]
-        });
-        if (qDetail) {
-          revenueContribution += parseFloat(qDetail.amount || 0);
-        }
-      }
-    }
-
-    topTechnicians.push({
-      name,
-      completedTasks,
-      rating,
-      revenueContribution
-    });
-  }
-
-  // Sort technicians by completed tasks descending
-  topTechnicians.sort((a, b) => b.completedTasks - a.completedTasks);
+  const topCustomers = topCustomerRows.map(row => ({
+    customerId: row.customerId,
+    name: row.name,
+    phone: row.phone,
+    serviceCount: parseInt(row.serviceCount, 10),
+    totalPaid: parseFloat(row.totalPaid || 0)
+  }));
 
   return {
     revenueChart: chartData,
@@ -526,17 +471,135 @@ module.exports.getAdminDashboardStats = async (query) => {
     },
     appointmentsBreakdown: apptStatusBreakdown,
     topServices,
-    topTechnicians: topTechnicians.slice(0, 5) // Top 5
+    topCustomers
   };
 };
 
-module.exports.getAdvancedAnalysisStats = async ({ generateAi } = {}) => {
+module.exports.getAdvancedAnalysisStats = async ({ generateAi, timeframe = 'custom', startDate, endDate } = {}) => {
   try {
     const pythonServiceUrl = process.env.PYTHON_MICROSERVICE_URL || 'http://127.0.0.1:5000';
     console.log("bắt đầu phân tích ");
-    const response = await fetch(`${pythonServiceUrl}/api/analyze`);
+
+    // Node.js is the only service allowed to read the application database.
+    // Python receives plain JSON and performs analytics without DB credentials.
+    if (!startDate || !endDate) {
+      throw new Error('Phân tích chuyên sâu yêu cầu đầy đủ startDate và endDate');
+    }
+
+    const selectedStart = new Date(`${startDate}T00:00:00+07:00`);
+    const selectedEnd = new Date(`${endDate}T23:59:59.999+07:00`);
+    if (Number.isNaN(selectedStart.getTime()) || Number.isNaN(selectedEnd.getTime()) || selectedStart > selectedEnd) {
+      throw new Error('Khoảng ngày phân tích không hợp lệ');
+    }
+
+    const dayMs = 24 * 60 * 60 * 1000;
+    const periodDays = Math.floor((selectedEnd - selectedStart) / dayMs) + 1;
+    let previousEnd = new Date(selectedStart.getTime() - 1);
+    let previousStart = new Date(previousEnd.getTime() - (periodDays * dayMs) + 1);
+    const [selectedYearNumber, selectedMonthNumber, selectedDayNumber] = startDate.split('-').map(Number);
+    const [endYearNumber, endMonthNumber, endDayNumber] = endDate.split('-').map(Number);
+    const selectedMonthLastDay = new Date(selectedYearNumber, selectedMonthNumber, 0).getDate();
+    const isFullCalendarMonth = selectedDayNumber === 1
+      && selectedYearNumber === endYearNumber
+      && selectedMonthNumber === endMonthNumber
+      && endDayNumber === selectedMonthLastDay;
+    const isMonthToDate = selectedDayNumber === 1
+      && selectedYearNumber === endYearNumber
+      && selectedMonthNumber === endMonthNumber
+      && endDayNumber < selectedMonthLastDay;
+    if (isFullCalendarMonth || isMonthToDate) {
+      const previousMonthDate = new Date(selectedYearNumber, selectedMonthNumber - 2, 1);
+      const previousYearNumber = previousMonthDate.getFullYear();
+      const previousMonthNumber = previousMonthDate.getMonth() + 1;
+      const previousMonthLastDay = new Date(previousYearNumber, previousMonthNumber, 0).getDate();
+      const previousMonthText = String(previousMonthNumber).padStart(2, '0');
+      const previousEndDay = isFullCalendarMonth
+        ? previousMonthLastDay
+        : Math.min(endDayNumber, previousMonthLastDay);
+      previousStart = new Date(`${previousYearNumber}-${previousMonthText}-01T00:00:00+07:00`);
+      previousEnd = new Date(`${previousYearNumber}-${previousMonthText}-${String(previousEndDay).padStart(2, '0')}T23:59:59.999+07:00`);
+    }
+    const samePeriodLastYearStart = new Date(selectedStart);
+    const samePeriodLastYearEnd = new Date(selectedEnd);
+    samePeriodLastYearStart.setFullYear(samePeriodLastYearStart.getFullYear() - 1);
+    samePeriodLastYearEnd.setFullYear(samePeriodLastYearEnd.getFullYear() - 1);
+
+    const periods = {
+      selected: { startDate, endDate },
+      previous: {
+        startDate: getVietnamDateKey(previousStart),
+        endDate: getVietnamDateKey(previousEnd)
+      },
+      samePeriodLastYear: {
+        startDate: getVietnamDateKey(samePeriodLastYearStart),
+        endDate: getVietnamDateKey(samePeriodLastYearEnd)
+      }
+    };
+
+    const [dashboardStats, previousDashboardStats, lastYearDashboardStats] = await Promise.all([
+      module.exports.getAdminDashboardStats({ timeframe: 'custom', ...periods.selected }),
+      module.exports.getAdminDashboardStats({ timeframe: 'custom', ...periods.previous }),
+      module.exports.getAdminDashboardStats({ timeframe: 'custom', ...periods.samePeriodLastYear })
+    ]);
+
+    // Keep one complete prior year for seasonality, plus the selected/current period.
+    const comparisonYear = samePeriodLastYearStart.getFullYear();
+    const historyStart = new Date(`${comparisonYear}-01-01T00:00:00+07:00`);
+    const lastComparisonYearEnd = new Date(`${comparisonYear}-12-31T23:59:59.999+07:00`);
+    const historyEnd = selectedEnd > lastComparisonYearEnd ? selectedEnd : lastComparisonYearEnd;
+
+    const payments = await db.Booking_Payments.findAll({
+      where: {
+        payment_status: 'PAID',
+        paid_at: { [Op.between]: [historyStart, historyEnd] }
+      },
+      raw: true
+    });
+    const orderIds = [...new Set(payments.map(payment => payment.order_id).filter(Boolean))];
+    const orders = orderIds.length
+      ? await db.Service_Orders.findAll({ where: { id: { [Op.in]: orderIds } }, raw: true })
+      : [];
+    const tasks = orderIds.length
+      ? await db.Task.findAll({ where: { service_order_id: { [Op.in]: orderIds } }, raw: true })
+      : [];
+    const taskIds = tasks.map(task => task.id);
+    const quotations = taskIds.length
+      ? await db.Quotations.findAll({ where: { task_id: { [Op.in]: taskIds } }, raw: true })
+      : [];
+    const quotationIds = quotations.map(quotation => quotation.id);
+    const [quotationDetails, parts, services] = await Promise.all([
+      quotationIds.length
+        ? db.Quotation_Details.findAll({ where: { quotation_id: { [Op.in]: quotationIds } }, raw: true })
+        : Promise.resolve([]),
+      db.Spare_Parts.findAll({ raw: true }),
+      db.Service_Catalog.findAll({ raw: true })
+    ]);
+
+    const response = await fetch(`${pythonServiceUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filters: { timeframe: 'custom', startDate, endDate },
+        periods,
+        dashboardStats,
+        comparisonStats: {
+          previousPeriod: previousDashboardStats,
+          samePeriodLastYear: lastYearDashboardStats
+        },
+        tables: {
+          Booking_Payments: payments,
+          Service_Orders: orders,
+          Tasks: tasks,
+          Quotations: quotations,
+          Quotation_Details: quotationDetails,
+          Spare_Parts: parts,
+          Service_Catalogs: services
+        }
+      })
+    });
     if (!response.ok) {
-      throw new Error(`Python Microservice returned status ${response.status}`);
+      const errorBody = await response.text();
+      throw new Error(`Python Microservice returned status ${response.status}: ${errorBody}`);
     }
     const data = await response.json();
     if (data && data.success) {
@@ -545,26 +608,35 @@ module.exports.getAdvancedAnalysisStats = async ({ generateAi } = {}) => {
       // Chỉ gọi Gemini API khi người dùng yêu cầu phân tích kế hoạch (generateAi = true)
       if (generateAi) {
         const geminiKey = process.env.GEMINI_API_KEY_STATIC;
-        console.log("gemini key là : ", geminiKey)
         if (geminiKey) {
           try {
             console.log("Đang gửi yêu cầu phân tích tới Gemini API từ Node.js...");
             const summary = reportData.summary || {};
-            const growingSvcs = (reportData.yoy_service_drivers?.growing || []).map(s => `- ${s.service_name}: Năm nay đạt ${(s.this_year_rev / 1e6).toFixed(1)} Tr.đ (tăng ${(s.growth_amount / 1e6).toFixed(1)} Tr.đ vs năm ngoái)`).join('\n');
-            const decliningSvcs = (reportData.yoy_service_drivers?.declining || []).map(s => `- ${s.service_name}: Năm nay đạt ${(s.this_year_rev / 1e6).toFixed(1)} Tr.đ (giảm ${Math.abs(s.growth_amount / 1e6).toFixed(1)} Tr.đ vs năm ngoái)`).join('\n');
+            const filteredKpis = reportData.dashboard_stats?.kpis || {};
+            const previousKpis = reportData.comparison_stats?.previousPeriod?.kpis || {};
+            const lastYearKpis = reportData.comparison_stats?.samePeriodLastYear?.kpis || {};
+            const appliedFilters = reportData.filters || {};
+            const growingSvcs = (reportData.yoy_service_drivers?.growing || []).map(s => `- ${s.service_name}: Kỳ đã chọn đạt ${(s.this_year_rev / 1e6).toFixed(1)} Tr.đ (tăng ${(s.growth_amount / 1e6).toFixed(1)} Tr.đ so với cùng kỳ năm trước)`).join('\n');
+            const decliningSvcs = (reportData.yoy_service_drivers?.declining || []).map(s => `- ${s.service_name}: Kỳ đã chọn đạt ${(s.this_year_rev / 1e6).toFixed(1)} Tr.đ (giảm ${Math.abs(s.growth_amount / 1e6).toFixed(1)} Tr.đ so với cùng kỳ năm trước)`).join('\n');
             const growingParts = (reportData.yoy_part_drivers?.growing || []).map(p => `- ${p.name}: Tiêu thụ ${p.this_year_qty} cái (tăng +${p.growth_qty} cái vs năm ngoái)`).join('\n');
             const decliningParts = (reportData.yoy_part_drivers?.declining || []).map(p => `- ${p.name}: Tiêu thụ ${p.this_year_qty} cái (giảm ${p.growth_qty} cái vs năm ngoái)`).join('\n');
             const lowSvcs = (reportData.ai_planner?.low_demand_plans || []).map(p => `- ${p.service_name}: Cả năm ngoái làm ${p.annual_count} lượt (chiếm tỷ trọng ${p.share_pct}%)`).join('\n');
             const combos = (reportData.ai_planner?.top_combos || []).map(c => `- ${c.combo_name}: ${c.service_name} + ${c.part_name} (Có ${c.co_occurrence} lượt xe làm chung năm ngoái)`).join('\n');
 
             const prompt = `
-Bạn là một chuyên gia cố vấn chiến lược và marketing cho Gara Sửa chữa Ô tô.
-Dựa trên dữ liệu phân tích doanh thu của Gara dưới đây, hãy lập một KẾ HOẠCH KINH DOANH CHI TIẾT nhưng cực kỳ NGẮN GỌN, SÚC TÍCH (đi thẳng vào vấn đề, không dông dài mở bài, chào hỏi hoặc kết bài) để tăng doanh thu và tối ưu hóa vận hành cho năm tới.
+Bạn là chuyên gia vận hành và tăng trưởng Gara ô tô.
+Dựa trên dữ liệu đã được hệ thống tính sẵn dưới đây, hãy chọn lọc một kế hoạch NGẮN, DỄ HIỂU và CÓ THỂ ĐO LƯỜNG. Không tự tạo thêm số liệu.
 
 DỮ LIỆU HOẠT ĐỘNG:
-- Doanh thu năm nay: ${summary.total_this_year?.toLocaleString('vi-VN')} đ (Lượt xe: ${summary.this_year_orders} đơn, Hóa đơn trung bình: ${summary.this_year_avg_ticket?.toLocaleString('vi-VN')} đ)
-- Doanh thu năm ngoái: ${summary.total_last_year?.toLocaleString('vi-VN')} đ (Lượt xe: ${summary.last_year_orders} đơn, Hóa đơn trung bình: ${summary.last_year_avg_ticket?.toLocaleString('vi-VN')} đ)
-- Tăng trưởng doanh thu: ${summary.yoy_growth_pct}%
+- Kỳ đang được quản trị viên chọn: ${appliedFilters.startDate || 'không xác định'} đến ${appliedFilters.endDate || 'không xác định'}
+- Doanh thu trong kỳ đã chọn: ${Number(filteredKpis.totalRevenue || 0).toLocaleString('vi-VN')} đ
+- Số lượt dịch vụ trong kỳ đã chọn: ${Number(filteredKpis.totalOrders || 0).toLocaleString('vi-VN')} lượt
+- Hóa đơn trung bình trong kỳ đã chọn: ${Number(filteredKpis.avgRevenuePerOrder || 0).toLocaleString('vi-VN')} đ
+- Khách hàng hoạt động trong kỳ đã chọn: ${Number(filteredKpis.activeCustomers || 0).toLocaleString('vi-VN')} khách
+- Kỳ liền trước: ${Number(previousKpis.totalRevenue || 0).toLocaleString('vi-VN')} đ / ${Number(previousKpis.totalOrders || 0)} lượt
+- Cùng kỳ năm trước: ${Number(lastYearKpis.totalRevenue || 0).toLocaleString('vi-VN')} đ / ${Number(lastYearKpis.totalOrders || 0)} lượt
+- Tăng trưởng so với kỳ liền trước: ${summary.previous_period_growth_pct}%
+- Tăng trưởng so với cùng kỳ năm trước: ${summary.yoy_growth_pct}%
 - Đóng góp từ lượng xe (Volume Effect): ${summary.volume_effect?.toLocaleString('vi-VN')} đ
 - Đóng góp từ hóa đơn (Ticket Effect): ${summary.ticket_effect?.toLocaleString('vi-VN')} đ
 
@@ -586,12 +658,15 @@ ${lowSvcs}
 CÁC COMBO THƯỜNG XUYÊN ĐƯỢC THANH TOÁN CÙNG NHAU:
 ${combos}
 
-Hãy viết một báo cáo chi tiết gồm các phần sau bằng tiếng Việt dưới định dạng Markdown (hãy sử dụng các icon emoji, đề mục rõ ràng, bảng biểu nếu cần):
-1. 🩺 ĐÁNH GIÁ SỨC KHỎE GARA & KHUYẾN NGHỊ VẬN HÀNH: Đi thẳng vào phân tích gara đang làm tốt ở mảng nào, điểm nghẽn nằm ở đâu và phương án giải quyết (Ngắn gọn trong 3-4 dòng).
-2. 📦 CHIẾN LƯỢC NHẬP HÀNG & PHÂN BỔ NHÂN SỰ CHO THÁNG TỚI: Lời khuyên cụ thể về việc nhập những phụ tùng nào, dịch vụ nào cần đào tạo hoặc tăng cường kỹ thuật viên (Ngắn gọn trong 3-4 dòng).
-3. 📣 CHIẾN DỊCH KHUYẾN MÃI & THIẾT KẾ COMBO ĐỂ TĂNG DOANH THU: 2 chương trình khuyến mãi cụ thể cho các dịch vụ ít khách (tên chương trình hấp dẫn, mức giảm giá %, quà tặng) và gợi ý gói combo bán chéo (Ngắn gọn dạng gạch đầu dòng).
+CHỈ trả về đúng 3 mục Markdown sau:
+### 1. Kết luận chính
+- Tối đa 2 gạch đầu dòng, nêu biến động quan trọng nhất và số liệu làm căn cứ.
+### 2. Ba hành động ưu tiên
+- Đúng 3 gạch đầu dòng. Mỗi dòng theo mẫu: **Hành động** — Căn cứ số liệu — KPI cần đạt — Thời hạn.
+### 3. Cảnh báo cần theo dõi
+- Tối đa 1 gạch đầu dòng về rủi ro lớn nhất.
 
-LƯU Ý QUAN TRỌNG: Không viết lời chào ("Chào bạn...", "Với vai trò..."), không dông dài, đi thẳng vào các gạch đầu dòng hành động thực tế.
+Tổng cộng không quá 180 từ. Không chào hỏi, không mở bài, không bảng biểu, không khuyến nghị chung chung và không nhắc lại toàn bộ dữ liệu đầu vào.
 `;
 
             const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
@@ -628,19 +703,7 @@ LƯU Ý QUAN TRỌNG: Không viết lời chào ("Chào bạn...", "Với vai tr
     }
     return null;
   } catch (error) {
-    console.warn("Python microservice offline or failed, falling back to cached report file. Error:", error.message);
-    const fs = require('fs');
-    const path = require('path');
-    // Đường dẫn khác nhau giữa máy dev (Windows) và VPS production (Linux) — dùng biến môi
-    // trường để cấu hình đúng theo từng máy, không hardcode 1 đường dẫn duy nhất.
-    const jsonPath = path.resolve(
-      process.env.ADVANCED_ANALYSIS_REPORT_PATH ||
-        'D:/Do_An_Gara_oto/AI_Static_V1/data/advanced_analysis_report.json',
-    );
-    if (fs.existsSync(jsonPath)) {
-      const rawData = fs.readFileSync(jsonPath, 'utf8');
-      return JSON.parse(rawData);
-    }
-    return null;
+    console.error("Python microservice analysis failed:", error.message);
+    throw error;
   }
 };

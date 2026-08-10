@@ -408,16 +408,24 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       );
     }
 
-    // Cập nhật trạng thái Cứu hộ và gắn appointment_id nếu có mã rescue_id được truyền vào
-    if (data.rescue_id) {
-      const rescueRequest = await db.Rescue_Requests.findByPk(data.rescue_id, { transaction });
-      if (rescueRequest) {
-        rescueRequest.appointment_id = actualAppointmentId;
-        if (rescueRequest.status !== 'CANCELLED') {
-          rescueRequest.status = 'SERVICE_CREATED';
-        }
-        await rescueRequest.save({ transaction });
+    // Rescue chỉ hoàn tất quy trình khi kỹ thuật trưởng tạo Service Order từ phiếu tiếp nhận.
+    const rescueRequest = data.rescue_id
+      ? await db.Rescue_Requests.findByPk(data.rescue_id, { transaction, lock: transaction.LOCK.UPDATE })
+      : await db.Rescue_Requests.findOne({
+          where: { appointment_id: actualAppointmentId },
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+    if (rescueRequest) {
+      if (rescueRequest.status !== 'COMPLETED') {
+        throw { status: 400, message: "Yêu cầu cứu hộ không ở trạng thái chờ tạo lệnh dịch vụ" };
       }
+      if (rescueRequest.appointment_id && rescueRequest.appointment_id !== actualAppointmentId) {
+        throw { status: 400, message: "Yêu cầu cứu hộ đã liên kết với phiếu tiếp nhận khác" };
+      }
+      rescueRequest.appointment_id = actualAppointmentId;
+      rescueRequest.status = 'SERVICE_CREATED';
+      await rescueRequest.save({ transaction });
     }
 
     // Cập nhật trạng thái Lịch hẹn đã tiếp nhận thành IN_PROGRESS

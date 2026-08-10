@@ -1,6 +1,27 @@
 const db = require("../../../models");
 const { notifyUser } = require("../../util/notification.util");
 
+const ACTIVE_RESCUE_STATUSES = ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'TOWING'];
+
+const ensureTechnicianCanBeAssignedToRescue = async (technicianId, excludedRescueId = null) => {
+    const workingTechnicians = await module.exports.getTechniciansWorkingToday();
+    const technician = workingTechnicians.find(item => item.id === Number(technicianId));
+    if (!technician) {
+        throw { status: 400, message: "Kỹ thuật viên không có ca làm việc hợp lệ hôm nay hoặc không đủ điều kiện lái xe cứu hộ" };
+    }
+
+    const activeRescue = await db.Rescue_Requests.findOne({
+        where: {
+            technician_id: technicianId,
+            status: { [db.Sequelize.Op.in]: ACTIVE_RESCUE_STATUSES },
+            ...(excludedRescueId ? { id: { [db.Sequelize.Op.ne]: excludedRescueId } } : {})
+        }
+    });
+    if (activeRescue) {
+        throw { status: 400, message: "Kỹ thuật viên đang thực hiện một cuốc cứu hộ khác" };
+    }
+};
+
 module.exports.assignRescueTechnician = async (customerId, technicianId, customerLat, customerLng) => {
     let customer = await db.Customers.findByPk(customerId);
     if (!customer) {
@@ -16,7 +37,7 @@ module.exports.assignRescueTechnician = async (customerId, technicianId, custome
         where: {
             customer_id: customer.id,
             status: {
-                [db.Sequelize.Op.in]: ['PENDING', 'ASSIGNED', 'ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'TOWING', 'IN_PROGRESS']
+                [db.Sequelize.Op.in]: ACTIVE_RESCUE_STATUSES
             }
         },
         order: [['createdAt', 'DESC']]
@@ -34,8 +55,10 @@ module.exports.assignRescueTechnician = async (customerId, technicianId, custome
         );
     }
 
+    await ensureTechnicianCanBeAssignedToRescue(technicianId, rescue?.id || null);
+
     if (rescue) {
-        if (['ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'TOWING', 'IN_PROGRESS', 'COMPLETED'].includes(rescue.status)) {
+        if (['EN_ROUTE', 'ARRIVED', 'TOWING', 'COMPLETED'].includes(rescue.status)) {
             throw new Error("Kỹ thuật viên đã tiếp nhận hoặc đang di chuyển cứu hộ. Không thể gán lại!");
         }
         // Cập nhật technician và status
@@ -69,10 +92,10 @@ module.exports.assignRescueTechnician = async (customerId, technicianId, custome
 
     if (customer.user_id) {
         await notifyUser(customer.user_id, {
-            title: "Kỹ thuật viên đã tiếp nhận cứu hộ",
+            title: "Đã phân công kỹ thuật viên cứu hộ",
             content: technician
-                ? `Kỹ thuật viên ${technician.fullName} đã tiếp nhận yêu cầu cứu hộ của bạn và đang chuẩn bị lên đường.`
-                : "Yêu cầu cứu hộ của bạn đã được tiếp nhận.",
+                ? `Kỹ thuật viên ${technician.fullName} đã được phân công xử lý yêu cầu cứu hộ của bạn.`
+                : "Yêu cầu cứu hộ của bạn đã được phân công.",
             notificationType: "SYSTEM",
             priority: "HIGH",
         }, "new_notification", { type: "RESCUE_ASSIGNED", rescueId: rescue.id, status: rescue.status });
@@ -234,17 +257,46 @@ module.exports.createRescueRequest = async (data) => {
     const customerId = customer.id;
     const customerUserId = user ? user.id : null;
 
-    const rescue = await db.Rescue_Requests.create({
-        customer_id: customerId,
-        phone_number: phone_number,
-        customer_lat: customer_lat || null,
-        customer_lng: customer_lng || null,
-        distance_km: distance_km || 0,
-        rescue_price: rescue_price || 0,
-        issue_description: issue_description || "Yêu cầu cứu hộ khẩn cấp",
-        technician_id: technician_id || null,
-        status: technician_id ? "ASSIGNED" : "PENDING"
+    let rescue = await db.Rescue_Requests.findOne({
+        where: {
+            customer_id: customerId,
+            status: { [db.Sequelize.Op.in]: ACTIVE_RESCUE_STATUSES }
+        },
+        order: [['createdAt', 'DESC']]
     });
+
+    if (technician_id) {
+        await ensureTechnicianCanBeAssignedToRescue(technician_id, rescue?.id || null);
+    }
+
+    if (rescue) {
+        if (!['PENDING', 'ASSIGNED'].includes(rescue.status)) {
+            throw { status: 400, message: "Khách hàng đang có một cuốc cứu hộ được thực hiện" };
+        }
+        rescue.phone_number = phone_number;
+        rescue.customer_lat = customer_lat ?? rescue.customer_lat;
+        rescue.customer_lng = customer_lng ?? rescue.customer_lng;
+        rescue.distance_km = distance_km ?? rescue.distance_km;
+        rescue.rescue_price = rescue_price ?? rescue.rescue_price;
+        rescue.issue_description = issue_description || rescue.issue_description || "Yêu cầu cứu hộ khẩn cấp";
+        if (technician_id) {
+            rescue.technician_id = technician_id;
+            rescue.status = 'ASSIGNED';
+        }
+        await rescue.save();
+    } else {
+        rescue = await db.Rescue_Requests.create({
+            customer_id: customerId,
+            phone_number: phone_number,
+            customer_lat: customer_lat || null,
+            customer_lng: customer_lng || null,
+            distance_km: distance_km || 0,
+            rescue_price: rescue_price || 0,
+            issue_description: issue_description || "Yêu cầu cứu hộ khẩn cấp",
+            technician_id: technician_id || null,
+            status: technician_id ? "ASSIGNED" : "PENDING"
+        });
+    }
 
     if (technician_id) {
         const technician = await db.User.findByPk(technician_id, { attributes: ["id", "fullName"] });
@@ -259,10 +311,10 @@ module.exports.createRescueRequest = async (data) => {
 
         if (customerUserId) {
             await notifyUser(customerUserId, {
-                title: "Kỹ thuật viên đã tiếp nhận cứu hộ",
+                title: "Đã phân công kỹ thuật viên cứu hộ",
                 content: technician
-                    ? `Kỹ thuật viên ${technician.fullName} đã tiếp nhận yêu cầu cứu hộ của bạn và đang chuẩn bị lên đường.`
-                    : "Yêu cầu cứu hộ của bạn đã được tiếp nhận.",
+                    ? `Kỹ thuật viên ${technician.fullName} đã được phân công xử lý yêu cầu cứu hộ của bạn.`
+                    : "Yêu cầu cứu hộ của bạn đã được phân công.",
                 notificationType: "SYSTEM",
                 priority: "HIGH",
             }, "new_notification", { type: "RESCUE_ASSIGNED", rescueId: rescue.id, status: rescue.status });
