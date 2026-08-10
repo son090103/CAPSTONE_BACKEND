@@ -6,9 +6,6 @@ const { calculateAppointmentTime } = require('./calculateAppointmentTime.util');
 const RESERVED_APPOINTMENT_STATUSES = [
   'PENDING',
   'CONFIRMED',
-  'Technicaian_recieved',
-  'TECHNICIAN_RECEIVED',
-  'INFORMATION_RECIEVED',
   'INFORMATION_RECEIVED',
 ];
 

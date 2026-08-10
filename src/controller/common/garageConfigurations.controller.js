@@ -1,5 +1,5 @@
 const configService = require("../../service/common/garage_configurations.service");
-const { getConfigurationByKeySchema } = require("../../validation/common/garage_configuration.validation");
+const { getConfigurationByKeySchema, updateConfigurationSchema } = require("../../validation/common/garage_configuration.validation");
 
 module.exports.getConfigurations = async (req, res) => {
     try {
@@ -48,6 +48,37 @@ module.exports.getConfigurationByKey = async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Lấy thông tin cấu hình thành công",
+            data: result
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};
+
+module.exports.updateConfiguration = async (req, res) => {
+    try {
+        const paramsValidation = getConfigurationByKeySchema.safeParse(req.params);
+        if (!paramsValidation.success) {
+            return res.status(400).json({
+                success: false,
+                message: paramsValidation.error.issues[0].message
+            });
+        }
+        const bodyValidation = updateConfigurationSchema.safeParse(req.body);
+        if (!bodyValidation.success) {
+            return res.status(400).json({
+                success: false,
+                message: bodyValidation.error.issues[0].message
+            });
+        }
+
+        const result = await configService.updateConfiguration(paramsValidation.data.key, bodyValidation.data.config_value);
+        return res.status(200).json({
+            success: true,
+            message: "Cập nhật cấu hình thành công",
             data: result
         });
     } catch (error) {

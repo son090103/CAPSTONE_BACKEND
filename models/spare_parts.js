@@ -5,10 +5,6 @@ const {
 module.exports = (sequelize, DataTypes) => {
   class Spare_Parts extends Model {
     static associate(models) {
-      this.belongsTo(models.Warehouse_Locations, {
-        foreignKey: 'location_id',
-        as: 'location'
-      });
       this.belongsTo(models.Part_Categories, {
         foreignKey: 'category_id',
         as: 'category'
@@ -47,10 +43,6 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.DECIMAL(12, 2),
       allowNull: true,
     },
-    location_id: {
-      type: DataTypes.INTEGER,
-      allowNull: true // Cho phép null nếu hàng mới về chưa kịp xếp lên kệ kho
-    }, //
     category_id: {
       type: DataTypes.INTEGER,
       allowNull: false // Bắt buộc phải gắn với một danh mục cụ thể

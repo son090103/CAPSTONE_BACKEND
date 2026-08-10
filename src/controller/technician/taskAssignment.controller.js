@@ -67,6 +67,37 @@ module.exports.startTask = async (req, res) => {
   }
 };
 
+module.exports.requestPartsExport = async (req, res) => {
+  try {
+    const { serviceOrderId } = req.body;
+    const technicianId = res.locals.user.id;
+
+    if (!serviceOrderId) {
+      return res.status(400).json({
+        success: false,
+        message: "Vui lòng truyền serviceOrderId vào body.",
+      });
+    }
+
+    const result = await taskAssignmentService.requestPartsExport(
+      serviceOrderId,
+      technicianId,
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Đã gửi yêu cầu xuất kho cho ${result.requestedCount} phụ tùng.`,
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error in requestPartsExport:", error);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi khi gửi yêu cầu xuất kho.",
+    });
+  }
+};
+
 module.exports.completeTask = async (req, res) => {
   try {
     const { taskAssignmentId, content } = req.body;
@@ -337,8 +368,18 @@ module.exports.getModels = async (req, res) => {
 
 module.exports.aiSuggestCauses = async (req, res) => {
   try {
-    const { symptom, modelName } = req.body;
-    const result = await taskAssignmentService.aiSuggestCauses(symptom, modelName);
+    const { taskAssignmentId, followUpQuestion } = req.body;
+    const technicianId = res.locals.user.id;
+    if (!taskAssignmentId) {
+      return res.status(400).json({
+        message: "Vui lòng truyền taskAssignmentId vào body.",
+      });
+    }
+    const result = await taskAssignmentService.aiSuggestCauses(
+      taskAssignmentId,
+      technicianId,
+      followUpQuestion,
+    );
     return res.status(200).json({ data: result });
   } catch (error) {
     console.error("AI SUGGEST ERROR:", error);
@@ -404,6 +445,28 @@ module.exports.searchInspectionHistory = async (req, res) => {
     );
     return res.status(200).json({ data: result });
   } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.searchRepairHistorySmart = async (req, res) => {
+  try {
+    const { taskAssignmentId } = req.body;
+    const technicianId = res.locals.user.id;
+    if (!taskAssignmentId) {
+      return res.status(400).json({
+        message: "Vui lòng truyền taskAssignmentId vào body.",
+      });
+    }
+    const result = await taskAssignmentService.searchRepairHistorySmart(
+      taskAssignmentId,
+      technicianId,
+    );
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    console.error("SMART SEARCH ERROR:", error);
     return res.status(error.status || 500).json({
       message: error.message || "Internal server error",
     });

@@ -376,8 +376,10 @@ module.exports.getAdminDashboardStats = async (query) => {
       [db.sequelize.fn('SUM', db.sequelize.col('Quotation_Details.amount')), 'revenue']
     ],
     where: {
-      service_id: { [Op.ne]: null },
-      status: 'RECEIVED'
+      // Chỉ dòng dịch vụ (service_id) mới hợp lệ ở đây — status EXPORTED/RECEIVED là vòng đời
+      // xuất kho chỉ áp dụng cho dòng phụ tùng (spare_part_id), dịch vụ (công lao động) không
+      // "xuất kho" nên never đạt các status đó. Dựa vào Quotation.status = APPROVED là đủ.
+      service_id: { [Op.ne]: null }
     },
     include: [
       {

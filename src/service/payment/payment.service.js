@@ -126,22 +126,26 @@ const handleSepayTransaction = async (paymentData) => {
                         deposit_paid_at: transactionDate ? new Date(transactionDate) : new Date()
                     });
 
-                    // Cập nhật status của các phụ tùng đặt riêng (Quotation_Details) thành WAITING_STOCK
+                    // Cập nhật status các phụ tùng đặt riêng (Custom_Part_Orders) thành WAITING_ARRIVAL —
+                    // đã tách khỏi Quotation_Details.status (giờ chỉ còn dùng cho hàng kho thường).
                     const { Op } = require("sequelize");
-                    await db.Quotation_Details.update(
-                        { status: "WAITING_STOCK" },
+                    const quotationDetailIds = (
+                        await db.Quotation_Details.findAll({
+                            where: { quotation_id: quotationId },
+                            attributes: ["id"],
+                        })
+                    ).map((d) => d.id);
+                    await db.Custom_Part_Orders.update(
+                        { status: "WAITING_ARRIVAL" },
                         {
                             where: {
-                                quotation_id: quotationId,
-                                [Op.or]: [
-                                    { custom_item_name: { [Op.ne]: null } },
-                                    { status: "WAITING_DEPOSIT" }
-                                ]
-                            }
+                                quotation_detail_id: quotationDetailIds,
+                                status: "WAITING_DEPOSIT",
+                            },
                         }
                     );
 
-                    console.log(`🎉 [Sepay Deposit] Cập nhật cọc deposit_paid_at và Quotation_Details (WAITING_STOCK) thành công cho Báo giá #${quotationId}`);
+                    console.log(`🎉 [Sepay Deposit] Cập nhật cọc deposit_paid_at và Custom_Part_Orders (WAITING_ARRIVAL) thành công cho Báo giá #${quotationId}`);
                     await notifyDepositPaid(quotationId);
                 } else {
                     console.warn(`⚠️ [Sepay Deposit] Số tiền chuyển (${transferAmount} VND) nhỏ hơn số tiền cọc (${quotation.deposit_amount} VND)`);
@@ -223,16 +227,19 @@ const handleSepayTransaction = async (paymentData) => {
                     deposit_paid_at: transactionDate ? new Date(transactionDate) : new Date()
                 });
 
-                await db.Quotation_Details.update(
-                    { status: "WAITING_STOCK" },
+                const fallbackDetailIds = (
+                    await db.Quotation_Details.findAll({
+                        where: { quotation_id: pendingQuotation.id },
+                        attributes: ["id"],
+                    })
+                ).map((d) => d.id);
+                await db.Custom_Part_Orders.update(
+                    { status: "WAITING_ARRIVAL" },
                     {
                         where: {
-                            quotation_id: pendingQuotation.id,
-                            [Op.or]: [
-                                { custom_item_name: { [Op.ne]: null } },
-                                { status: "WAITING_DEPOSIT" }
-                            ]
-                        }
+                            quotation_detail_id: fallbackDetailIds,
+                            status: "WAITING_DEPOSIT",
+                        },
                     }
                 );
 

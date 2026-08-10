@@ -4,7 +4,7 @@ module.exports.getReceivedAppointments = async () => {
     const appointments = await db.Appointments.findAll({
         where: {
             status: {
-                [db.Sequelize.Op.in]: ['Technicaian_recieved', 'INFORMATION_RECIEVED', 'IN_PROGRESS', 'COMPLETED']
+                [db.Sequelize.Op.in]: ['INFORMATION_RECEIVED', 'IN_PROGRESS', 'COMPLETED']
             }
         },
         include: [
@@ -66,7 +66,7 @@ module.exports.getReceivedAppointments = async () => {
             {
                 model: db.Service_Orders,
                 as: 'serviceOrder',
-                attributes: ['id', 'current_odo', 'bay_id', 'bay_status']
+                attributes: ['id', 'current_odo', 'bay_id', 'bay_status', 'status']
             }
         ],
         order: [

@@ -54,11 +54,13 @@ module.exports.updateSparePart = async (req, res) => {
       retail_price,
       warranty_period_months,
       warranty_km_limit,
+      min_threshold,
     } = req.body;
     const validation = updateSparePart.safeParse({
       name,
       brand,
       retail_price,
+      min_threshold,
     });
     if (!validation.success) {
       return res.status(400).json({
@@ -72,6 +74,7 @@ module.exports.updateSparePart = async (req, res) => {
       retail_price,
       warranty_period_months,
       warranty_km_limit,
+      min_threshold,
     );
     return res.status(200).json({
       message: "Cập nhật phụ tùng thành công",
