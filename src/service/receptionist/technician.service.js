@@ -7,7 +7,7 @@ const ensureTechnicianCanBeAssignedToRescue = async (technicianId, excludedRescu
     const workingTechnicians = await module.exports.getTechniciansWorkingToday();
     const technician = workingTechnicians.find(item => item.id === Number(technicianId));
     if (!technician) {
-        throw { status: 400, message: "Kỹ thuật viên không có ca làm việc hợp lệ hôm nay hoặc không đủ điều kiện lái xe cứu hộ" };
+        throw { status: 400, message: "Kỹ thuật viên không hoạt động, không đúng vai trò hoặc không đủ điều kiện lái xe cứu hộ" };
     }
 
     const activeRescue = await db.Rescue_Requests.findOne({
@@ -104,68 +104,30 @@ module.exports.assignRescueTechnician = async (customerId, technicianId, custome
     return rescue;
 };
 module.exports.getTechniciansWorkingToday = async () => {
-    const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-
-    // Không lọc theo giờ hiện tại nữa — chỉ cần KTV có ca đã xác nhận trong hôm nay, bất kể
-    // giờ đó đã bắt đầu/kết thúc hay chưa.
-    let whereCondition = {
-        work_date: todayStr,
-        is_confirmed: true
-    };
-
-    let shifts = await db.Shift_Templates.findAll({
-        where: whereCondition,
+    // Cứu hộ không phụ thuộc lịch Shift_Templates. Lấy trực tiếp mọi tài khoản kỹ thuật
+    // đang hoạt động và có bằng lái; lễ tân quyết định người phù hợp dựa trên trạng thái bận/rảnh.
+    const technicians = await db.User.findAll({
+        attributes: ['id', 'fullName', 'phoneNumber', 'skillLevel', 'status', 'hasDrivingLicense'],
+        where: {
+            status: 'ACTIVE',
+            hasDrivingLicense: true
+        },
         include: [
             {
-                model: db.User,
-                as: 'user',
-                // Cứu hộ bắt buộc phải lái xe đi — chỉ lấy KTV có bằng lái, không hiển thị
-                // người không đủ điều kiện thay vì để lễ tân tự cân nhắc.
-                attributes: ['id', 'fullName', 'phoneNumber', 'skillLevel', 'status', 'hasDrivingLicense'],
+                model: db.Role,
+                as: 'role',
+                attributes: ['roleName', 'roleCode'],
                 where: {
-                    hasDrivingLicense: true
+                    roleCode: { [db.Sequelize.Op.in]: ['TECHNICIAN', 'TECHNICIAN_LEADER'] }
                 },
                 required: true,
-                include: [
-                    {
-                        model: db.Role,
-                        as: 'role',
-                        attributes: ['roleName', 'roleCode']
-                    }
-                ]
-            },
-            {
-                model: db.Shift_Slots,
-                as: 'shiftSlot'
             }
-        ]
+        ],
+        order: [['fullName', 'ASC']]
     });
 
-    const technicianMap = new Map();
-    shifts.forEach(shift => {
-        const user = shift.user;
-        if (!user) return;
-
-        // Đảm bảo user hoạt động và là kĩ thuật viên
-        if (user.status !== 'ACTIVE') return;
-        if (user.role && !['TECHNICIAN', 'TECHNICIAN_LEADER'].includes(user.role.roleCode)) return;
-
-        if (!technicianMap.has(user.id)) {
-            technicianMap.set(user.id, {
-                id: user.id,
-                fullName: user.fullName,
-                phoneNumber: user.phoneNumber,
-                skillLevel: user.skillLevel,
-                hasDrivingLicense: user.hasDrivingLicense,
-                role: user.role,
-                shifts: []
-            });
-        }
-        technicianMap.get(user.id).shifts.push(shift.shiftSlot);
-    });
-
-    const technicianIds = Array.from(technicianMap.keys());
+    const technicianList = technicians.map(technician => technician.toJSON());
+    const technicianIds = technicianList.map(technician => technician.id);
     if (technicianIds.length === 0) {
         return [];
     }
@@ -183,6 +145,11 @@ module.exports.getTechniciansWorkingToday = async () => {
                 as: 'task',
                 attributes: ['id', 'type'],
                 include: [
+                    {
+                        model: db.Service_Catalog,
+                        as: 'catalog',
+                        attributes: ['id', 'service_name']
+                    },
                     {
                         model: db.Service_Orders,
                         as: 'serviceOrder',
@@ -207,13 +174,14 @@ module.exports.getTechniciansWorkingToday = async () => {
             id: assignment.id,
             status: assignment.status,
             taskType: assignment.task?.type || null,
+            serviceName: assignment.task?.catalog?.service_name || null,
             serviceOrderId: assignment.task?.serviceOrder?.id || null,
             vehiclePlate: assignment.task?.serviceOrder?.vehicle?.license_plate || null,
         });
         assignmentsByTechnician.set(assignment.technician_id, list);
     });
 
-    return Array.from(technicianMap.values()).map(technician => {
+    return technicianList.map(technician => {
         const currentTasks = assignmentsByTechnician.get(technician.id) || [];
         return {
             ...technician,
