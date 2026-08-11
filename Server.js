@@ -21,9 +21,8 @@ const whitelist = [
 const isOriginAllowed = (origin) => {
   if (!origin) return true;
   if (whitelist.includes(origin)) return true;
-  if (whitelist.includes(origin + "/")) return true; // check with trailing slash
+  if (whitelist.includes(origin + "/")) return true; 
 
-  // Allow localhost on any port (useful for development)
   if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
     return true;
   }
@@ -187,7 +186,6 @@ app.use(
     credentials: true,
   }),
 );
-// cách router để có thể hoạt động được
 ROUTES.forEach((route) => {
   if (route.middlewares && route.middlewares.length > 0) {
     app.use(route.prefix, ...route.middlewares, route.router);
