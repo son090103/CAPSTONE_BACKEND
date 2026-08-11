@@ -1378,7 +1378,7 @@ module.exports.confirmRestockImport = async (manager_id, supplier_id, items) => 
   };
 };
 
-module.exports.aiAnalyzeRestockSuggestions = async (managerId) => {
+module.exports.analyzeRestockSuggestions = async (managerId) => {
   const analysisData = await computeRestockAnalysis();
   const candidateParts = analysisData.items.map(item => ({
     part_id: item.part_id,
@@ -1398,70 +1398,38 @@ module.exports.aiAnalyzeRestockSuggestions = async (managerId) => {
     }
   }));
 
-  const model = geminiClient.getGenerativeModel({ model: "gemini-2.5-flash" });
-  const prompt = `Bạn là một chuyên gia quản lý kho thông minh tại trung tâm sửa chữa ô tô AGM Intelligent Garage.
-Dưới đây là danh sách phân tích tồn kho, tốc độ tiêu thụ hàng ngày, dự báo nhu cầu phụ tùng và lịch sử tiêu thụ 3 tháng qua (last_30_days: lượng xuất 30 ngày gần đây, days_31_to_60: lượng xuất 30-60 ngày trước, days_61_to_90: lượng xuất 60-90 ngày trước):
-${JSON.stringify(candidateParts, null, 2)}
+  const suggestions = candidateParts
+    .filter(p => p.suggested_quantity > 0)
+    .map(p => {
+      let reason = "Cần bổ sung hàng.";
+      const avail = p.available_stock !== undefined ? p.available_stock : p.stock_quantity;
+      if (avail <= 0) {
+        reason = "Hết hàng trong kho.";
+      } else if (avail <= p.min_threshold) {
+        reason = `Tồn kho (${avail}) dưới mức tối thiểu (${p.min_threshold}).`;
+      } else if (p.projected_demand > avail) {
+        reason = `Nhu cầu dự báo (${p.projected_demand}) vượt quá tồn kho (${avail}).`;
+      }
+      return { ...p, reason };
+    })
+    .sort((a, b) => b.suggested_quantity - a.suggested_quantity);
 
-Nhiệm vụ của bạn là:
-1. Phân tích tổng quan tình hình tồn kho hiện tại, chỉ ra những điểm nóng (các phụ tùng hết hàng hoặc có tốc độ tiêu thụ cao có nguy cơ thiếu hụt).
-2. Đề xuất danh sách cụ thể các phụ tùng cần nhập thêm. Lý do đề xuất (reason) cần ngắn gọn, trực diện bằng tiếng Việt để người lập hiểu ngay tại sao cần nhập (ví dụ: "Hết hàng trong kho", "Tồn kho (3) dưới mức tối thiểu (5)", hoặc "Nhu cầu dự báo (15) lớn hơn tồn kho (4)").
-3. Trả về kết quả chính xác theo cấu trúc JSON dưới đây (không sử dụng markdown block \`\`\`json hay bất kỳ văn bản giải thích nào khác ngoài cấu trúc JSON):
-{
-  "analysis_result": "Đoạn văn phân tích ngắn gọn, súc tích và chuyên nghiệp về tình hình tồn kho...",
-  "suggestions": [
-    {
-      "part_id": 123,
-      "sku": "Mã SKU",
-      "name": "Tên phụ tùng",
-      "brand": "Thương hiệu",
-      "stock_quantity": 5,
-      "available_stock": 5,
-      "projected_demand": 15,
-      "suggested_quantity": 10,
-      "reason": "Tồn kho (5) dưới mức tối thiểu (10)"
-    }
-  ]
-}`;
+  const outOfStockCount = suggestions.filter((p) => (p.available_stock ?? p.stock_quantity) <= 0).length;
+  const lowStockCount = suggestions.length - outOfStockCount;
+  const analysisResult = suggestions.length === 0
+    ? "Tồn kho hiện tại đáp ứng đủ nhu cầu dự báo, chưa cần nhập thêm phụ tùng nào."
+    : `Phát hiện ${suggestions.length} phụ tùng cần nhập thêm` +
+      (outOfStockCount > 0 ? `, trong đó ${outOfStockCount} mặt hàng đã hết sạch trong kho` : "") +
+      (lowStockCount > 0 ? `${outOfStockCount > 0 ? " và" : ","} ${lowStockCount} mặt hàng dưới ngưỡng tồn kho an toàn` : "") +
+      " (dựa trên tốc độ tiêu thụ trung bình có trọng số 3 tháng gần nhất).";
 
-  let aiResult;
-  try {
-    const response = await model.generateContent(prompt);
-    let text = response.response.text().trim();
-    if (text.startsWith("```")) {
-      text = text.replace(/```json|```/g, "").trim();
-    }
-    aiResult = JSON.parse(text);
-  } catch (err) {
-    console.error("Gemini AI Analysis failed, falling back to programmatic logic:", err);
-    const fallbackSuggestions = candidateParts
-      .filter(p => p.suggested_quantity > 0)
-      .map(p => {
-        let reason = "Cần bổ sung hàng.";
-        const avail = p.available_stock !== undefined ? p.available_stock : p.stock_quantity;
-        if (avail <= 0) {
-          reason = "Hết hàng trong kho.";
-        } else if (avail <= p.min_threshold) {
-          reason = `Tồn kho (${avail}) dưới mức tối thiểu (${p.min_threshold}).`;
-        } else if (p.projected_demand > avail) {
-          reason = `Nhu cầu dự báo (${p.projected_demand}) vượt quá tồn kho (${avail}).`;
-        }
-        return {
-          ...p,
-          reason
-        };
-      });
-    aiResult = {
-      analysis_result: "Hệ thống tự động phân tích dựa trên thuật toán thống kê nhu cầu thực tế.",
-      suggestions: fallbackSuggestions
-    };
-  }
+  const aiResult = { analysis_result: analysisResult, suggestions };
 
   const now = new Date();
   const day = String(now.getDate()).padStart(2, "0");
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const year = now.getFullYear();
-  const prefix = `DXAI-${year}${month}${day}-`;
+  const prefix = `DXNH-${year}${month}${day}-`;
 
   const lastProposal = await db.AI_Restock_Proposals.findOne({
     where: {

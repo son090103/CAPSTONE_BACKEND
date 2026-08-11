@@ -287,16 +287,16 @@ module.exports.getRestockRequestsSummary = async (req, res) => {
     });
   }
 };
-module.exports.aiAnalyzeRestockSuggestions = async (req, res) => {
+module.exports.analyzeRestockSuggestions = async (req, res) => {
   try {
     const managerId = res.locals.user.id;
-    const result = await ImportAndExportManagement.aiAnalyzeRestockSuggestions(managerId);
+    const result = await ImportAndExportManagement.analyzeRestockSuggestions(managerId);
     return res.status(200).json({
-      message: "Phân tích và tạo đề xuất AI thành công",
+      message: "Phân tích và tạo đề xuất nhập hàng thành công",
       data: result,
     });
   } catch (error) {
-    console.error("AI restock suggest error:", error);
+    console.error("Restock suggest error:", error);
     return res.status(error.status || 500).json({
       message: error.message || "Internal server error",
     });
