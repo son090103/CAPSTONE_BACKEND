@@ -17,12 +17,31 @@ const whitelist = [
   "https://7fd2-2405-4802-e682-2ac0-e8fe-f026-452b-f047.ngrok-free.app",
   "https://6f23-2405-4802-e682-2ac0-e8fe-f026-452b-f047.ngrok-free.app "
 ];
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  if (whitelist.includes(origin)) return true;
+  if (whitelist.includes(origin + "/")) return true; // check with trailing slash
+
+  // Allow localhost on any port (useful for development)
+  if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+    return true;
+  }
+
+  // Allow any local network IP on any port (useful for Expo/React Native)
+  if (/^http:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+    return true;
+  }
+
+  return false;
+};
+
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || whitelist.includes(origin)) {
+      if (isOriginAllowed(origin)) {
         callback(null, true);
       } else {
+        console.error("Blocked by CORS. Origin requested:", origin);
         callback(new Error("Not allowed by CORS"));
       }
     },
@@ -97,9 +116,10 @@ require("./src/jobs/maintenanceReminder.job");
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || whitelist.includes(origin)) {
+      if (isOriginAllowed(origin)) {
         callback(null, true);
       } else {
+        console.error("Blocked by CORS. Origin requested:", origin);
         callback(new Error("Not allowed by CORS"));
       }
     },

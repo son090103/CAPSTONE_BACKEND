@@ -277,6 +277,16 @@ module.exports.resolveRestockRequest = async (req, res) => {
   }
 };
 
+module.exports.getRestockRequestsSummary = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getRestockRequestsSummary();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
 module.exports.aiAnalyzeRestockSuggestions = async (req, res) => {
   try {
     const managerId = res.locals.user.id;
@@ -311,6 +321,70 @@ module.exports.getRestockProposalDetail = async (req, res) => {
     const { id } = req.params;
     const result = await ImportAndExportManagement.getRestockProposalDetail(Number(id));
     return res.status(200).json({
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getRestockRequestsHistory = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getRestockRequestsHistory();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.exportRestockRequestsExcel = async (req, res) => {
+  try {
+    const buffer = await ImportAndExportManagement.exportRestockRequestsExcel();
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="yeu-cau-bo-sung-phu-tung-${Date.now()}.xlsx"`,
+    );
+    return res.status(200).send(buffer);
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.previewImportRestockExcel = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "Vui lòng upload file Excel" });
+    }
+    const result = await ImportAndExportManagement.previewImportRestockExcel(req.file.buffer);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.confirmRestockImport = async (req, res) => {
+  try {
+    const manager_id = res.locals.user.id;
+    const { supplier_id, items } = req.body;
+    const result = await ImportAndExportManagement.confirmRestockImport(
+      manager_id,
+      Number(supplier_id),
+      items,
+    );
+    return res.status(200).json({
+      message: "Đã xác nhận nhập kho",
       data: result,
     });
   } catch (error) {

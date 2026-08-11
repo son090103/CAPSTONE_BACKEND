@@ -2,6 +2,7 @@ const express = require("express");
 
 const router = express.Router();
 const upload = require("../../util/upload.util");
+const uploadExcel = require("../../util/excelUpload.util");
 const sparePartManagementController = require("../../controller/inventory/sparePartManagement.controller");
 const sparePartCategoryManagementController = require("../../controller/inventory/sparePartCategoryManagement.controller");
 const supplierManagementController = require("../../controller/inventory/supplierManagement.controller");
@@ -33,6 +34,15 @@ router.post("/custom-part-orders/:id/export", importAndExportManagementControlle
 router.post("/restock-requests", importAndExportManagementController.createRestockRequest);
 router.get("/restock-requests", importAndExportManagementController.getRestockRequests);
 router.post("/restock-requests/:id/resolve", importAndExportManagementController.resolveRestockRequest);
+router.get("/restock-requests/summary", importAndExportManagementController.getRestockRequestsSummary);
+router.get("/restock-requests/history", importAndExportManagementController.getRestockRequestsHistory);
+router.get("/restock-requests/export-excel", importAndExportManagementController.exportRestockRequestsExcel);
+router.post(
+  "/restock-requests/import-excel",
+  uploadExcel.single("file"),
+  importAndExportManagementController.previewImportRestockExcel,
+);
+router.post("/restock-requests/confirm-import", importAndExportManagementController.confirmRestockImport);
 
 router.get("/part-category", sparePartCategoryManagementController.getPartCategory);
 router.post("/part-category", sparePartCategoryManagementController.createPartCategory);

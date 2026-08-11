@@ -13,6 +13,7 @@ router.get("/component", taskAssignment.getAllComponents);
 router.get("/task-assignments", taskAssignment.getTaskAssignment);
 router.get("/service-orders/:id", taskAssignment.getServiceOrderDetail);
 router.put("/task-assignments/start", taskAssignment.startTask);
+router.put("/task-assignments/request-parts-export", taskAssignment.requestPartsExport);
 router.patch("/task-assignments/complete", taskAssignment.completeTask);
 
 router.get("/diagnostics", taskAssignment.getAllDiagnostics);

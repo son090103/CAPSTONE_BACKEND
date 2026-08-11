@@ -40,7 +40,7 @@ module.exports.getCustomerInfoByPhone = async (phone, partial = false) => {
                             attributes: ['id', 'status'],
                             where: {
                                 status: {
-                                    [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECIEVED', 'Technicaian_recieved']
+                                    [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECEIVED']
                                 }
                             },
                             required: false
@@ -60,7 +60,7 @@ module.exports.getCustomerInfoByPhone = async (phone, partial = false) => {
                 vehicles: customer.vehicles ? customer.vehicles.map(v => {
                     const activeAppointment = v.appointments?.[0];
                     const isInGarage = Boolean(v.serviceOrders?.length) ||
-                        ['INFORMATION_RECIEVED', 'Technicaian_recieved'].includes(activeAppointment?.status);
+                        activeAppointment?.status === 'INFORMATION_RECEIVED';
                     const hasActiveAppointment = Boolean(activeAppointment);
 
                     return {
@@ -127,7 +127,7 @@ module.exports.getCustomerInfoByPhone = async (phone, partial = false) => {
                         attributes: ['id', 'status'],
                         where: {
                             status: {
-                                [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECIEVED', 'Technicaian_recieved']
+                                [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECEIVED']
                             }
                         },
                         required: false
@@ -190,7 +190,7 @@ module.exports.getCustomerInfoByPhone = async (phone, partial = false) => {
         vehicles: customer.vehicles ? customer.vehicles.map(v => {
             const activeAppointment = v.appointments?.[0];
             const isInGarage = Boolean(v.serviceOrders?.length) ||
-                ['INFORMATION_RECIEVED', 'Technicaian_recieved'].includes(activeAppointment?.status);
+                activeAppointment?.status === 'INFORMATION_RECEIVED';
             const hasActiveAppointment = Boolean(activeAppointment);
 
             return {

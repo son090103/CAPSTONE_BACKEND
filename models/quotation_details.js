@@ -89,10 +89,13 @@ module.exports = (sequelize, DataTypes) => {
             "RECEIVED",
             "CUSTOM_ORDERED",
             "CANCELLED",
-            // WAITING_DEPOSIT/WAITING_STOCK: giữ tạm cho dòng dữ liệu cũ chưa migrate sang
-            // Custom_Part_Orders (xem migrate-custom-items-to-custom-part-orders). Không còn
-            // dòng mới nào được ghi 2 giá trị này — sẽ xóa khỏi danh sách sau khi migrate xong.
+            // WAITING_DEPOSIT: giữ tạm cho dòng dữ liệu cũ chưa migrate sang Custom_Part_Orders
+            // (xem migrate-custom-items-to-custom-part-orders) — không còn dòng mới nào ghi giá
+            // trị này, sẽ xóa khỏi danh sách sau khi migrate xong.
             "WAITING_DEPOSIT",
+            // WAITING_STOCK: phụ tùng kho thiếu tồn khả dụng lúc lập báo giá — vẫn được thêm vào
+            // báo giá bình thường (không chặn chọn), khách vẫn thấy đầy đủ hạng mục khi duyệt.
+            // Khi khách duyệt báo giá, các dòng này được dùng để tự động tạo Restock_Requests.
             "WAITING_STOCK",
           ]],
         },

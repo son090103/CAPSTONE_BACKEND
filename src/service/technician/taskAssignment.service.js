@@ -322,19 +322,43 @@ const hasAllPartsReady = async (task) => {
 };
 module.exports.hasAllPartsReady = hasAllPartsReady;
 
-// Khi 1 task REPAIR được bắt đầu và rơi vào WAITING_STOCK (còn phụ tùng chưa xuất), tự động
-// gửi yêu cầu xuất kho cho các phụ tùng đó — KTV không cần bấm nút yêu cầu xuất kho riêng nữa.
-const autoRequestPartsForTask = async (task, technicianId, startStatus) => {
-  if (startStatus !== "WAITING_STOCK") return;
-  if (!task.quotation_item_id) return;
-  const quotationItem = await db.Quotation_Details.findByPk(task.quotation_item_id, {
+// KTV tự bấm "Yêu cầu xuất kho" 1 lần cho CẢ ĐƠN — gộp mọi Task của chính KTV đó trong Service
+// Order, gửi yêu cầu xuất kho cho toàn bộ phụ tùng còn PENDING (đủ tồn, chỉ chưa xuất). Tách
+// riêng khỏi startTask, gọi được bất cứ lúc nào, không phụ thuộc trạng thái Task.
+module.exports.requestPartsExport = async (serviceOrderId, technicianId) => {
+  const assignments = await Task_Assignments.findAll({
+    where: { technician_id: technicianId },
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id", "service_order_id", "quotation_item_id"],
+        where: { service_order_id: serviceOrderId },
+        required: true,
+      },
+    ],
+  });
+  if (assignments.length === 0) {
+    throw { status: 404, message: "Bạn không có công việc nào trong lệnh sửa chữa này." };
+  }
+
+  const quotationItemIds = [...new Set(assignments.map((a) => a.task.quotation_item_id).filter(Boolean))];
+  if (quotationItemIds.length === 0) {
+    throw { status: 400, message: "Không có công việc nào gắn với hạng mục báo giá." };
+  }
+
+  const quotationItems = await db.Quotation_Details.findAll({
+    where: { id: quotationItemIds },
     attributes: ["id", "issue_id"],
   });
-  if (!quotationItem || !quotationItem.issue_id) return;
+  const issueIds = [...new Set(quotationItems.map((q) => q.issue_id).filter(Boolean))];
+  if (issueIds.length === 0) {
+    throw { status: 400, message: "Không tìm thấy hạng mục lỗi gắn với các công việc này." };
+  }
 
   const items = await db.Quotation_Details.findAll({
     where: {
-      issue_id: quotationItem.issue_id,
+      issue_id: issueIds,
       status: "PENDING",
       [Op.or]: [
         { spare_part_id: { [Op.ne]: null } },
@@ -342,7 +366,9 @@ const autoRequestPartsForTask = async (task, technicianId, startStatus) => {
       ],
     },
   });
-  if (items.length === 0) return;
+  if (items.length === 0) {
+    throw { status: 400, message: "Không có phụ tùng nào đang chờ yêu cầu xuất kho cho lệnh sửa chữa này." };
+  }
 
   await db.Quotation_Details.update(
     { status: "REQUESTED", requested_by: technicianId },
@@ -353,13 +379,15 @@ const autoRequestPartsForTask = async (task, technicianId, startStatus) => {
     "INVENTORY_MANAGER",
     {
       title: "Yêu cầu xuất kho mới",
-      content: `Kỹ thuật viên bắt đầu công việc, tự động yêu cầu xuất ${items.length} phụ tùng cho lệnh sửa chữa #${task.service_order_id}.`,
+      content: `Kỹ thuật viên yêu cầu xuất ${items.length} phụ tùng cho lệnh sửa chữa #${serviceOrderId}.`,
       notificationType: "SERVICE_ORDER",
-      referenceId: task.service_order_id,
+      referenceId: serviceOrderId,
     },
     "new_notification",
-    { type: "PARTS_EXPORT_REQUESTED", serviceOrderId: task.service_order_id },
+    { type: "PARTS_EXPORT_REQUESTED", serviceOrderId },
   );
+
+  return { requestedCount: items.length };
 };
 
 module.exports.startTask = async (taskAssignmentId, technicianId) => {
@@ -416,14 +444,12 @@ module.exports.startTask = async (taskAssignmentId, technicianId) => {
       task.status = startStatus;
       await task.save();
       assignmentStatus = startStatus;
-      await autoRequestPartsForTask(task, technicianId, startStatus);
     } else {
       // Có nhiều người làm
       if (assignment.role_in_task === "LEAD") {
         task.status = startStatus;
         await task.save();
         assignmentStatus = startStatus;
-        await autoRequestPartsForTask(task, technicianId, startStatus);
       } else {
         // Nếu là thợ phụ, chỉ start assignment, task giữ nguyên trừ khi task đã IN_PROGRESS
         if (task.status !== "IN_PROGRESS") {
