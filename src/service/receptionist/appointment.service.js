@@ -613,26 +613,36 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
                 throw { status: 400, message: "Vui lòng nhập số điện thoại khách hàng" };
             }
 
-            // SĐT đã có khách hàng trong hệ thống — không âm thầm dùng lại/ghi đè tên, bắt lễ tân
-            // chuyển qua chọn khách hàng có sẵn (tránh lưu nhầm tên khác cho cùng 1 khách).
-            const existingCustomer = await db.Customers.findOne({
-                where: { phone: phoneToUse },
-                transaction,
-            });
-            if (existingCustomer) {
-                throw {
-                    status: 409,
-                    message: `Số điện thoại này đã thuộc về khách hàng "${existingCustomer.name || 'chưa rõ tên'}" trong hệ thống. Vui lòng chọn khách hàng có sẵn thay vì tạo mới.`,
-                };
-            }
+            if (data.walk_in.customer_id) {
+                // Lễ tân đã chọn một khách có sẵn và đang thêm xe mới cho chính khách đó.
+                customer = await db.Customers.findByPk(data.walk_in.customer_id, { transaction });
+                if (!customer) {
+                    throw { status: 404, message: "Khách hàng đã chọn không tồn tại" };
+                }
+                if (rescueRequest?.customer_id && rescueRequest.customer_id !== customer.id) {
+                    throw { status: 400, message: "Khách hàng đã chọn không khớp với yêu cầu cứu hộ" };
+                }
+            } else {
+                // Khách hoàn toàn mới: không âm thầm tạo trùng theo số điện thoại.
+                const existingCustomer = await db.Customers.findOne({
+                    where: { phone: phoneToUse },
+                    transaction,
+                });
+                if (existingCustomer) {
+                    throw {
+                        status: 409,
+                        message: `Số điện thoại này đã thuộc về khách hàng "${existingCustomer.name || 'chưa rõ tên'}" trong hệ thống. Vui lòng chọn khách hàng có sẵn thay vì tạo mới.`,
+                    };
+                }
 
-            customer = await db.Customers.create({
-                phone: phoneToUse,
-                user_id: null,
-                name: data.walk_in.customer_name || null,
-                membership_tier: "BRONZE",
-                loyalty_points: 0,
-            }, { transaction });
+                customer = await db.Customers.create({
+                    phone: phoneToUse,
+                    user_id: null,
+                    name: data.walk_in.customer_name || null,
+                    membership_tier: "BRONZE",
+                    loyalty_points: 0,
+                }, { transaction });
+            }
 
             let [make] = await db.Vehicle_Makes.findOrCreate({
                 where: { make_name: data.walk_in.brand_name || 'Khác' },
@@ -658,17 +668,27 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
                 ? Number(data.walk_in.vehicle_year)
                 : new Date().getFullYear();
 
-            let [vehicleRecord] = await db.Vehicles.findOrCreate({
+            const existingVehicle = await db.Vehicles.findOne({
                 where: { license_plate: plateToUse },
-                defaults: {
-                    customer_id: customer.id,
-                    model_id: model.id,
-                    year: yearVal,
-                    color: data.walk_in.vehicle_color || null,
-                    avg_daily_mileage: 0,
-                },
                 transaction,
             });
+            if (existingVehicle) {
+                throw {
+                    status: 409,
+                    message: existingVehicle.customer_id === customer.id
+                        ? "Biển số này đã có trong danh sách xe của khách hàng. Vui lòng chọn xe đã có."
+                        : "Biển số này đã thuộc về một khách hàng khác trong hệ thống.",
+                };
+            }
+
+            const vehicleRecord = await db.Vehicles.create({
+                customer_id: customer.id,
+                model_id: model.id,
+                license_plate: plateToUse,
+                year: yearVal,
+                color: data.walk_in.vehicle_color || null,
+                avg_daily_mileage: 0,
+            }, { transaction });
 
             resolvedVehicleId = vehicleRecord.id;
         } else {

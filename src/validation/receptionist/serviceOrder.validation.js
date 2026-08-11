@@ -3,6 +3,7 @@ const { z } = require("zod");
 const createServiceOrderSchema = z.object({
     vehicle_id: z.number().positive("ID xe không hợp lệ").nullable().optional(),
     walk_in: z.object({
+        customer_id: z.number().positive("ID khách hàng không hợp lệ").optional(),
         customer_name: z.string().optional(),
         customer_phone: z.string().min(1, "SĐT không được để trống"),
         vehicle_plate: z.string().min(1, "Biển số không được để trống"),
