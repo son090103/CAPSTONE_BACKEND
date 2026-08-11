@@ -836,16 +836,7 @@ module.exports.getRestockSuggestions = async () => {
   return { restock_days, consumption_window_days, suggestions };
 };
 
-// Danh sách phụ tùng đặt riêng đang chờ về hàng, cho thủ kho xử lý (xác nhận đã về / xuất
-// cho KTV). Nguồn dữ liệu là Custom_Part_Orders (không còn Quotation_Details.status =
-// WAITING_STOCK — giá trị đó không còn được ghi mới, chỉ còn tồn tại tạm ở dữ liệu cũ đã
-// migrate). Bao gồm cả WAITING_ARRIVAL (chưa về) lẫn READY_FOR_USE (đã về, chờ xuất).
 module.exports.getWaitingStockItems = async () => {
-  // Include lồng quá sâu (customPartOrder -> quotationDetail -> quotation -> task -> serviceOrder
-  // -> vehicle -> customer -> user) khiến Postgres cắt ngắn alias tự sinh xuống 63 ký tự và tạo
-  // ra 2 alias trùng nhau ("specified more than once"). Tách làm 2 bước: lấy Custom_Part_Orders
-  // + quotation/task trước (4 tầng, an toàn), rồi lấy riêng Service_Orders/vehicle/khách hàng
-  // theo task_id đã có, ghép lại ở tầng JS.
   const orders = await CustomPartOrder.findAll({
     where: { status: { [Op.in]: ["WAITING_ARRIVAL", "READY_FOR_USE"] } },
     attributes: ["id", "item_name", "quantity", "unit_price", "actual_unit_price", "arrived_at", "status", "createdAt"],
@@ -912,10 +903,7 @@ module.exports.getWaitingStockItems = async () => {
   });
 };
 
-// Thủ kho xác nhận phụ tùng đặt riêng đã mua về (mua ngoài hệ thống, KHÔNG cộng vào
-// Spare_Parts.stock_quantity — hàng này chỉ dành riêng cho đúng đơn đã đặt, không ai khác
-// dùng được). Chỉ đơn thuần ghi nhận giá nhập thực tế + thời điểm về, chuyển sang
-// READY_FOR_USE để chờ bước xuất riêng (exportCustomPartOrder).
+
 module.exports.confirmCustomPartArrival = async (manager_id, customPartOrderId, actualUnitPrice) => {
   const order = await CustomPartOrder.findByPk(customPartOrderId, {
     include: [{ model: QuotationDetail, as: "quotationDetail", attributes: ["id", "unit_price", "issue_id"] }],
@@ -938,8 +926,6 @@ module.exports.confirmCustomPartArrival = async (manager_id, customPartOrderId, 
     arrived_at: new Date(),
   });
 
-  // Báo cho các KTV trong đơn biết hàng đã về, kho sẽ sớm xuất — dùng chung cách suy
-  // technicianId qua Task_Assignment như importSparePartForOrderItem cũ.
   if (order.quotationDetail?.issue_id) {
     const issue = await db.Vehicle_Issues.findByPk(order.quotationDetail.issue_id, {
       attributes: ["id", "task_id"],
@@ -969,12 +955,7 @@ module.exports.confirmCustomPartArrival = async (manager_id, customPartOrderId, 
   return order;
 };
 
-// Thủ kho xác nhận ĐÃ GIAO phụ tùng đặt riêng cho KTV (trực tiếp, khi KTV tới lấy) — 1 bước
-// duy nhất (READY_FOR_USE -> EXPORTED), KHÔNG phải nghiệp vụ xuất kho chính thức nên KHÔNG
-// qua lại luồng REQUESTED/duyệt xuất kho như hàng thường, và không trừ tồn kho chung (hàng
-// này đã mua riêng cho đúng đơn, chưa từng nhập vào kho chung). Đồng bộ status lên dòng shell
-// Quotation_Details để các nơi check NOT IN [EXPORTED, RECEIVED, CANCELLED] (resolveStartStatus,
-// remainingUnready trong approveExportRequest) tiếp tục hoạt động đúng mà không cần sửa lại.
+
 module.exports.exportCustomPartOrder = async (manager_id, customPartOrderId) => {
   return await db.sequelize.transaction(async (t) => {
     const order = await CustomPartOrder.findByPk(customPartOrderId, {
@@ -1033,9 +1014,7 @@ module.exports.exportCustomPartOrder = async (manager_id, customPartOrderId) => 
   });
 };
 
-// Leader tạo yêu cầu nhập kho khi phát hiện phụ tùng có sẵn trong danh mục nhưng thiếu tồn
-// khả dụng để chọn vào báo giá. Chỉ ghi nhận cho thủ kho biết cần mua thêm — không tự động
-// tạo phiếu nhập kho (Inventory_Logs), thủ kho tự tạo phiếu nhập bình thường khi mua về.
+
 module.exports.createRestockRequest = async (requestedBy, spare_part_id, quantity_needed, quotation_detail_id) => {
   const part = await SparePart.findByPk(spare_part_id);
   if (!part) {
@@ -1084,10 +1063,6 @@ module.exports.resolveRestockRequest = async (id) => {
   await request.update({ status: "RESOLVED" });
   return request;
 };
-
-// Include dùng chung để lấy Service Order gắn với 1 Restock_Requests — đi qua
-// quotation_detail_id -> Quotation_Details -> quotation -> task -> serviceOrder, cùng pattern
-// với getExportRequests. quotation_detail_id có thể NULL (model cho phép) nên required: false.
 const restockRequestServiceOrderInclude = {
   model: QuotationDetail,
   as: "quotationDetail",
@@ -1127,8 +1102,6 @@ const restockRequestServiceOrderInclude = {
   ],
 };
 
-// Thủ kho xem tổng hợp nhu cầu bổ sung — vừa theo từng đơn (Service Order) để biết ai đang
-// chờ, vừa gộp theo phụ tùng để biết cần mua tổng bao nhiêu (dùng chung cho xuất Excel).
 module.exports.getRestockRequestsSummary = async () => {
   const requests = await RestockRequest.findAll({
     where: { status: "PENDING" },
@@ -1177,7 +1150,6 @@ module.exports.getRestockRequestsSummary = async () => {
   };
 };
 
-// Lịch sử — request đã xử lý xong (đủ hàng, hoặc bị huỷ/đánh dấu thủ công qua resolve cũ).
 module.exports.getRestockRequestsHistory = async () => {
   const requests = await RestockRequest.findAll({
     where: { status: { [Op.in]: ["FULFILLED", "RESOLVED", "CANCELLED"] } },
@@ -1188,7 +1160,6 @@ module.exports.getRestockRequestsHistory = async () => {
     ],
     order: [["updatedAt", "DESC"]],
   });
-
   return requests.map((r) => {
     const serviceOrder = r.quotationDetail?.quotation?.task?.serviceOrder;
     return {
@@ -1206,20 +1177,11 @@ module.exports.getRestockRequestsHistory = async () => {
   });
 };
 
-// Xuất Excel danh sách phụ tùng cần mua — gộp theo phụ tùng (giống getRestockRequestsSummary
-// .bySparePart), định dạng như 1 đơn đặt hàng gửi nhà cung cấp: tiêu đề, ngày xuất, cột SKU/
-// Tên phụ tùng/Số lượng (gợi ý = số lượng hệ thống đang cần, thủ kho có thể sửa lại theo thực
-// tế đã mua)/Đơn giá nhập/Giá bán — 2 cột giá để trống, thủ kho điền sau khi mua về rồi tải lên
-// lại (previewImportRestockExcel đọc đúng các cột này theo tên, không phụ thuộc thứ tự cột).
-//
-// Dùng exceljs (không phải xlsx) riêng cho hàm này vì cần border/tô màu/in đậm — xlsx (SheetJS)
-// bản community không hỗ trợ style khi ghi file.
 module.exports.exportRestockRequestsExcel = async () => {
   const { bySparePart } = await module.exports.getRestockRequestsSummary();
   if (bySparePart.length === 0) {
     throw { status: 400, message: "Không có yêu cầu bổ sung phụ tùng nào đang chờ" };
   }
-
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Don dat hang");
   sheet.columns = [
@@ -1229,23 +1191,19 @@ module.exports.exportRestockRequestsExcel = async () => {
     { width: 16 },
     { width: 16 },
   ];
-
   const thinBorder = { style: "thin", color: { argb: "FFB8C2CC" } };
   const cellBorder = { top: thinBorder, left: thinBorder, bottom: thinBorder, right: thinBorder };
-
   sheet.mergeCells("A1:E1");
   const titleCell = sheet.getCell("A1");
   titleCell.value = "PHIẾU ĐẶT HÀNG BỔ SUNG PHỤ TÙNG";
   titleCell.font = { bold: true, size: 14, color: { argb: "FF00285E" } };
   titleCell.alignment = { horizontal: "center", vertical: "middle" };
   sheet.getRow(1).height = 26;
-
   sheet.mergeCells("A2:E2");
   const subtitleCell = sheet.getCell("A2");
   subtitleCell.value = `Ngày xuất: ${new Date().toLocaleDateString("vi-VN")}`;
   subtitleCell.font = { italic: true, size: 10, color: { argb: "FF64748B" } };
   subtitleCell.alignment = { horizontal: "center", vertical: "middle" };
-
   const headerValues = ["SKU", "Tên phụ tùng", "Số lượng", "Đơn giá nhập", "Giá bán"];
   const headerRow = sheet.addRow(headerValues);
   headerRow.eachCell((cell) => {
@@ -1255,7 +1213,6 @@ module.exports.exportRestockRequestsExcel = async () => {
     cell.border = cellBorder;
   });
   headerRow.height = 20;
-
   bySparePart.forEach((item, index) => {
     const row = sheet.addRow([
       item.sparePart?.sku ?? "",
@@ -1265,8 +1222,6 @@ module.exports.exportRestockRequestsExcel = async () => {
       null,
     ]);
     const isEvenRow = index % 2 === 1;
-    // includeEmpty: true — 2 cột "Đơn giá nhập"/"Giá bán" luôn null (để trống cho thủ kho tự
-    // điền), eachCell mặc định bỏ qua cell rỗng nên sẽ không có border/fill nếu thiếu option này.
     row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
       cell.border = cellBorder;
       if (isEvenRow) {
@@ -1275,24 +1230,14 @@ module.exports.exportRestockRequestsExcel = async () => {
       cell.alignment = { horizontal: colNumber === 2 ? "left" : "center", vertical: "middle" };
     });
   });
-
   const buffer = await workbook.xlsx.writeBuffer();
   return Buffer.from(buffer);
 };
 
-// Đọc file Excel thủ kho đã điền "Số lượng"/"Đơn giá nhập"/"Giá bán" sau khi mua về — chỉ đối
-// chiếu với phụ tùng ĐÃ CÓ SẴN trong danh mục (SKU phải khớp), không tạo phụ tùng mới như
-// importSparePart thường (ở đây chắc chắn phụ tùng đã tồn tại, chỉ đang thiếu tồn).
-//
-// File có thể là chính file đã xuất (exportRestockRequestsExcel), có 2 dòng tiêu đề + 1 dòng
-// trống phía trên bảng dữ liệu — nên KHÔNG dùng sheet_to_json mặc định (nó luôn lấy dòng đầu
-// tiên làm header, sẽ đọc nhầm dòng tiêu đề). Đọc thô dạng mảng (header:1), tự tìm dòng chứa
-// "SKU" làm header thật, rồi map các dòng phía sau theo đúng vị trí cột tìm được.
 module.exports.previewImportRestockExcel = async (fileBuffer) => {
   if (!fileBuffer) {
     throw { status: 400, message: "Không có dữ liệu file để import" };
   }
-
   const workbook = xlsx.read(fileBuffer, { type: "buffer" });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) {
@@ -1303,7 +1248,6 @@ module.exports.previewImportRestockExcel = async (fileBuffer) => {
   if (!Array.isArray(rawGrid) || rawGrid.length === 0) {
     throw { status: 400, message: "File không chứa dữ liệu" };
   }
-
   const normalizeHeaderCell = (cell) =>
     String(cell ?? "")
       .trim()
@@ -1313,14 +1257,12 @@ module.exports.previewImportRestockExcel = async (fileBuffer) => {
       .replace(/[̀-ͯ]/g, "")
       .replace(/[^a-z0-9]+/g, "_")
       .replace(/^_+|_+$/g, "");
-
   const headerRowIndex = rawGrid.findIndex((row) =>
     Array.isArray(row) && row.some((cell) => normalizeHeaderCell(cell) === "sku"),
   );
   if (headerRowIndex === -1) {
     throw { status: 400, message: 'Không tìm thấy dòng tiêu đề chứa cột "SKU" trong file' };
   }
-
   const headerCells = rawGrid[headerRowIndex].map(normalizeHeaderCell);
   const colIndex = {
     sku: headerCells.indexOf("sku"),
@@ -1332,7 +1274,6 @@ module.exports.previewImportRestockExcel = async (fileBuffer) => {
   if (colIndex.sku === -1) {
     throw { status: 400, message: 'Không tìm thấy cột "SKU" trong file' };
   }
-
   const dataRows = rawGrid.slice(headerRowIndex + 1);
   const previewList = [];
   for (let i = 0; i < dataRows.length; i += 1) {
@@ -1342,9 +1283,7 @@ module.exports.previewImportRestockExcel = async (fileBuffer) => {
     const quantity = parseNumber(rawRow[colIndex.quantity], 0) || 0;
     const unitPrice = parseNumber(rawRow[colIndex.unitPrice], 0) || 0;
     const retailPrice = colIndex.retailPrice !== -1 ? parseNumber(rawRow[colIndex.retailPrice], undefined) : undefined;
-
-    if (!sku) continue; // dòng trống cuối bảng — bỏ qua, không tính là lỗi
-
+    if (!sku) continue; 
     if (quantity <= 0) {
       previewList.push({
         row_index: rowIndex,
@@ -1354,7 +1293,6 @@ module.exports.previewImportRestockExcel = async (fileBuffer) => {
       });
       continue;
     }
-
     const part = await SparePart.findOne({
       where: { sku },
       include: [{ model: PartCategory, as: "category", attributes: ["id", "category_name"] }],
@@ -1368,7 +1306,6 @@ module.exports.previewImportRestockExcel = async (fileBuffer) => {
       });
       continue;
     }
-
     previewList.push({
       row_index: rowIndex,
       spare_part_id: part.id,
@@ -1387,11 +1324,6 @@ module.exports.previewImportRestockExcel = async (fileBuffer) => {
   return previewList;
 };
 
-// Thủ kho xác nhận nhập kho sau khi đã kiểm tra/chỉnh sửa bảng preview trên giao diện — tái
-// dùng nguyên logic tăng tồn kho + ghi Inventory_Logs/Inventory_Batches của importSparePart
-// (mọi item ở đây LUÔN có part_id vì đã được match SKU ở bước preview). Sau khi nhập xong, đối
-// chiếu Restock_Requests đang PENDING của từng phụ tùng: đủ tồn thì chuyển cả loạt sang
-// FULFILLED (không chia theo từng Service Order), thiếu thì giữ nguyên PENDING.
 module.exports.confirmRestockImport = async (manager_id, supplier_id, items) => {
   if (!Array.isArray(items) || items.length === 0) {
     throw { status: 400, message: "Không có phụ tùng nào để nhập kho" };

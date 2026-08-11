@@ -1713,13 +1713,19 @@ module.exports.getCompletedTasks = async (technicianId) => {
       {
         model: Tasks,
         as: "task",
-        attributes: ["id", "type", "status"],
+        attributes: ["id", "type", "status", "quotation_item_id"],
         required: true,
         include: [
           {
             model: Service_Catalog,
             as: "catalog",
             attributes: ["id", "service_name"],
+          },
+          {
+            model: db.Quotation_Details,
+            as: "quotationItem",
+            attributes: ["id", "repair_price", "unit_price", "quantity", "amount"],
+            required: false,
           },
           {
             model: Service_Order,
