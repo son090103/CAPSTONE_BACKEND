@@ -339,8 +339,7 @@ const generateReceiptCode = async (t) => {
   return `${prefix}${String(next).padStart(4, "0")}`;
 };
 
-// Danh sách các dòng phụ tùng đang chờ thủ kho duyệt xuất (kỹ thuật viên đã yêu cầu
-// từ màn "Tiến độ công việc"). Gộp theo requested_by để thủ kho biết KTV nào cần.
+
 module.exports.getExportRequests = async () => {
   return await QuotationDetail.findAll({
     where: { status: "REQUESTED", spare_part_id: { [Op.ne]: null } },
@@ -383,10 +382,7 @@ module.exports.getExportRequests = async () => {
   });
 };
 
-// Thủ kho xác nhận xuất kho cho yêu cầu của kỹ thuật viên. Mỗi yêu cầu vốn đã gắn với đúng 1 KTV
-// (requested_by ghi từ lúc KTV gửi yêu cầu), nên không cần suy luận lại qua Task_Assignment.
-// Không còn bước ký nhận riêng - bấm xác nhận xuất kho là coi như đã giao xong, resume ngay
-// các Task/Task_Assignment đang WAITING_STOCK của KTV đó trong lệnh sửa chữa này.
+
 module.exports.approveExportRequest = async (detailIds, managerId) => {
   return await db.sequelize.transaction(async (t) => {
     const items = await QuotationDetail.findAll({
@@ -398,10 +394,7 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
           as: "quotation",
           attributes: ["id"],
           required: true,
-          // Quotation.task_id trỏ tới Task INSPECTION gốc (nơi báo giá được lập), KHÔNG phải
-          // Task REPAIR sở hữu dòng phụ tùng này — chỉ dùng include này để lấy
-          // service_order_id (giống nhau cho mọi Task cùng đơn), không dùng để suy ra Task
-          // cần resume. Task REPAIR thật sự được tìm riêng bên dưới qua issue_id.
+
           include: [{ model: Task, as: "task", attributes: ["id", "service_order_id"], required: true }],
         },
       ],
@@ -453,15 +446,6 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
       });
     }
     await InventoryLog.bulkCreate(logsData, { transaction: t });
-
-    // Đưa đúng Task vừa xuất kho xong từ WAITING_STOCK (chờ phụ tùng) trở lại IN_PROGRESS —
-    // không liên quan tới nút Pause/Resume thủ công của KTV (trạng thái PAUSED khác hẳn).
-    // Không được xử lý hàng loạt mọi Task WAITING_STOCK khác của cùng KTV/cùng đơn, vì Task
-    // đó có thể còn phụ tùng KHÁC (ví dụ phụ tùng đặt riêng đang WAITING_DEPOSIT chờ khách
-    // cọc) chưa xuất được.
-    // Task REPAIR thực sự sở hữu dòng phụ tùng KHÔNG được suy ra qua Quotation.task_id (đó là
-    // Task INSPECTION gốc lập báo giá) mà qua issue_id: Task.quotation_item_id trỏ tới 1 dòng
-    // Quotation_Details cùng issue_id với phụ tùng vừa xuất.
     const affectedIssueIds = [...new Set(items.map((item) => item.issue_id).filter(Boolean))];
     const affectedTasks = affectedIssueIds.length
       ? await Task.findAll({
@@ -494,11 +478,6 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
       transaction: t,
     });
     for (const assignment of stockReadyAssignments) {
-      // Task REPAIR sở hữu dòng phụ tùng qua issue_id (KHÔNG qua Quotation.task_id — trỏ sai
-      // tới Task INSPECTION gốc, xem comment ở đầu hàm). Lấy đúng issue_id của Task này rồi
-      // đếm mọi dòng (hàng kho lẫn shell của phụ tùng đặt riêng, spare_part_id có thể NULL)
-      // chưa sẵn sàng thuộc cùng issue đó. Shell của Custom_Part_Orders được đồng bộ status
-      // EXPORTED khi phụ tùng đặt riêng đã giao xong (xem exportCustomPartOrder).
       const ownQuotationItem = assignment.task.quotation_item_id
         ? await QuotationDetail.findByPk(assignment.task.quotation_item_id, {
             attributes: ["issue_id"],
@@ -510,16 +489,6 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
         await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
         continue;
       }
-      // service_id: null loại trừ dòng dịch vụ (status mãi mãi PENDING, không qua state machine
-      // xuất kho) — thiếu điều kiện này khiến hasReadyPart luôn tính sai. Cùng tiêu chí đã
-      // dùng ở resolveStartStatus/hasAllPartsReady.
-      //
-      // Đồng nhất với resolveStartStatus: Task đang WAITING_STOCK (0/N sẵn sàng lúc bắt đầu)
-      // chỉ cần CÓ ÍT NHẤT 1 phụ tùng vừa được xuất là resume IN_PROGRESS ngay — không đợi
-      // xuất hết 100%. KTV tự quyết định làm phần nào trước, phần còn thiếu tiếp tục chờ song
-      // song (không cần bấm lại "Bắt đầu"). Việc chặn "hoàn thành khi còn thiếu" đã có riêng ở
-      // hasAllPartsReady (completeTask/completeTaskByLeader), không phụ thuộc vào bước resume
-      // này.
       const partRows = await QuotationDetail.findAll({
         where: { issue_id: ownQuotationItem.issue_id, service_id: null },
         attributes: ["id", "status"],
@@ -582,7 +551,6 @@ module.exports.rejectExportRequest = async (detailIds, reason) => {
   return { rejected_count: items.length };
 };
 
-// Dữ liệu đầy đủ cho phiếu xuất kho (để FE tự dựng PDF in ra ký tay lưu hồ sơ giấy)
 module.exports.getExportReceiptDetail = async (receiptCode) => {
   const logs = await InventoryLog.findAll({
     where: { receipt_code: receiptCode, type: "OUT" },
@@ -701,29 +669,12 @@ module.exports.viewExportDetail = async (receiptCode) => {
   return result;
 };
 
-// Đề xuất nhập hàng thông minh: không chỉ dựa vào ngưỡng min_threshold cố định, mà tính nhu
-// cầu thực tế dựa trên xu hướng tiêu thụ gần đây so với giai đoạn trước đó.
-//
-// Chia lịch sử xuất kho 30 ngày gần nhất thành 2 nửa (mỗi nửa 15 ngày):
-//   - "recent"   = 15 ngày gần nhất  -> phản ánh nhu cầu HIỆN TẠI
-//   - "previous" = 15 ngày trước đó  -> làm mốc so sánh xu hướng
-// Nếu recentRate cao hơn previousRate (nhu cầu đang tăng), tốc độ dự đoán sẽ nghiêng về
-// recentRate để không đề xuất thiếu. Nếu phụ tùng chỉ có dữ liệu ở 1 nửa (mới bắt đầu bán
-// chạy hoặc đã ngừng dùng gần đây), dùng thẳng tốc độ của nửa có dữ liệu, không suy diễn.
-// Trọng số 70/30 (nghiêng về gần đây) là cách làm mượt phổ biến (giống EWMA đơn giản) để
-// một ngày xuất đột biến không làm lệch hẳn dự đoán, nhưng vẫn ưu tiên xu hướng mới nhất.
-//
-// Nhu cầu dự kiến = tốc độ dự đoán/ngày x RESTOCK_DAYS (cấu hình trong Garage_Configurations,
-// mặc định 14 ngày) - trừ đi tồn kho khả dụng thực tế (đã trừ phần đang bị giữ chỗ cho các
-// yêu cầu xuất kho REQUESTED/WAITING_STOCK chưa xuất xong).
 const CONSUMPTION_WINDOW_DAYS = 30;
 const RECENT_WINDOW_DAYS = 15;
 const RECENT_WEIGHT = 0.7;
 const DEFAULT_RESTOCK_DAYS = 14;
 
-// Tính toán đầy đủ cho TẤT CẢ phụ tùng (không lọc suggested_quantity > 0) - dùng chung cho
-// cả trang "Đề xuất nhập hàng" (chỉ hiện phần cần nhập) và widget "Tình trạng tồn kho" trên
-// dashboard (cần đếm cả phụ tùng đang ổn định, không chỉ phần cần nhập).
+
 const computeRestockAnalysis = async () => {
   const restockDaysConfig = await db.Garage_Configurations.findOne({
     where: { config_key: "RESTOCK_DAYS" },
