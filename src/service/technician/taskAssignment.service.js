@@ -1540,6 +1540,9 @@ module.exports.searchInspectionHistory = async (keyword) => {
 const SYMPTOM_STOPWORDS = new Set([
   "xe", "bi", "bị", "la", "là", "co", "có", "va", "và", "khi", "bi", "hay",
   "duoc", "được", "can", "cần", "the", "thế", "nay", "này", "do", "đó", "cua", "của",
+  "chay", "chạy", "tren", "trên", "o", "ở", "du", "dự", "doan", "đoán", "hu", "hư",
+  "ra", "bat", "bất", "thuong", "thường", "binh", "bình", "hinh", "hình", "ngoai", "ngoại",
+  "mot", "một", "cac", "các", "nhung", "những", "cho", "cho", "voi", "với", "se", "sẽ",
 ]);
 
 // Tách triệu chứng gốc thành các từ khóa (không dùng AI để tránh chờ lâu), lọc bỏ từ quá
@@ -1645,7 +1648,51 @@ module.exports.searchRepairHistorySmart = async (taskAssignmentId, technicianId)
     limit: 100,
   });
 
-  return { symptom: symptom.trim(), keywords, results: rows };
+  // Query Op.or chỉ lọc nhị phân (khớp 1 từ bất kỳ là được nhận) — kết quả trộn lẫn cả lỗi
+  // không liên quan (vd symptom có từ "kêu" thì "Còi không kêu" cũng lọt vào cùng "Phanh kêu
+  // rít"). Xử lý lại theo 2 bước:
+  // 1. Đếm SỐ TỪ KHÓA RIÊNG BIỆT khớp (matchedKeywordCount) — chỉ giữ lại kết quả khớp >= 2 từ
+  //    khóa khác nhau, loại hẳn các kết quả chỉ trùng đúng 1 từ lẻ tẻ ngẫu nhiên.
+  // 2. Trong số còn lại, chấm điểm ưu tiên khớp ở service_name/error_description/component
+  //    (triệu chứng cốt lõi) hơn repairNotes (ghi chú tự do, dễ nhiễu), rồi sắp theo điểm.
+  const MIN_MATCHED_KEYWORDS = 2;
+  const scored = rows
+    .map((task) => {
+      const serviceName = (task.catalog?.service_name || "").toLowerCase();
+      const errorDescription = (task.quotationItem?.issue?.error_description || "").toLowerCase();
+      const componentName = (task.quotationItem?.issue?.component?.name || "").toLowerCase();
+      const repairNotesContent = (task.repairNotes || [])
+        .map((n) => (n.content || "").toLowerCase())
+        .join(" ");
+
+      let score = 0;
+      let matchedKeywordCount = 0;
+      for (const kw of keywords) {
+        const k = kw.trim();
+        if (!k) continue;
+        const hitService = serviceName.includes(k);
+        const hitError = errorDescription.includes(k);
+        const hitComponent = componentName.includes(k);
+        const hitNotes = repairNotesContent.includes(k);
+        if (hitService || hitError || hitComponent || hitNotes) matchedKeywordCount += 1;
+        if (hitService) score += 3;
+        if (hitError) score += 3;
+        if (hitComponent) score += 2;
+        if (hitNotes) score += 1;
+      }
+      return { task, score, matchedKeywordCount };
+    })
+    // Symptom quá ngắn (chỉ tách ra được 1 từ khóa) thì không thể đòi khớp >= 2 — hạ ngưỡng về
+    // 1 trong trường hợp đó để không loại sạch toàn bộ kết quả một cách vô lý.
+    .filter((r) => r.matchedKeywordCount >= Math.min(MIN_MATCHED_KEYWORDS, keywords.length));
+
+  scored.sort((a, b) => {
+    if (b.matchedKeywordCount !== a.matchedKeywordCount) return b.matchedKeywordCount - a.matchedKeywordCount;
+    if (b.score !== a.score) return b.score - a.score;
+    return new Date(b.task.createdAt).getTime() - new Date(a.task.createdAt).getTime();
+  });
+
+  return { symptom: symptom.trim(), keywords, results: scored.map((s) => s.task) };
 };
 
 module.exports.filterInspectionHistory = async ({ makeId, modelId }) => {
@@ -1706,7 +1753,7 @@ module.exports.filterInspectionHistory = async ({ makeId, modelId }) => {
 };
 
 module.exports.getCompletedTasks = async (technicianId) => {
-  return await Task_Assignments.findAll({
+  const assignments = await Task_Assignments.findAll({
     where: { technician_id: technicianId, status: "COMPLETED" },
     attributes: ["id", "status", "actual_start_time", "actual_end_time", "role_in_task"],
     include: [
@@ -1724,8 +1771,43 @@ module.exports.getCompletedTasks = async (technicianId) => {
           {
             model: db.Quotation_Details,
             as: "quotationItem",
-            attributes: ["id", "repair_price", "unit_price", "quantity", "amount"],
+            attributes: ["id", "repair_price", "unit_price", "quantity", "amount", "issue_id"],
             required: false,
+            include: [
+              {
+                model: db.Vehicle_Issues,
+                as: "issue",
+                attributes: ["id"],
+                required: false,
+                include: [
+                  {
+                    // KHÔNG include customPartOrder trực tiếp ở đây — chuỗi alias
+                    // "task.quotationItem.issue.quotationDetails.customPartOrder.item_name"
+                    // vượt giới hạn 63 ký tự của Postgres, bị cắt trùng khiến Sequelize trả
+                    // sai dữ liệu (chỉ còn "id"). Query Custom_Part_Orders riêng bên dưới,
+                    // giống pattern đã dùng ở getRequestablePartsForServiceOrder (dòng ~114).
+                    model: db.Quotation_Details,
+                    as: "quotationDetails",
+                    attributes: ["id", "quantity", "unit_price", "amount"],
+                    required: false,
+                    include: [
+                      {
+                        model: db.Spare_Parts,
+                        as: "sparePart",
+                        attributes: ["id", "name"],
+                        required: false,
+                      },
+                      {
+                        model: Service_Catalog,
+                        as: "service_catalog",
+                        attributes: ["id", "service_name"],
+                        required: false,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
           },
           {
             model: Service_Order,
@@ -1764,6 +1846,32 @@ module.exports.getCompletedTasks = async (technicianId) => {
     ],
     order: [["actual_end_time", "DESC"]],
     limit: 100,
+    subQuery: false,
+  });
+
+  const allDetailIds = assignments.flatMap((a) =>
+    (a.task?.quotationItem?.issue?.quotationDetails || []).map((d) => d.id),
+  );
+  const customPartOrders = allDetailIds.length
+    ? await db.Custom_Part_Orders.findAll({
+        where: { quotation_detail_id: allDetailIds },
+        attributes: ["id", "item_name", "quotation_detail_id"],
+      })
+    : [];
+  const customPartOrderByDetailId = new Map(
+    customPartOrders.map((c) => [c.quotation_detail_id, c.toJSON()]),
+  );
+
+  return assignments.map((a) => {
+    const data = a.toJSON();
+    const details = data.task?.quotationItem?.issue?.quotationDetails;
+    if (details) {
+      data.task.quotationItem.issue.quotationDetails = details.map((d) => ({
+        ...d,
+        customPartOrder: customPartOrderByDetailId.get(d.id) ?? null,
+      }));
+    }
+    return data;
   });
 };
 

@@ -12,10 +12,10 @@ const CustomPartOrder = db.Custom_Part_Orders;
 const RestockRequest = db.Restock_Requests;
 const sparePartService = require("../../service/inventory/sparePartManagement.service");
 const geminiClient = require("../../config/gemini.config");
+const Task = db.Task;
 const xlsx = require("xlsx");
 const ExcelJS = require("exceljs");
 const { normalizeRow, parseNumber } = require("../admin/serviceCatalog.service");
-const Task = db.Task;
 const Service_Orders = db.Service_Orders;
 const Vehicles = db.Vehicles;
 const Vehicle_Models = db.Vehicle_Models;
@@ -449,19 +449,19 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
     const affectedIssueIds = [...new Set(items.map((item) => item.issue_id).filter(Boolean))];
     const affectedTasks = affectedIssueIds.length
       ? await Task.findAll({
-          attributes: ["id"],
-          where: { service_order_id: serviceOrderId },
-          include: [
-            {
-              model: QuotationDetail,
-              as: "quotationItem",
-              attributes: [],
-              required: true,
-              where: { issue_id: affectedIssueIds },
-            },
-          ],
-          transaction: t,
-        })
+        attributes: ["id"],
+        where: { service_order_id: serviceOrderId },
+        include: [
+          {
+            model: QuotationDetail,
+            as: "quotationItem",
+            attributes: [],
+            required: true,
+            where: { issue_id: affectedIssueIds },
+          },
+        ],
+        transaction: t,
+      })
       : [];
     const affectedTaskIds = affectedTasks.map((task) => task.id);
     const stockReadyAssignments = await db.Task_Assignment.findAll({
@@ -480,22 +480,24 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
     for (const assignment of stockReadyAssignments) {
       const ownQuotationItem = assignment.task.quotation_item_id
         ? await QuotationDetail.findByPk(assignment.task.quotation_item_id, {
-            attributes: ["issue_id"],
-            transaction: t,
-          })
+          attributes: ["issue_id"],
+          transaction: t,
+        })
         : null;
       if (!ownQuotationItem?.issue_id) {
         await assignment.update({ status: "IN_PROGRESS" }, { transaction: t });
         await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
         continue;
       }
-      const partRows = await QuotationDetail.findAll({
-        where: { issue_id: ownQuotationItem.issue_id, service_id: null },
-        attributes: ["id", "status"],
+      const remainingUnready = await QuotationDetail.count({
+        where: {
+          issue_id: ownQuotationItem.issue_id,
+          status: { [Op.notIn]: ["EXPORTED", "RECEIVED", "CANCELLED"] },
+          service_id: null,
+        },
         transaction: t,
       });
-      const hasReadyPart = partRows.some((p) => ["EXPORTED", "RECEIVED"].includes(p.status));
-      if (!hasReadyPart) continue;
+      if (remainingUnready > 0) continue;
       await assignment.update({ status: "IN_PROGRESS" }, { transaction: t });
       await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
     }
@@ -669,9 +671,22 @@ module.exports.viewExportDetail = async (receiptCode) => {
   return result;
 };
 
-const CONSUMPTION_WINDOW_DAYS = 30;
-const RECENT_WINDOW_DAYS = 15;
-const RECENT_WEIGHT = 0.7;
+// Đề xuất nhập hàng thông minh: không chỉ dựa vào ngưỡng min_threshold cố định, mà tính nhu
+// cầu thực tế dựa trên xu hướng tiêu thụ gần đây so với giai đoạn trước đó.
+//
+// Chia lịch sử xuất kho 30 ngày gần nhất thành 2 nửa (mỗi nửa 15 ngày):
+//   - "recent"   = 15 ngày gần nhất  -> phản ánh nhu cầu HIỆN TẠI
+//   - "previous" = 15 ngày trước đó  -> làm mốc so sánh xu hướng
+// Nếu recentRate cao hơn previousRate (nhu cầu đang tăng), tốc độ dự đoán sẽ nghiêng về
+// recentRate để không đề xuất thiếu. Nếu phụ tùng chỉ có dữ liệu ở 1 nửa (mới bắt đầu bán
+// chạy hoặc đã ngừng dùng gần đây), dùng thẳng tốc độ của nửa có dữ liệu, không suy diễn.
+// Trọng số 70/30 (nghiêng về gần đây) là cách làm mượt phổ biến (giống EWMA đơn giản) để
+// một ngày xuất đột biến không làm lệch hẳn dự đoán, nhưng vẫn ưu tiên xu hướng mới nhất.
+//
+// Nhu cầu dự kiến = tốc độ dự đoán/ngày x RESTOCK_DAYS (cấu hình trong Garage_Configurations,
+// mặc định 14 ngày) - trừ đi tồn kho khả dụng thực tế (đã trừ phần đang bị giữ chỗ cho các
+// yêu cầu xuất kho REQUESTED/WAITING_STOCK chưa xuất xong).
+const CONSUMPTION_WINDOW_DAYS = 90;
 const DEFAULT_RESTOCK_DAYS = 14;
 
 
@@ -686,8 +701,12 @@ const computeRestockAnalysis = async () => {
 
   const windowStart = new Date();
   windowStart.setDate(windowStart.getDate() - CONSUMPTION_WINDOW_DAYS);
-  const recentStart = new Date();
-  recentStart.setDate(recentStart.getDate() - RECENT_WINDOW_DAYS);
+  
+  const month1Start = new Date();
+  month1Start.setDate(month1Start.getDate() - 30);
+  
+  const month2Start = new Date();
+  month2Start.setDate(month2Start.getDate() - 60);
 
   const [parts, consumptionLogs, heldRows] = await Promise.all([
     SparePart.findAll({
@@ -700,8 +719,6 @@ const computeRestockAnalysis = async () => {
     }),
     QuotationDetail.findAll({
       where: {
-        // WAITING_STOCK không còn được ghi mới cho hàng kho (giá trị này giờ chỉ tồn tại ở
-        // Custom_Part_Orders.status, phụ tùng đặt riêng không tính vào tồn kho chung).
         status: { [Op.in]: ["REQUESTED"] },
         spare_part_id: { [Op.ne]: null },
       },
@@ -714,16 +731,20 @@ const computeRestockAnalysis = async () => {
     }),
   ]);
 
-  // Gộp tổng xuất kho theo từng phụ tùng, tách riêng nửa gần đây (recent) và nửa trước đó
-  // (previous) để so sánh xu hướng thay vì chỉ lấy 1 con số trung bình phẳng cho cả 30 ngày.
+  // Gộp tổng xuất kho theo từng phụ tùng chia làm 3 tháng gần nhất để so sánh xu hướng:
+  // month1 = 30 ngày gần nhất
+  // month2 = từ ngày 31 đến 60
+  // month3 = từ ngày 61 đến 90
   const consumptionByPart = new Map();
   for (const log of consumptionLogs) {
-    const entry = consumptionByPart.get(log.part_id) ?? { recentTotal: 0, previousTotal: 0 };
-    const isRecent = new Date(log.createdAt) >= recentStart;
-    if (isRecent) {
-      entry.recentTotal += Number(log.quantity);
+    const entry = consumptionByPart.get(log.part_id) ?? { month1: 0, month2: 0, month3: 0 };
+    const logDate = new Date(log.createdAt);
+    if (logDate >= month1Start) {
+      entry.month1 += Number(log.quantity);
+    } else if (logDate >= month2Start) {
+      entry.month2 += Number(log.quantity);
     } else {
-      entry.previousTotal += Number(log.quantity);
+      entry.month3 += Number(log.quantity);
     }
     consumptionByPart.set(log.part_id, entry);
   }
@@ -732,32 +753,28 @@ const computeRestockAnalysis = async () => {
     heldRows.map((row) => [row.spare_part_id, Number(row.total_held)]),
   );
 
-  const previousWindowDays = CONSUMPTION_WINDOW_DAYS - RECENT_WINDOW_DAYS;
-
   const items = parts
     .map((part) => {
-      const consumption = consumptionByPart.get(part.id);
-      const recentRate = (consumption?.recentTotal ?? 0) / RECENT_WINDOW_DAYS;
-      const previousRate = (consumption?.previousTotal ?? 0) / previousWindowDays;
+      const consumption = consumptionByPart.get(part.id) ?? { month1: 0, month2: 0, month3: 0 };
+      
+      // Tính tốc độ tiêu thụ hàng ngày dự đoán bằng WMA 3 tháng (Trọng số 60% tháng gần nhất, 30% tháng thứ 2, 10% tháng thứ 3)
+      const predictedRate = (consumption.month1 / 30) * 0.6 + (consumption.month2 / 30) * 0.3 + (consumption.month3 / 30) * 0.1;
 
-      // Chỉ pha trộn 2 giai đoạn khi cả 2 đều có dữ liệu thực tế; nếu 1 trong 2 giai đoạn
-      // không có xuất kho nào thì dùng thẳng tốc độ của giai đoạn còn lại, tránh pha loãng
-      // sai (vd phụ tùng chỉ mới bắt đầu bán chạy trong 15 ngày gần đây).
-      let predictedRate;
-      if ((consumption?.recentTotal ?? 0) > 0 && (consumption?.previousTotal ?? 0) > 0) {
-        predictedRate = recentRate * RECENT_WEIGHT + previousRate * (1 - RECENT_WEIGHT);
-      } else {
-        predictedRate = recentRate > 0 ? recentRate : previousRate;
-      }
-
-      const trend = previousRate > 0
-        ? Number((((recentRate - previousRate) / previousRate) * 100).toFixed(0))
-        : null;
+      // Tính xu hướng tiêu thụ của tháng gần nhất so với trung bình 2 tháng trước đó
+      const avgPrev = (consumption.month2 + consumption.month3) / 2;
+      const trend = avgPrev > 0
+        ? Number((((consumption.month1 - avgPrev) / avgPrev) * 100).toFixed(0))
+        : (consumption.month1 > 0 ? 100 : null);
 
       const held = heldByPart.get(part.id) ?? 0;
       const availableStock = part.stock_quantity - held;
       const projectedDemand = predictedRate * restockDays;
-      const suggestedQuantity = Math.max(0, Math.ceil(projectedDemand - availableStock));
+      const targetDemand = Math.max(projectedDemand, part.min_threshold || 0);
+      let suggestedQuantity = 0;
+      if (availableStock < targetDemand) {
+        const targetStockLevel = Math.max((part.min_threshold || 0) * 2, projectedDemand * 1.5);
+        suggestedQuantity = Math.max(0, Math.ceil(targetStockLevel - availableStock));
+      }
 
       return {
         part_id: part.id,
@@ -772,6 +789,9 @@ const computeRestockAnalysis = async () => {
         restock_days: restockDays,
         projected_demand: Math.ceil(projectedDemand),
         suggested_quantity: suggestedQuantity,
+        month1_consumption: consumption.month1,
+        month2_consumption: consumption.month2,
+        month3_consumption: consumption.month3,
       };
     });
 
@@ -821,26 +841,26 @@ module.exports.getWaitingStockItems = async () => {
   const taskIds = [...new Set(orders.map((o) => o.quotationDetail?.quotation?.task?.service_order_id).filter(Boolean))];
   const serviceOrders = taskIds.length
     ? await Service_Orders.findAll({
-        where: { id: taskIds },
-        attributes: ["id"],
-        include: [
-          {
-            model: Vehicles,
-            as: "vehicle",
-            attributes: ["id", "license_plate", "color"],
-            required: true,
-            include: [
-              { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
-              {
-                model: Customers,
-                as: "customer",
-                attributes: ["id", "name", "phone"],
-                include: [{ model: User, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
-              },
-            ],
-          },
-        ],
-      })
+      where: { id: taskIds },
+      attributes: ["id"],
+      include: [
+        {
+          model: Vehicles,
+          as: "vehicle",
+          attributes: ["id", "license_plate", "color"],
+          required: true,
+          include: [
+            { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+            {
+              model: Customers,
+              as: "customer",
+              attributes: ["id", "name", "phone"],
+              include: [{ model: User, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+            },
+          ],
+        },
+      ],
+    })
     : [];
   const serviceOrderById = new Map(serviceOrders.map((so) => [so.id, so]));
 
@@ -928,7 +948,8 @@ module.exports.exportCustomPartOrder = async (manager_id, customPartOrderId) => 
     let technicianIds = [];
     let serviceOrderId = null;
     if (order.quotationDetail?.issue_id) {
-      const issue = await db.Vehicle_Issues.findByPk(order.quotationDetail.issue_id, {
+      const issueId = order.quotationDetail.issue_id;
+      const issue = await db.Vehicle_Issues.findByPk(issueId, {
         attributes: ["id", "task_id"],
         transaction: t,
       });
@@ -943,6 +964,26 @@ module.exports.exportCustomPartOrder = async (manager_id, customPartOrderId) => 
           transaction: t,
         });
         technicianIds = [...new Set(assignments.map((a) => a.technician_id))];
+      }
+      if (task?.id) {
+        const remainingUnready = await QuotationDetail.count({
+          where: {
+            issue_id: issueId,
+            status: { [Op.notIn]: ["EXPORTED", "RECEIVED", "CANCELLED"] },
+            service_id: null,
+          },
+          transaction: t,
+        });
+        if (remainingUnready === 0) {
+          await db.Task_Assignment.update(
+            { status: "IN_PROGRESS" },
+            { where: { task_id: task.id, status: "WAITING_STOCK" }, transaction: t },
+          );
+          await Task.update(
+            { status: "IN_PROGRESS" },
+            { where: { id: task.id, status: "WAITING_STOCK" }, transaction: t },
+          );
+        }
       }
     }
 
@@ -1257,6 +1298,10 @@ module.exports.previewImportRestockExcel = async (fileBuffer) => {
       });
       continue;
     }
+    // File Excel không điền "Giá bán" (để trống cho thủ kho tự cân nhắc) -> mặc định hiện giá
+    // bán HIỆN TẠI của phụ tùng, không phải để trống — thủ kho nhìn thấy số thật, sửa nếu muốn
+    // đổi giá, còn không sửa thì confirmRestockImport vẫn ghi lại đúng giá này (không đổi gì).
+    const currentRetailPrice = part.retail_price != null ? Number(part.retail_price) : 0;
     previewList.push({
       row_index: rowIndex,
       spare_part_id: part.id,
@@ -1264,7 +1309,7 @@ module.exports.previewImportRestockExcel = async (fileBuffer) => {
       name: part.name,
       quantity,
       unit_price: unitPrice,
-      retail_price: retailPrice,
+      retail_price: retailPrice != null ? retailPrice : currentRetailPrice,
       category_name: part.category?.category_name ?? null,
       warranty_period_months: part.warranty_period_months ?? null,
       warranty_km_limit: part.warranty_km_limit ?? null,
@@ -1324,4 +1369,154 @@ module.exports.confirmRestockImport = async (manager_id, supplier_id, items) => 
     fulfilled,
     stillPending,
   };
+};
+
+module.exports.aiAnalyzeRestockSuggestions = async (managerId) => {
+  const analysisData = await computeRestockAnalysis();
+  const candidateParts = analysisData.items.map(item => ({
+    part_id: item.part_id,
+    sku: item.sku || 'N/A',
+    name: item.name,
+    brand: item.brand || 'N/A',
+    stock_quantity: item.stock_quantity,
+    available_stock: item.available_stock,
+    daily_consumption: item.daily_consumption,
+    projected_demand: item.projected_demand,
+    suggested_quantity: item.suggested_quantity,
+    min_threshold: item.min_threshold || 0,
+    monthly_history: {
+      last_30_days: item.month1_consumption || 0,
+      days_31_to_60: item.month2_consumption || 0,
+      days_61_to_90: item.month3_consumption || 0
+    }
+  }));
+
+  const model = geminiClient.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const prompt = `Bạn là một chuyên gia quản lý kho thông minh tại trung tâm sửa chữa ô tô AGM Intelligent Garage.
+Dưới đây là danh sách phân tích tồn kho, tốc độ tiêu thụ hàng ngày, dự báo nhu cầu phụ tùng và lịch sử tiêu thụ 3 tháng qua (last_30_days: lượng xuất 30 ngày gần đây, days_31_to_60: lượng xuất 30-60 ngày trước, days_61_to_90: lượng xuất 60-90 ngày trước):
+${JSON.stringify(candidateParts, null, 2)}
+
+Nhiệm vụ của bạn là:
+1. Phân tích tổng quan tình hình tồn kho hiện tại, chỉ ra những điểm nóng (các phụ tùng hết hàng hoặc có tốc độ tiêu thụ cao có nguy cơ thiếu hụt).
+2. Đề xuất danh sách cụ thể các phụ tùng cần nhập thêm. Lý do đề xuất (reason) cần ngắn gọn, trực diện bằng tiếng Việt để người lập hiểu ngay tại sao cần nhập (ví dụ: "Hết hàng trong kho", "Tồn kho (3) dưới mức tối thiểu (5)", hoặc "Nhu cầu dự báo (15) lớn hơn tồn kho (4)").
+3. Trả về kết quả chính xác theo cấu trúc JSON dưới đây (không sử dụng markdown block \`\`\`json hay bất kỳ văn bản giải thích nào khác ngoài cấu trúc JSON):
+{
+  "analysis_result": "Đoạn văn phân tích ngắn gọn, súc tích và chuyên nghiệp về tình hình tồn kho...",
+  "suggestions": [
+    {
+      "part_id": 123,
+      "sku": "Mã SKU",
+      "name": "Tên phụ tùng",
+      "brand": "Thương hiệu",
+      "stock_quantity": 5,
+      "available_stock": 5,
+      "projected_demand": 15,
+      "suggested_quantity": 10,
+      "reason": "Tồn kho (5) dưới mức tối thiểu (10)"
+    }
+  ]
+}`;
+
+  let aiResult;
+  try {
+    const response = await model.generateContent(prompt);
+    let text = response.response.text().trim();
+    if (text.startsWith("```")) {
+      text = text.replace(/```json|```/g, "").trim();
+    }
+    aiResult = JSON.parse(text);
+  } catch (err) {
+    console.error("Gemini AI Analysis failed, falling back to programmatic logic:", err);
+    const fallbackSuggestions = candidateParts
+      .filter(p => p.suggested_quantity > 0)
+      .map(p => {
+        let reason = "Cần bổ sung hàng.";
+        const avail = p.available_stock !== undefined ? p.available_stock : p.stock_quantity;
+        if (avail <= 0) {
+          reason = "Hết hàng trong kho.";
+        } else if (avail <= p.min_threshold) {
+          reason = `Tồn kho (${avail}) dưới mức tối thiểu (${p.min_threshold}).`;
+        } else if (p.projected_demand > avail) {
+          reason = `Nhu cầu dự báo (${p.projected_demand}) vượt quá tồn kho (${avail}).`;
+        }
+        return {
+          ...p,
+          reason
+        };
+      });
+    aiResult = {
+      analysis_result: "Hệ thống tự động phân tích dựa trên thuật toán thống kê nhu cầu thực tế.",
+      suggestions: fallbackSuggestions
+    };
+  }
+
+  const now = new Date();
+  const day = String(now.getDate()).padStart(2, "0");
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const year = now.getFullYear();
+  const prefix = `DXAI-${year}${month}${day}-`;
+
+  const lastProposal = await db.AI_Restock_Proposals.findOne({
+    where: {
+      proposal_code: {
+        [Op.like]: `${prefix}%`
+      }
+    },
+    order: [["proposal_code", "DESC"]]
+  });
+
+  let next = 1;
+  if (lastProposal) {
+    const lastNum = parseInt(lastProposal.proposal_code.slice(prefix.length), 10);
+    if (!isNaN(lastNum)) {
+      next = lastNum + 1;
+    }
+  }
+  const proposal_code = `${prefix}${String(next).padStart(4, "0")}`;
+
+  const proposal = await db.AI_Restock_Proposals.create({
+    proposal_code,
+    analysis_result: aiResult.analysis_result,
+    items: aiResult.suggestions,
+    created_by: managerId
+  });
+
+  return await db.AI_Restock_Proposals.findByPk(proposal.id, {
+    include: [
+      {
+        model: db.User,
+        as: "creator",
+        attributes: ["id", "fullName"]
+      }
+    ]
+  });
+};
+
+module.exports.getRestockProposals = async () => {
+  return await db.AI_Restock_Proposals.findAll({
+    include: [
+      {
+        model: db.User,
+        as: "creator",
+        attributes: ["id", "fullName"]
+      }
+    ],
+    order: [["createdAt", "DESC"]]
+  });
+};
+
+module.exports.getRestockProposalDetail = async (id) => {
+  const proposal = await db.AI_Restock_Proposals.findByPk(id, {
+    include: [
+      {
+        model: db.User,
+        as: "creator",
+        attributes: ["id", "fullName"]
+      }
+    ]
+  });
+  if (!proposal) {
+    throw { status: 404, message: "Không tìm thấy đề xuất nhập hàng này" };
+  }
+  return proposal;
 };

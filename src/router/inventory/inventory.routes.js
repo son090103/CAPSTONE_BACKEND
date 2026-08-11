@@ -54,6 +54,9 @@ router.patch("/supplier/:id", supplierManagementController.updateSupplier);
 
 router.get("/inventory/waiting-stock", importAndExportManagementController.getWaitingStockItems);
 router.get("/restock-suggestions", importAndExportManagementController.getRestockSuggestions);
+router.post("/restock-proposals/ai-analyze", importAndExportManagementController.aiAnalyzeRestockSuggestions);
+router.get("/restock-proposals", importAndExportManagementController.getRestockProposals);
+router.get("/restock-proposals/:id", importAndExportManagementController.getRestockProposalDetail);
 
 router.get("/notifications", notificationController.getNotifications);
 router.get("/notifications/unread-count", notificationController.getUnreadCount);

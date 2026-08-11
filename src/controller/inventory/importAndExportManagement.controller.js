@@ -287,6 +287,48 @@ module.exports.getRestockRequestsSummary = async (req, res) => {
     });
   }
 };
+module.exports.aiAnalyzeRestockSuggestions = async (req, res) => {
+  try {
+    const managerId = res.locals.user.id;
+    const result = await ImportAndExportManagement.aiAnalyzeRestockSuggestions(managerId);
+    return res.status(200).json({
+      message: "Phân tích và tạo đề xuất AI thành công",
+      data: result,
+    });
+  } catch (error) {
+    console.error("AI restock suggest error:", error);
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getRestockProposals = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getRestockProposals();
+    return res.status(200).json({
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getRestockProposalDetail = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await ImportAndExportManagement.getRestockProposalDetail(Number(id));
+    return res.status(200).json({
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
 
 module.exports.getRestockRequestsHistory = async (req, res) => {
   try {

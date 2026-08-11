@@ -31,6 +31,7 @@ router.get("/inspection-history/search", taskAssignment.searchInspectionHistory)
 router.get("/inspection-history/filter", taskAssignment.filterInspectionHistory);
 
 router.get("/completed-tasks", taskAssignment.getMyCompletedTasks);
+router.get("/issues", taskAssignment.getIssuesReportHistory);
 
 router.get("/notifications", notificationController.getNotifications);
 router.get("/notifications/unread-count", notificationController.getUnreadCount);

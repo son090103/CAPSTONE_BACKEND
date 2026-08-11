@@ -264,6 +264,7 @@ module.exports.createQuotation = async (data, leaderId) => {
     // Phụ tùng đặt riêng tách ra Custom_Part_Orders sau khi đã có id của dòng shell —
     // gom lại đây để tạo sau vòng lặp, đánh dấu bằng index trong detailsData.
     const customPartOrdersToCreate = [];
+    const usedInThisRequest = new Map();
     for (const item of data.items) {
       let unitPrice = 0;
       let repairPrice = 0;
@@ -280,10 +281,12 @@ module.exports.createQuotation = async (data, leaderId) => {
           include: [{ model: Quotation, as: "quotation", attributes: [], where: { status: "APPROVED" }, required: true }],
           transaction: t,
         });
-        const availableQuantity = Number(part.stock_quantity) - Number(heldQuantity || 0);
+        const alreadyUsed = usedInThisRequest.get(item.spare_part_id) || 0;
+        const availableQuantity = Number(part.stock_quantity) - Number(heldQuantity || 0) - alreadyUsed;
         // Thiếu tồn vẫn được thêm vào báo giá bình thường (khách vẫn cần thấy đầy đủ hạng mục) —
         // chỉ đánh dấu WAITING_STOCK để tạo Restock_Requests sau khi khách duyệt báo giá.
         partOutOfStock = availableQuantity < item.quantity;
+        usedInThisRequest.set(item.spare_part_id, alreadyUsed + item.quantity);
         unitPrice = part.retail_price;
         amount = item.quantity * unitPrice;
       } else if (item.custom_item_name) {
@@ -439,6 +442,7 @@ module.exports.updateQuotation = async (id, data, leaderId) => {
     let totalAmount = 0;
     const detailsData = [];
     const customPartOrdersToCreate = [];
+    const usedInThisRequest = new Map();
     for (const item of data.items) {
       let unitPrice = 0;
       let repairPrice = 0;
@@ -454,8 +458,10 @@ module.exports.updateQuotation = async (id, data, leaderId) => {
           include: [{ model: Quotation, as: "quotation", attributes: [], where: { status: "APPROVED" }, required: true }],
           transaction: t,
         });
-        const availableQuantity = Number(part.stock_quantity) - Number(heldQuantity || 0);
+        const alreadyUsed = usedInThisRequest.get(item.spare_part_id) || 0;
+        const availableQuantity = Number(part.stock_quantity) - Number(heldQuantity || 0) - alreadyUsed;
         partOutOfStock = availableQuantity < item.quantity;
+        usedInThisRequest.set(item.spare_part_id, alreadyUsed + item.quantity);
         unitPrice = part.retail_price;
         amount = item.quantity * unitPrice;
       } else if (item.custom_item_name) {
