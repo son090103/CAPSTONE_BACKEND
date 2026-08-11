@@ -489,15 +489,15 @@ module.exports.approveExportRequest = async (detailIds, managerId) => {
         await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
         continue;
       }
-      const remainingUnready = await QuotationDetail.count({
+      const readyCount = await QuotationDetail.count({
         where: {
           issue_id: ownQuotationItem.issue_id,
-          status: { [Op.notIn]: ["EXPORTED", "RECEIVED", "CANCELLED"] },
+          status: { [Op.in]: ["EXPORTED", "RECEIVED"] },
           service_id: null,
         },
         transaction: t,
       });
-      if (remainingUnready > 0) continue;
+      if (readyCount === 0) continue;
       await assignment.update({ status: "IN_PROGRESS" }, { transaction: t });
       await Task.update({ status: "IN_PROGRESS" }, { where: { id: assignment.task.id }, transaction: t });
     }
@@ -966,15 +966,15 @@ module.exports.exportCustomPartOrder = async (manager_id, customPartOrderId) => 
         technicianIds = [...new Set(assignments.map((a) => a.technician_id))];
       }
       if (task?.id) {
-        const remainingUnready = await QuotationDetail.count({
+        const readyCount = await QuotationDetail.count({
           where: {
             issue_id: issueId,
-            status: { [Op.notIn]: ["EXPORTED", "RECEIVED", "CANCELLED"] },
+            status: { [Op.in]: ["EXPORTED", "RECEIVED"] },
             service_id: null,
           },
           transaction: t,
         });
-        if (remainingUnready === 0) {
+        if (readyCount > 0) {
           await db.Task_Assignment.update(
             { status: "IN_PROGRESS" },
             { where: { task_id: task.id, status: "WAITING_STOCK" }, transaction: t },
@@ -1344,7 +1344,7 @@ module.exports.confirmRestockImport = async (manager_id, supplier_id, items) => 
     const part = await SparePart.findByPk(sparePartId, { attributes: ["id", "name", "stock_quantity"] });
     const pendingRequests = await RestockRequest.findAll({
       where: { spare_part_id: sparePartId, status: "PENDING" },
-      attributes: ["id", "quantity_needed"],
+      attributes: ["id", "quantity_needed", "quotation_detail_id"],
     });
     if (pendingRequests.length === 0) continue;
 
@@ -1354,6 +1354,13 @@ module.exports.confirmRestockImport = async (manager_id, supplier_id, items) => 
         { status: "FULFILLED" },
         { where: { id: pendingRequests.map((r) => r.id) } },
       );
+      const detailIds = pendingRequests.map((r) => r.quotation_detail_id).filter(Boolean);
+      if (detailIds.length > 0) {
+        await QuotationDetail.update(
+          { status: "PENDING" },
+          { where: { id: detailIds, status: "WAITING_STOCK" } },
+        );
+      }
       fulfilled.push({ spare_part_id: sparePartId, name: part.name, count: pendingRequests.length });
     } else {
       stillPending.push({
