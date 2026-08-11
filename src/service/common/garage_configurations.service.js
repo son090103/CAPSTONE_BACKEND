@@ -48,11 +48,10 @@ module.exports.getAvailability = async (dateStr) => {
         // 1. Check tương lai (Appointments)
         const appointments = await db.Appointments.findAll({
             where: {
-                scheduled_time: {
-                    [Op.between]: [startOfDay, endOfDay]
-                },
+                scheduled_time: { [Op.between]: [startOfDay, endOfDay] },
+                booking_type: { [Op.notLike]: '%WALK%' },
                 status: {
-                    [Op.in]: ['PENDING', 'CONFIRMED']
+                    [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECEIVED']
                 }
             },
             attributes: ['id', 'scheduled_time'],
@@ -68,8 +67,9 @@ module.exports.getAvailability = async (dateStr) => {
         const { calculateAppointmentTime } = require("../../util/calculateAppointmentTime.util");
 
         await Promise.all(appointments.map(async (app) => {
-            const { endTime } = await calculateAppointmentTime(app.appointmentDetails, app.scheduled_time);
-            const occupiedHours = getOccupiedHours(app.scheduled_time, endTime);
+            const timeStart = app.scheduled_time;
+            const { endTime } = await calculateAppointmentTime(app.appointmentDetails, timeStart);
+            const occupiedHours = getOccupiedHours(timeStart, endTime);
             occupiedHours.forEach(h => {
                 bookedCounts[h] = (bookedCounts[h] || 0) + 1;
             });
@@ -81,6 +81,8 @@ module.exports.getAvailability = async (dateStr) => {
                 status: {
                     [Op.in]: ['INSPECTING', 'IN_PROGRESS', 'WAITING_FOR_PARTS']
                 },
+                bay_status: 'ASSIGNED',
+                bay_id: { [Op.ne]: null },
                 estimated_finish_time: {
                     [Op.ne]: null,
                     [Op.gt]: startOfDay
@@ -117,5 +119,16 @@ module.exports.getConfigurationByKey = async (key) => {
         throw { status: 404, message: `Không tìm thấy cấu hình với key: ${key}` };
     }
 
+    return config;
+};
+
+module.exports.updateConfiguration = async (key, value) => {
+    const config = await db.Garage_Configurations.findOne({ where: { config_key: key } });
+
+    if (!config) {
+        throw { status: 404, message: `Không tìm thấy cấu hình với key: ${key}` };
+    }
+
+    await config.update({ config_value: value });
     return config;
 };

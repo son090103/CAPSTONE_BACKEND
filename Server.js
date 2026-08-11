@@ -14,15 +14,35 @@ const whitelist = [
   "https://agm-garage.id.vn",
   "https://www.agm-garage.id.vn",
   "192.168.0.191:8081",
-  "https://7fd2-2405-4802-e682-2ac0-e8fe-f026-452b-f047.ngrok-free.app",
-  "https://6f23-2405-4802-e682-2ac0-e8fe-f026-452b-f047.ngrok-free.app "
+  "https://12bf-171-225-184-240.ngrok-free.app",
+  "https://bd50-171-225-184-240.ngrok-free.app",
+  "http://localhost:5173/"
 ];
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  if (whitelist.includes(origin)) return true;
+  if (whitelist.includes(origin + "/")) return true; // check with trailing slash
+
+  // Allow localhost on any port (useful for development)
+  if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+    return true;
+  }
+
+  // Allow any local network IP on any port (useful for Expo/React Native)
+  if (/^http:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+    return true;
+  }
+
+  return false;
+};
+
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || whitelist.includes(origin)) {
+      if (isOriginAllowed(origin)) {
         callback(null, true);
       } else {
+        console.error("Blocked by CORS. Origin requested:", origin);
         callback(new Error("Not allowed by CORS"));
       }
     },
@@ -38,6 +58,8 @@ app.use(bodyParser.json());
 const http = require("http");
 const server = http.createServer(app);
 const { Server } = require("socket.io");
+const { verifyAccessToken } = require("./src/util/jwt.util");
+const db = require("./models");
 const io = new Server(server, {
   cors: {
     origin: "*",
@@ -86,9 +108,67 @@ io.on('connection', (socket) => {
     socket.leave(`service-order-${serviceOrderId}`);
   });
 
-  socket.on('update-rescue-location', (data) => {
-    const { customerId, latitude, longitude } = data;
-    io.to(`customer_${customerId}`).emit('rescue-location-updated', { latitude, longitude });
+  const authorizeRescueSocket = async (data, requireTechnician = false) => {
+    const token = data?.token;
+    const rescueId = Number(data?.rescueId);
+    if (!token || !Number.isInteger(rescueId) || rescueId <= 0) throw new Error('Dữ liệu theo dõi cứu hộ không hợp lệ');
+
+    const decoded = verifyAccessToken(token);
+    const rescue = await db.Rescue_Requests.findByPk(rescueId, {
+      include: [{ model: db.Customers, as: 'customer', attributes: ['id', 'user_id'] }],
+    });
+    if (!rescue) throw new Error('Không tìm thấy yêu cầu cứu hộ');
+
+    const isTechnician = Number(rescue.technician_id) === Number(decoded.id);
+    const isCustomer = Number(rescue.customer?.user_id) === Number(decoded.id);
+    if ((requireTechnician && !isTechnician) || (!requireTechnician && !isTechnician && !isCustomer)) {
+      throw new Error('Bạn không có quyền theo dõi yêu cầu cứu hộ này');
+    }
+    return { rescue, userId: Number(decoded.id) };
+  };
+
+  socket.on('join-rescue-tracking', async (data, acknowledgement) => {
+    try {
+      const { rescue } = await authorizeRescueSocket(data);
+      socket.join(`rescue-${rescue.id}`);
+      acknowledgement?.({ success: true });
+    } catch (error) {
+      acknowledgement?.({ success: false, message: error.message });
+    }
+  });
+
+  socket.on('leave-rescue-tracking', (rescueId) => {
+    socket.leave(`rescue-${Number(rescueId)}`);
+  });
+
+  socket.on('update-rescue-location', async (data, acknowledgement) => {
+    try {
+      const latitude = Number(data?.latitude);
+      const longitude = Number(data?.longitude);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+        throw new Error('Tọa độ GPS không hợp lệ');
+      }
+
+      const { rescue, userId } = await authorizeRescueSocket(data, true);
+      if (!['EN_ROUTE', 'TOWING'].includes(rescue.status)) {
+        throw new Error('Cuốc cứu hộ không ở trạng thái cho phép chia sẻ vị trí');
+      }
+
+      await db.User.update({ latitude, longitude }, { where: { id: userId } });
+      const payload = {
+        rescueId: rescue.id,
+        latitude,
+        longitude,
+        accuracy: Number.isFinite(Number(data?.accuracy)) ? Number(data.accuracy) : null,
+        heading: Number.isFinite(Number(data?.heading)) ? Number(data.heading) : null,
+        speed: Number.isFinite(Number(data?.speed)) ? Number(data.speed) : null,
+        recordedAt: new Date().toISOString(),
+      };
+      io.to(`rescue-${rescue.id}`).emit('rescue-location-updated', payload);
+      acknowledgement?.({ success: true });
+    } catch (error) {
+      acknowledgement?.({ success: false, message: error.message });
+    }
   });
 });
 const ROUTES = require("./src/router/registry.routes");
@@ -97,9 +177,10 @@ require("./src/jobs/maintenanceReminder.job");
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || whitelist.includes(origin)) {
+      if (isOriginAllowed(origin)) {
         callback(null, true);
       } else {
+        console.error("Blocked by CORS. Origin requested:", origin);
         callback(new Error("Not allowed by CORS"));
       }
     },

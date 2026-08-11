@@ -7,7 +7,7 @@ const InventoryLog = db.Inventory_Logs;
 const InventoryBatch = db.Inventory_Batches;
 
 module.exports.getInventoryDashboardSummary = async () => {
-    const [parts, categories, lowStock, todayIn, todayOut, recentLogs, importExportTrend, topConsumed] = await Promise.all([
+    const [parts, categories, lowStock, todayIn, todayOut, recentLogs, importExportTrend, topConsumed, topAgingStock] = await Promise.all([
         SparePart.findAll({
             attributes: ["id", "name", "stock_quantity", "min_threshold", "retail_price", "category_id"],
             raw: true,
@@ -31,7 +31,6 @@ module.exports.getInventoryDashboardSummary = async () => {
             where: { type: "OUT", createdAt: { [Op.gte]: startOfDay() } },
         }),
         InventoryLog.findAll({
-            where: { createdAt: { [Op.gte]: startOfDay() } },
             attributes: ["receipt_code", "type", "quantity", "unit_price", "createdAt"],
             include: [{ model: SparePart, as: "part", attributes: ["name", "sku"] }],
             order: [["createdAt", "DESC"]],
@@ -41,6 +40,7 @@ module.exports.getInventoryDashboardSummary = async () => {
         }),
         getImportExportTrend(),
         getTopConsumed(),
+        getTopAgingStock(),
     ]);
 
     const totalValue = parts.reduce((sum, item) => sum + Number(item.stock_quantity || 0) * Number(item.retail_price || 0), 0);
@@ -69,6 +69,7 @@ module.exports.getInventoryDashboardSummary = async () => {
         importExportTrend,
         recentTransactions: recentLogs,
         topConsumed,
+        topAgingStock,
     };
 };
 
@@ -79,18 +80,68 @@ async function getTopConsumed() {
             [fn("SUM", col("quantity")), "totalQty"],
         ],
         where: { type: "OUT" },
-        include: [{ model: SparePart, as: "part", attributes: ["name", "brand"] }],
-        group: ["part_id", "part.id", "part.name", "part.brand"],
+        include: [{ model: SparePart, as: "part", attributes: ["name", "brand", "sku"] }],
+        group: ["part_id", "part.id", "part.name", "part.brand", "part.sku"],
         order: [[fn("SUM", col("quantity")), "DESC"]],
-        limit: 7,
+        limit: 10,
         raw: true,
         nest: true,
     });
 
     return rows.map((row) => ({
         name: row.part?.brand ? `${row.part.name} (${row.part.brand})` : (row.part?.name || "Phụ tùng"),
+        sku: row.part?.sku || null,
         qty: Number(row.totalQty || 0),
     }));
+}
+
+// Top 10 phụ tùng còn tồn kho (stock_quantity > 0) nhưng lâu nhất chưa có ai xuất ra dùng -
+// tính bằng số ngày kể từ lần xuất kho (type OUT) gần nhất đến nay. Nếu phụ tùng chưa từng
+// được xuất lần nào, tính từ lần nhập kho (type IN) gần nhất - coi như "nằm im từ lúc nhập".
+async function getTopAgingStock() {
+    const parts = await SparePart.findAll({
+        where: { stock_quantity: { [Op.gt]: 0 } },
+        attributes: ["id", "name", "brand", "sku", "stock_quantity"],
+        raw: true,
+    });
+    if (parts.length === 0) return [];
+
+    const partIds = parts.map((p) => p.id);
+    const [lastOutRows, lastInRows] = await Promise.all([
+        InventoryLog.findAll({
+            where: { part_id: { [Op.in]: partIds }, type: "OUT" },
+            attributes: ["part_id", [fn("MAX", col("createdAt")), "lastAt"]],
+            group: ["part_id"],
+            raw: true,
+        }),
+        InventoryLog.findAll({
+            where: { part_id: { [Op.in]: partIds }, type: "IN" },
+            attributes: ["part_id", [fn("MAX", col("createdAt")), "lastAt"]],
+            group: ["part_id"],
+            raw: true,
+        }),
+    ]);
+
+    const lastOutByPart = new Map(lastOutRows.map((row) => [row.part_id, row.lastAt]));
+    const lastInByPart = new Map(lastInRows.map((row) => [row.part_id, row.lastAt]));
+    const now = new Date();
+
+    const aging = parts
+        .map((part) => {
+            const referenceDate = lastOutByPart.get(part.id) ?? lastInByPart.get(part.id);
+            if (!referenceDate) return null;
+            const days = Math.floor((now - new Date(referenceDate)) / (1000 * 60 * 60 * 24));
+            return {
+                name: part.brand ? `${part.name} (${part.brand})` : part.name,
+                sku: part.sku || null,
+                days,
+            };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.days - a.days)
+        .slice(0, 10);
+
+    return aging;
 }
 
 async function getImportExportTrend() {

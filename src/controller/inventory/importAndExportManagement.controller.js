@@ -1,7 +1,6 @@
 const ImportAndExportManagement = require("../../service/inventory/importAndExportManagement.service");
 const {
   importReceiptSchema,
-  importForOrderReceiptSchema,
 } = require("../../validation/inventory/importAndExportManagement.validation");
 const scanInvoiceService = require("../../service/inventory/importAndExportManagement.service");
 
@@ -121,25 +120,6 @@ module.exports.getExportReceiptDetail = async (req, res) => {
   }
 };
 
-module.exports.signExportReceipt = async (req, res) => {
-  try {
-    const { receiptCode } = req.params;
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ message: "Vui lòng chụp ảnh xác nhận nhận phụ tùng" });
-    }
-    const result = await ImportAndExportManagement.signExportReceipt(receiptCode, req.file.buffer);
-    return res.status(200).json({
-      success: true,
-      message: "Xác nhận nhận phụ tùng thành công",
-      data: result,
-    });
-  } catch (error) {
-    return res.status(error.status || 500).json({
-      message: error.message || "Internal server error",
-    });
-  }
-};
-
 module.exports.viewImportHistory = async (req, res) => {
   try {
     const result = await ImportAndExportManagement.viewImportHistory();
@@ -201,32 +181,215 @@ module.exports.getWaitingStockItems = async (req, res) => {
   }
 };
 
-module.exports.importSparePartForOrderItem = async (req, res) => {
+module.exports.getRestockSuggestions = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getRestockSuggestions();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+
+module.exports.confirmCustomPartArrival = async (req, res) => {
   try {
     const manager_id = res.locals.user.id;
-    const { supplier_id, items } = req.body;
-    const validation = importForOrderReceiptSchema.safeParse({
-      supplier_id,
-      items,
-    });
-    if (!validation.success) {
-      return res.status(400).json({
-        message: validation.error.issues[0].message,
-      });
-    }
-    const result = await ImportAndExportManagement.importSparePartForOrderItem(
+    const { id } = req.params;
+    const { actual_unit_price } = req.body;
+    const result = await ImportAndExportManagement.confirmCustomPartArrival(
       manager_id,
-      supplier_id,
-      items,
+      Number(id),
+      actual_unit_price != null ? Number(actual_unit_price) : undefined,
     );
-    return res.status(201).json({
-      message: "Nhập kho cho đơn đặt riêng thành công",
+    return res.status(200).json({
+      message: "Đã xác nhận phụ tùng đặt riêng đã về",
       data: result,
     });
   } catch (error) {
     return res.status(error.status || 500).json({
       message: error.message || "Internal server error",
-      part: error.part,
+    });
+  }
+};
+
+module.exports.exportCustomPartOrder = async (req, res) => {
+  try {
+    const manager_id = res.locals.user.id;
+    const { id } = req.params;
+    const result = await ImportAndExportManagement.exportCustomPartOrder(manager_id, Number(id));
+    return res.status(200).json({
+      message: "Đã xuất phụ tùng đặt riêng cho kỹ thuật viên",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.createRestockRequest = async (req, res) => {
+  try {
+    const requestedBy = res.locals.user.id;
+    const { spare_part_id, quantity_needed, quotation_detail_id } = req.body;
+    const result = await ImportAndExportManagement.createRestockRequest(
+      requestedBy,
+      Number(spare_part_id),
+      Number(quantity_needed),
+      quotation_detail_id ? Number(quotation_detail_id) : undefined,
+    );
+    return res.status(201).json({
+      message: "Đã gửi yêu cầu bổ sung phụ tùng",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getRestockRequests = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getRestockRequests();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.resolveRestockRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await ImportAndExportManagement.resolveRestockRequest(Number(id));
+    return res.status(200).json({
+      message: "Đã đánh dấu hoàn tất yêu cầu bổ sung",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getRestockRequestsSummary = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getRestockRequestsSummary();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+module.exports.aiAnalyzeRestockSuggestions = async (req, res) => {
+  try {
+    const managerId = res.locals.user.id;
+    const result = await ImportAndExportManagement.aiAnalyzeRestockSuggestions(managerId);
+    return res.status(200).json({
+      message: "Phân tích và tạo đề xuất AI thành công",
+      data: result,
+    });
+  } catch (error) {
+    console.error("AI restock suggest error:", error);
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getRestockProposals = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getRestockProposals();
+    return res.status(200).json({
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getRestockProposalDetail = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await ImportAndExportManagement.getRestockProposalDetail(Number(id));
+    return res.status(200).json({
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getRestockRequestsHistory = async (req, res) => {
+  try {
+    const result = await ImportAndExportManagement.getRestockRequestsHistory();
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.exportRestockRequestsExcel = async (req, res) => {
+  try {
+    const buffer = await ImportAndExportManagement.exportRestockRequestsExcel();
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="yeu-cau-bo-sung-phu-tung-${Date.now()}.xlsx"`,
+    );
+    return res.status(200).send(buffer);
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.previewImportRestockExcel = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "Vui lòng upload file Excel" });
+    }
+    const result = await ImportAndExportManagement.previewImportRestockExcel(req.file.buffer);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.confirmRestockImport = async (req, res) => {
+  try {
+    const manager_id = res.locals.user.id;
+    const { supplier_id, items } = req.body;
+    const result = await ImportAndExportManagement.confirmRestockImport(
+      manager_id,
+      Number(supplier_id),
+      items,
+    );
+    return res.status(200).json({
+      message: "Đã xác nhận nhập kho",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
     });
   }
 };

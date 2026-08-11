@@ -8,19 +8,13 @@ const techShiftController = require("./../../controller/technician/shift.control
 router.get("/vehicle-makes", taskAssignment.getMakes);
 router.get("/vehicle-models", taskAssignment.getModels);
 
-router.get("/issues", taskAssignment.getIssuesReportHistory);
-router.post("/issues", taskAssignment.createIssuesReport);
-router.post("/issues/additional", taskAssignment.reportAdditionalIssue);
 router.get("/component", taskAssignment.getAllComponents);
 
 router.get("/task-assignments", taskAssignment.getTaskAssignment);
 router.get("/service-orders/:id", taskAssignment.getServiceOrderDetail);
 router.put("/task-assignments/start", taskAssignment.startTask);
+router.put("/task-assignments/request-parts-export", taskAssignment.requestPartsExport);
 router.patch("/task-assignments/complete", taskAssignment.completeTask);
-router.put("/task-assignments/pause", taskAssignment.pauseTask);
-router.put("/task-assignments/resume", taskAssignment.resumeTask);
-router.get("/service-orders/:serviceOrderId/requestable-parts", taskAssignment.getRequestableParts);
-router.post("/service-orders/:serviceOrderId/request-export", taskAssignment.requestExportParts);
 
 router.get("/diagnostics", taskAssignment.getAllDiagnostics);
 router.get("/diagnostics/search", taskAssignment.searchDiagnostics);
@@ -29,6 +23,7 @@ router.post("/diagnostics/ai-suggest", taskAssignment.aiSuggestCauses);
 
 router.get("/repair-history", taskAssignment.getRepairHistory);
 router.get("/repair-history/search", taskAssignment.searchRepairHistory);
+router.post("/repair-history/smart-search", taskAssignment.searchRepairHistorySmart);
 router.get("/repair-history/filter", taskAssignment.filterRepairHistory);
 
 router.get("/inspection-history", taskAssignment.getAllInspectionHistory);
@@ -36,6 +31,7 @@ router.get("/inspection-history/search", taskAssignment.searchInspectionHistory)
 router.get("/inspection-history/filter", taskAssignment.filterInspectionHistory);
 
 router.get("/completed-tasks", taskAssignment.getMyCompletedTasks);
+router.get("/issues", taskAssignment.getIssuesReportHistory);
 
 router.get("/notifications", notificationController.getNotifications);
 router.get("/notifications/unread-count", notificationController.getUnreadCount);

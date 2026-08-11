@@ -54,7 +54,7 @@ module.exports = [
     prefix: "/api/receptionist",
     middlewares: [
       checkClient.authenticate,
-      checkClient.authorizeRoles(ROLES.RECEPTIONIST),
+      checkClient.authorizeRoles(ROLES.RECEPTIONIST, ROLES.TECHNICIAN_LEADER),
     ],
     router: receptionistRoutes,
   },

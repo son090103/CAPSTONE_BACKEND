@@ -14,12 +14,6 @@ module.exports = (sequelize, DataTypes) => {
           as: "customerProfile",
         });
       }
-      if (models.Tool_History) {
-        User.hasMany(models.Tool_History, {
-          foreignKey: "technician_id",
-          as: "operatedTools",
-        });
-      }
       if (models.Inventory_Logs) {
         User.hasMany(models.Inventory_Logs, {
           foreignKey: "manager_id",

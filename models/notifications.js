@@ -56,10 +56,6 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING(255),
       allowNull: true
     },
-    metadata: {
-      type: DataTypes.JSON,
-      allowNull: true
-    },
     isRead: {
       type: DataTypes.BOOLEAN,
       defaultValue: false,

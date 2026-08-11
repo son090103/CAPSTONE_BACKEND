@@ -24,27 +24,47 @@ const Vehicle_Components = db.Vehicle_Components;
 const Vehicle_Issues = db.Vehicle_Issues;
 
 module.exports.createServiceOrder = async (data, receptionistId) => {
+  if (!data.symptoms || !data.symptoms.trim()) {
+    throw {
+      status: 400,
+      message: "Vui lòng ghi mô tả tình trạng xe lúc tiếp nhận.",
+    };
+  }
+
   const transaction = await db.sequelize.transaction();
 
   try {
     let actualVehicleId = data.vehicle_id;
     let actualAppointmentId = data.appointment_id;
+    // Chỉ appointment_id có sẵn từ trước mới đại diện cho một lịch đã giữ chỗ.
+    // Appointment được tự tạo trong chính request này vẫn là lượt đến trực tiếp.
+    const hasReservedAppointment = Boolean(data.appointment_id);
 
     // Xử lý khách vãng lai nếu không có vehicle_id
     if (!actualVehicleId && data.walk_in) {
       let phoneToUse = data.walk_in.customer_phone;
 
-      // 1. Tạo hoặc lấy Customer
-      let [customer] = await db.Customers.findOrCreate({
+      // SĐT đã có khách hàng trong hệ thống — không âm thầm dùng lại/ghi đè tên, bắt lễ tân
+      // chuyển qua chọn khách hàng có sẵn (tránh lưu nhầm tên khác cho cùng 1 khách).
+      const existingCustomer = await db.Customers.findOne({
         where: { phone: phoneToUse },
-        defaults: {
-          user_id: null,
-          name: data.walk_in.customer_name || null,
-          membership_tier: "BRONZE",
-          loyalty_points: 0,
-        },
         transaction,
       });
+      if (existingCustomer) {
+        throw {
+          status: 409,
+          message: `Số điện thoại này đã thuộc về khách hàng "${existingCustomer.name || 'chưa rõ tên'}" trong hệ thống. Vui lòng chọn khách hàng có sẵn thay vì tạo mới.`,
+        };
+      }
+
+      // 1. Tạo Customer mới
+      let customer = await db.Customers.create({
+        phone: phoneToUse,
+        user_id: null,
+        name: data.walk_in.customer_name || null,
+        membership_tier: "BRONZE",
+        loyalty_points: 0,
+      }, { transaction });
 
       // 2. Lấy hoặc tạo Brand (Make)
       let [make] = await db.Vehicle_Makes.findOrCreate({
@@ -101,16 +121,12 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       const customerId = vehicle.customer_id;
 
       // Tự động phân loại: nếu có chọn sẵn dịch vụ/combo thì là SPECIFIC, ngược lại là REPAIR
-      let autoBookingType = data.walk_in
-        ? "WALK_IN_REPAIR"
-        : "RECEPTIONIST_REPAIR";
+      let autoBookingType = "WALK_IN_REPAIR";
       if (
         (data.service_ids && data.service_ids.length > 0) ||
         (data.combo_ids && data.combo_ids.length > 0)
       ) {
-        autoBookingType = data.walk_in
-          ? "WALK_IN_SPECIFIC"
-          : "RECEPTIONIST_SPECIFIC";
+        autoBookingType = "WALK_IN_SPECIFIC";
       }
 
       // Tạo Appointment cho khách đến trực tiếp
@@ -145,6 +161,137 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         }));
         await db.Appointment_Details.bulkCreate(comboDetails, { transaction });
       }
+    } else {
+      const appointment = await db.Appointments.findByPk(actualAppointmentId, { transaction });
+      if (appointment) {
+        currentBookingType = appointment.booking_type || "WALK_IN";
+      }
+    }
+
+    // Khách vãng lai vẫn được tiếp nhận khi công suất đã được lịch hẹn đặt trước giữ chỗ,
+    // nhưng lệnh dịch vụ phải vào hàng chờ và tuyệt đối chưa được chiếm cầu nâng.
+    // Lịch đặt trước không đi qua nhánh WALK nên vẫn được phân cầu bình thường khi tạo lệnh.
+    let mustWaitForReservedBay = false;
+    let calculatedWalkInFinishTime = null;
+
+    // Kiểm tra công suất đối với khách vãng lai (Walk-in)
+    const isWalkIn = !hasReservedAppointment || (currentBookingType && currentBookingType.includes("WALK"));
+    if (isWalkIn) {
+      // Calculate estimated duration
+      let totalDurationMinutes = 0;
+      if (data.service_ids && data.service_ids.length > 0) {
+        const catalogs = await db.Service_Catalog.findAll({
+          where: { id: { [Op.in]: data.service_ids } },
+          transaction,
+        });
+        catalogs.forEach((c) => {
+          totalDurationMinutes += parseInt(c.estimated_duration || 30, 10);
+        });
+      }
+      if (data.combo_ids && data.combo_ids.length > 0) {
+        const comboCatalogs = await db.Service_Combo_Catalogs.findAll({
+          where: { combo_id: { [Op.in]: data.combo_ids } },
+          include: [{ model: db.Service_Catalog, as: "catalog" }],
+          transaction,
+        });
+        comboCatalogs.forEach((cc) => {
+          totalDurationMinutes += parseInt(cc.catalog?.estimated_duration || 30, 10);
+        });
+      }
+      if (totalDurationMinutes === 0) {
+        const config = await db.Garage_Configurations.findOne({
+          where: { config_key: "DEFAULT_DIAGNOSIS_MINUTES" },
+          transaction,
+        });
+        totalDurationMinutes = config && !isNaN(parseInt(config.config_value, 10))
+          ? parseInt(config.config_value, 10)
+          : 60;
+      }
+
+      const entryTime = new Date();
+      const estimatedFinishTime = new Date(entryTime.getTime() + totalDurationMinutes * 60 * 1000);
+      calculatedWalkInFinishTime = estimatedFinishTime;
+
+      const getGarageCapacity = require("../../util/getGarageCapacity.util");
+      const capacityData = await getGarageCapacity();
+      const capacity = capacityData.maxCapacity;
+
+      const startOfDay = new Date(entryTime);
+      startOfDay.setUTCHours(0,0,0,0);
+      const endOfDay = new Date(entryTime);
+      endOfDay.setUTCHours(23,59,59,999);
+
+      const appointments = await db.Appointments.findAll({
+        where: {
+          scheduled_time: { [Op.between]: [startOfDay, endOfDay] },
+          booking_type: { [Op.notLike]: '%WALK%' },
+          status: { [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECEIVED'] },
+          id: { [Op.ne]: actualAppointmentId || 0 }
+        },
+        include: [{ model: db.Appointment_Details, as: 'appointmentDetails' }],
+        transaction
+      });
+
+      const activeOrders = await db.Service_Orders.findAll({
+        where: {
+          status: { [Op.in]: ['INSPECTING', 'IN_PROGRESS', 'WAITING_FOR_PARTS'] },
+          bay_status: 'ASSIGNED',
+          bay_id: { [Op.ne]: null },
+          estimated_finish_time: { [Op.ne]: null, [Op.gt]: startOfDay },
+          entry_time: { [Op.lt]: endOfDay }
+        },
+        transaction
+      });
+
+      const { calculateAppointmentTime } = require("../../util/calculateAppointmentTime.util");
+
+      const bookedCounts = {};
+      const getOccupiedHours = (startTime, endTime) => {
+        if (endTime <= startOfDay || startTime >= endOfDay) return [];
+        const effectiveStart = startTime < startOfDay ? startOfDay : startTime;
+        const effectiveEnd = endTime > endOfDay ? endOfDay : endTime;
+        const startHour = effectiveStart.getUTCHours();
+        let endHour = effectiveEnd.getUTCHours();
+        if (effectiveEnd.getMinutes() === 0 && effectiveEnd.getSeconds() === 0 && endHour > startHour) {
+          endHour -= 1;
+        }
+        const hours = [];
+        for (let h = startHour; h <= endHour; h++) {
+          hours.push(h);
+        }
+        return hours;
+      };
+
+      await Promise.all(appointments.map(async (app) => {
+        const timeStart = app.scheduled_time;
+        const { endTime } = await calculateAppointmentTime(app.appointmentDetails, timeStart);
+        const occupiedHours = getOccupiedHours(timeStart, endTime);
+        occupiedHours.forEach(h => {
+          bookedCounts[h] = (bookedCounts[h] || 0) + 1;
+        });
+      }));
+
+      activeOrders.forEach(order => {
+        const occupiedHours = getOccupiedHours(order.entry_time, order.estimated_finish_time);
+        occupiedHours.forEach(h => {
+          bookedCounts[h] = (bookedCounts[h] || 0) + 1;
+        });
+      });
+
+      // Luôn bảo vệ tối thiểu 60 phút lịch sắp tới. Ví dụ xe vãng lai đến 09:45
+      // thì các lịch 10:00 vẫn phải được giữ cầu, kể cả dịch vụ walk-in rất ngắn.
+      const minimumReservationHorizon = new Date(entryTime.getTime() + 60 * 60 * 1000);
+      const reservationCheckEndTime = estimatedFinishTime > minimumReservationHorizon
+        ? estimatedFinishTime
+        : minimumReservationHorizon;
+      const protectedWalkInHours = getOccupiedHours(entryTime, reservationCheckEndTime);
+      for (const h of protectedWalkInHours) {
+        const currentCount = bookedCounts[h] || 0;
+        if (currentCount >= capacity) {
+          mustWaitForReservedBay = true;
+          break;
+        }
+      }
     }
 
     // 2. Xác định Service_Order này có cần cầu nâng hay không, dựa trên các dịch vụ đã chọn
@@ -172,11 +319,16 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
     // 3. Kiểm tra cầu nâng tồn tại (nếu có chọn), hoặc tự phân bổ nếu không.
     // Nguồn sự thật duy nhất về cầu nâng đang bận/rảnh là Service_Bays.status/current_service_order_id
     // (không tự đếm lại qua Service_Orders nữa).
-    let bayIdToUse = needsBay ? data.bay_id : null;
+    // Khi công suất đã được lịch đặt trước giữ chỗ, bỏ qua cả cầu do client gửi lên.
+    // Xe được tạo lệnh với bay_status=WAITING và sẽ được assignQueuedOrders xử lý sau.
+    let bayIdToUse = needsBay && !mustWaitForReservedBay ? data.bay_id : null;
     let forceAutoAssign = false;
 
     if (needsBay && bayIdToUse) {
-      const bay = await db.Service_Bays.findByPk(bayIdToUse, { transaction });
+      const bay = await db.Service_Bays.findByPk(bayIdToUse, {
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
       if (!bay) {
         throw { status: 404, message: "Cầu nâng không tồn tại" };
       }
@@ -187,11 +339,13 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       }
     }
 
-    if (needsBay && (!bayIdToUse || forceAutoAssign)) {
+    if (needsBay && !mustWaitForReservedBay && (!bayIdToUse || forceAutoAssign)) {
       const freeBay = await db.Service_Bays.findOne({
         where: { is_active: true, status: "available" },
         order: [["id", "ASC"]],
         transaction,
+        lock: transaction.LOCK.UPDATE,
+        skipLocked: true,
       });
       bayIdToUse = freeBay ? freeBay.id : null;
     }
@@ -233,7 +387,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
     // Tính toán lại estimated_finish_time nếu là Sửa chữa (REPAIR)
     let estimatedFinishTime = data.estimated_finish_time
       ? new Date(data.estimated_finish_time)
-      : null;
+      : calculatedWalkInFinishTime;
 
     if (currentBookingType.includes("REPAIR")) {
       const config = await db.Garage_Configurations.findOne({
@@ -259,7 +413,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         status: "INSPECTING",
         entry_time: new Date(),
         estimated_finish_time: estimatedFinishTime,
-        symptoms: data.symptoms || "Chưa cập nhật", // Lưu tình trạng xe lúc tiếp nhận
+        symptoms: data.symptoms.trim(), // Lưu tình trạng xe lúc tiếp nhận — bắt buộc, đã validate ở đầu hàm
       },
       { transaction },
     );
@@ -271,16 +425,32 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       );
     }
 
-    // Cập nhật trạng thái Cứu hộ và gắn appointment_id nếu có mã rescue_id được truyền vào
-    if (data.rescue_id) {
-      const rescueRequest = await db.Rescue_Requests.findByPk(data.rescue_id, { transaction });
-      if (rescueRequest) {
-        rescueRequest.appointment_id = actualAppointmentId;
-        if (rescueRequest.status === 'COMPLETED') {
-          rescueRequest.status = 'SERVICE_CREATED';
-        }
-        await rescueRequest.save({ transaction });
+    // Rescue chỉ hoàn tất quy trình khi kỹ thuật trưởng tạo Service Order từ phiếu tiếp nhận.
+    const rescueRequest = data.rescue_id
+      ? await db.Rescue_Requests.findByPk(data.rescue_id, { transaction, lock: transaction.LOCK.UPDATE })
+      : await db.Rescue_Requests.findOne({
+          where: { appointment_id: actualAppointmentId },
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+    if (rescueRequest) {
+      if (rescueRequest.status !== 'COMPLETED') {
+        throw { status: 400, message: "Yêu cầu cứu hộ không ở trạng thái chờ tạo lệnh dịch vụ" };
       }
+      if (rescueRequest.appointment_id && rescueRequest.appointment_id !== actualAppointmentId) {
+        throw { status: 400, message: "Yêu cầu cứu hộ đã liên kết với phiếu tiếp nhận khác" };
+      }
+      rescueRequest.appointment_id = actualAppointmentId;
+      rescueRequest.status = 'SERVICE_CREATED';
+      await rescueRequest.save({ transaction });
+    }
+
+    // Cập nhật trạng thái Lịch hẹn đã tiếp nhận thành IN_PROGRESS
+    if (actualAppointmentId) {
+      await db.Appointments.update(
+        { status: 'IN_PROGRESS' },
+        { where: { id: actualAppointmentId }, transaction }
+      );
     }
 
     //  const techRole = await db.Role.findOne({ where: { roleCode: 'TECHNICIAN' }, transaction });
@@ -777,6 +947,11 @@ module.exports.getServiceOrderById = async (id) => {
                 model: db.Service_Catalog,
                 as: "service_catalog",
                 attributes: ["id", "service_name"],
+              },
+              {
+                model: db.Custom_Part_Orders,
+                as: "customPartOrder",
+                attributes: ["id", "item_name", "quantity", "unit_price", "status"],
               }
             ]
           },
@@ -828,6 +1003,11 @@ module.exports.getServiceOrderById = async (id) => {
             model: db.Service_Catalog,
             as: "service_catalog",
             attributes: ["id", "service_name", "labor_price"],
+          },
+          {
+            model: db.Custom_Part_Orders,
+            as: "customPartOrder",
+            attributes: ["id", "item_name", "quantity", "unit_price", "status"],
           }
         ]
       }]

@@ -61,7 +61,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     scheduled_time: {
       type: DataTypes.DATE,
-      allowNull: false // FIX: Ngày giờ hẹn bắt buộc phải có
+      allowNull: true
     },
     notes: {
       type: DataTypes.TEXT,
@@ -76,6 +76,11 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING(50),
       allowNull: false,
       defaultValue: 'CONFIRMED' // FIX: Mặc định tạo lịch xong sẽ ở trạng thái CONFIRMED
+    },
+    priority_type: {
+      type: DataTypes.STRING(50),
+      allowNull: false,
+      defaultValue: 'NORMAL'
     }
   }, {
     sequelize,

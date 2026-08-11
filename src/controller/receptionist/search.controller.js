@@ -7,12 +7,14 @@ module.exports.getCustomerInfoByPhone = async (req, res) => {
             return res.status(401).json({ message: "Unauthorized" });
         }
 
-        const { phone } = req.body;
+        const { phone, partial = false } = req.body;
         if (!phone) {
             return res.status(400).json({ success: false, message: "Vui lòng cung cấp số điện thoại" });
         }
 
-        const result = await searchService.getCustomerInfoByPhone(phone);
+        const result = partial
+            ? await searchService.getCustomerInfoByPhone(phone, true)
+            : await searchService.getCustomerInfoByPhone(phone);
         return res.status(200).json({
             success: true,
             message: "Lấy thông tin khách hàng thành công",

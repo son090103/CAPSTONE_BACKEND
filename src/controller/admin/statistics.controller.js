@@ -14,7 +14,13 @@ module.exports.getDashboardStats = async (req, res) => {
 module.exports.getAdvancedStats = async (req, res) => {
   try {
     const generateAi = req.query.generateAi === 'true';
-    const result = await statisticsService.getAdvancedAnalysisStats({ generateAi });
+    const { timeframe, startDate, endDate } = req.query;
+    const result = await statisticsService.getAdvancedAnalysisStats({
+      generateAi,
+      timeframe,
+      startDate,
+      endDate
+    });
     if (!result) {
       return res.status(404).json({ success: false, message: "Chưa có báo cáo phân tích nâng cao. Vui lòng chạy file Python trước." });
     }

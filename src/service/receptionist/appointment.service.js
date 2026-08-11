@@ -64,10 +64,10 @@ module.exports.getAppointment = async () => {
             {
                 model: db.Service_Orders,
                 as: 'serviceOrder',
-                attributes: ['id', 'current_odo']
+                attributes: ['id', 'current_odo', 'bay_id', 'bay_status']
             }
         ],
-        order: [['scheduled_time', 'DESC']]
+        order: [[db.Sequelize.literal('COALESCE("Appointments"."scheduled_time", "Appointments"."created_at")'), 'ASC']]
     });
 
     return appointments;
@@ -112,7 +112,7 @@ module.exports.getCustomer = async (searchParams = "") => {
         });
 
         const registeredCustomers = customers.filter(c => c.user_id !== null);
-        
+
         // Tìm các cuốc cứu hộ chưa được liên kết customer_id (dữ liệu cũ hoặc chưa tạo kịp hồ sơ)
         let unlinkedWhere = { customer_id: null };
         if (searchParams) {
@@ -335,16 +335,26 @@ module.exports.createAppointmentForCustomer = async (data, receptionistId) => {
                 throw { status: 400, message: "Vui lòng nhập số điện thoại khách hàng" };
             }
 
-            [customer] = await db.Customers.findOrCreate({
+            // SĐT đã có khách hàng trong hệ thống — không âm thầm dùng lại/ghi đè tên, bắt lễ tân
+            // chuyển qua chọn khách hàng có sẵn (tránh lưu nhầm tên khác cho cùng 1 khách).
+            const existingCustomer = await db.Customers.findOne({
                 where: { phone: phoneToUse },
-                defaults: {
-                    user_id: null,
-                    name: data.walk_in.customer_name || null,
-                    membership_tier: "BRONZE",
-                    loyalty_points: 0,
-                },
                 transaction,
             });
+            if (existingCustomer) {
+                throw {
+                    status: 409,
+                    message: `Số điện thoại này đã thuộc về khách hàng "${existingCustomer.name || 'chưa rõ tên'}" trong hệ thống. Vui lòng chọn khách hàng có sẵn thay vì tạo mới.`,
+                };
+            }
+
+            customer = await db.Customers.create({
+                phone: phoneToUse,
+                user_id: null,
+                name: data.walk_in.customer_name || null,
+                membership_tier: "BRONZE",
+                loyalty_points: 0,
+            }, { transaction });
 
             let [make] = await db.Vehicle_Makes.findOrCreate({
                 where: { make_name: data.walk_in.brand_name || 'Khác' },
@@ -416,7 +426,7 @@ module.exports.createAppointmentForCustomer = async (data, receptionistId) => {
     }
 };
 
-module.exports.receiveAppointment = async (key, receptionCondition) => {
+module.exports.receiveAppointment = async (key, status) => {
     const appointment = await db.Appointments.findByPk(key);
     if (!appointment) {
         throw { status: 404, message: "Lịch hẹn không tồn tại" };
@@ -426,10 +436,7 @@ module.exports.receiveAppointment = async (key, receptionCondition) => {
         throw { status: 400, message: "Lịch hẹn này đã được tiếp nhận hoặc đã hủy, không thể tiếp nhận lại." };
     }
 
-    appointment.status = 'IN_PROGRESS';
-    if (receptionCondition && receptionCondition.trim()) {
-        appointment.reception_condition = receptionCondition.trim();
-    }
+    appointment.status = 'INFORMATION_RECEIVED';
     await appointment.save();
     return appointment;
 };
@@ -489,3 +496,225 @@ module.exports.checkVehicleInfo = async (appointmentId) => {
     };
 };
 
+module.exports.createWalkInTicket = async (data, receptionistId) => {
+    const allDetails = [];
+    if (data.service_ids && data.service_ids.length > 0) {
+        for (const id of data.service_ids) {
+            allDetails.push({ catalog_id: id });
+        }
+    }
+    if (data.combo_ids && data.combo_ids.length > 0) {
+        for (const id of data.combo_ids) {
+            allDetails.push({ combo_id: id });
+        }
+    }
+
+    if (allDetails.length === 0) {
+        const freeCheckupService = await db.Service_Catalog.findOne({
+            where: { labor_price: 0, is_active: true }
+        });
+        if (freeCheckupService) {
+            allDetails.push({ catalog_id: freeCheckupService.id });
+        } else {
+            throw { status: 400, message: "Vui lòng chọn ít nhất 1 dịch vụ hoặc combo" };
+        }
+    }
+
+    for (const detail of allDetails) {
+        if (detail.catalog_id) {
+            const catalog = await db.Service_Catalog.findByPk(detail.catalog_id);
+            if (!catalog) {
+                throw { status: 400, message: `Dịch vụ lẻ với ID ${detail.catalog_id} không tồn tại` };
+            }
+        }
+        if (detail.combo_id) {
+            const combo = await db.Service_Combo.findByPk(detail.combo_id);
+            if (!combo) {
+                throw { status: 400, message: `Gói dịch vụ (combo) với ID ${detail.combo_id} không tồn tại` };
+            }
+        }
+    }
+
+    const transaction = await db.sequelize.transaction();
+    try {
+        let customer;
+        let resolvedVehicleId = data.vehicle_id || null;
+        let rescueRequest = null;
+
+        if (data.rescue_id) {
+            rescueRequest = await db.Rescue_Requests.findByPk(data.rescue_id, {
+                transaction,
+                lock: transaction.LOCK.UPDATE
+            });
+            if (!rescueRequest) {
+                throw { status: 404, message: "Không tìm thấy yêu cầu cứu hộ" };
+            }
+            if (rescueRequest.status !== 'COMPLETED') {
+                throw { status: 400, message: "Xe cứu hộ chưa được đưa về gara hoặc đã được tiếp nhận" };
+            }
+            if (rescueRequest.appointment_id) {
+                throw { status: 400, message: "Yêu cầu cứu hộ này đã có phiếu tiếp nhận" };
+            }
+        }
+
+        if (resolvedVehicleId) {
+            // Khách hàng cũ, xe đã có sẵn trong hệ thống
+            const vehicle = await db.Vehicles.findByPk(resolvedVehicleId, { transaction });
+            if (!vehicle) {
+                throw { status: 400, message: "Xe không tồn tại" };
+            }
+            customer = await db.Customers.findByPk(vehicle.customer_id, { transaction });
+            if (!customer) {
+                throw { status: 400, message: "Khách hàng không tồn tại" };
+            }
+            if (rescueRequest?.customer_id && rescueRequest.customer_id !== customer.id) {
+                throw { status: 400, message: "Xe không thuộc khách hàng của yêu cầu cứu hộ" };
+            }
+
+            const activeAppointment = await db.Appointments.findOne({
+                where: {
+                    vehicle_id: resolvedVehicleId,
+                    status: {
+                        [db.Sequelize.Op.in]: [
+                            'PENDING',
+                            'CONFIRMED',
+                            'INFORMATION_RECEIVED'
+                        ]
+                    }
+                },
+                transaction
+            });
+            if (activeAppointment) {
+                const isReceived = activeAppointment.status === 'INFORMATION_RECEIVED';
+                throw {
+                    status: 400,
+                    message: isReceived
+                        ? "Xe đã được tiếp nhận tại gara, không thể đặt thêm lịch"
+                        : "Xe đang có lịch hẹn chờ xử lý, không thể đặt thêm lịch"
+                };
+            }
+
+            const activeServiceOrder = await db.Service_Orders.findOne({
+                where: {
+                    vehicle_id: resolvedVehicleId,
+                    status: {
+                        [db.Sequelize.Op.notIn]: ['COMPLETED', 'CANCELLED', 'PAID']
+                    }
+                },
+                transaction
+            });
+            if (activeServiceOrder) {
+                throw { status: 400, message: "Xe đang ở trong gara, không thể đặt thêm lịch" };
+            }
+        } else if (data.walk_in) {
+            // Khách hàng mới hoặc xe mới
+            const phoneToUse = data.walk_in.customer_phone;
+            if (!phoneToUse) {
+                throw { status: 400, message: "Vui lòng nhập số điện thoại khách hàng" };
+            }
+
+            // SĐT đã có khách hàng trong hệ thống — không âm thầm dùng lại/ghi đè tên, bắt lễ tân
+            // chuyển qua chọn khách hàng có sẵn (tránh lưu nhầm tên khác cho cùng 1 khách).
+            const existingCustomer = await db.Customers.findOne({
+                where: { phone: phoneToUse },
+                transaction,
+            });
+            if (existingCustomer) {
+                throw {
+                    status: 409,
+                    message: `Số điện thoại này đã thuộc về khách hàng "${existingCustomer.name || 'chưa rõ tên'}" trong hệ thống. Vui lòng chọn khách hàng có sẵn thay vì tạo mới.`,
+                };
+            }
+
+            customer = await db.Customers.create({
+                phone: phoneToUse,
+                user_id: null,
+                name: data.walk_in.customer_name || null,
+                membership_tier: "BRONZE",
+                loyalty_points: 0,
+            }, { transaction });
+
+            let [make] = await db.Vehicle_Makes.findOrCreate({
+                where: { make_name: data.walk_in.brand_name || 'Khác' },
+                transaction,
+            });
+
+            let [model] = await db.Vehicle_Models.findOrCreate({
+                where: {
+                    model_name: data.walk_in.model_name || 'Khác',
+                    make_id: make.id,
+                },
+                defaults: { vehicle_type: 'Sedan' },
+                transaction,
+            });
+
+            let plateToUse = data.walk_in.vehicle_plate;
+            if (!plateToUse) {
+                throw { status: 400, message: "Vui lòng nhập biển số xe" };
+            }
+            plateToUse = plateToUse.trim().toUpperCase();
+
+            const yearVal = data.walk_in.vehicle_year
+                ? Number(data.walk_in.vehicle_year)
+                : new Date().getFullYear();
+
+            let [vehicleRecord] = await db.Vehicles.findOrCreate({
+                where: { license_plate: plateToUse },
+                defaults: {
+                    customer_id: customer.id,
+                    model_id: model.id,
+                    year: yearVal,
+                    color: data.walk_in.vehicle_color || null,
+                    avg_daily_mileage: 0,
+                },
+                transaction,
+            });
+
+            resolvedVehicleId = vehicleRecord.id;
+        } else {
+            throw { status: 400, message: "Vui lòng chọn xe hoặc nhập thông tin khách hàng mới" };
+        }
+
+        if (rescueRequest) {
+            if (rescueRequest.customer_id && rescueRequest.customer_id !== customer.id) {
+                throw { status: 400, message: "Khách hàng không khớp với yêu cầu cứu hộ" };
+            }
+            if (!rescueRequest.customer_id) {
+                rescueRequest.customer_id = customer.id;
+            }
+        }
+
+        const hasSelectedServices = (data.service_ids && data.service_ids.length > 0) || (data.combo_ids && data.combo_ids.length > 0);
+        const bookingType = data.rescue_id
+            ? (hasSelectedServices ? 'RESCUE_SPECIFIC' : 'RESCUE_REPAIR')
+            : (hasSelectedServices ? 'RECEPTIONIST_SPECIFIC_WALK' : 'RECEPTIONIST_REPAIR_WALK');
+
+        const appointment = await db.Appointments.create({
+            customer_id: customer.id,
+            vehicle_id: resolvedVehicleId,
+            booking_type: bookingType,
+            scheduled_time: null,
+            notes: data.notes || null,
+            status: 'INFORMATION_RECEIVED',
+            priority_type: data.priority_type || 'NORMAL',
+        }, { transaction });
+
+        const detailsToCreate = allDetails.map(d => ({
+            appointment_id: appointment.id,
+            catalog_id: d.catalog_id || null,
+            combo_id: d.combo_id || null,
+        }));
+        await db.Appointment_Details.bulkCreate(detailsToCreate, { transaction });
+
+        if (rescueRequest) {
+            rescueRequest.appointment_id = appointment.id;
+            await rescueRequest.save({ transaction });
+        }
+
+        await transaction.commit();
+        return appointment;
+    } catch (error) {
+        await transaction.rollback();
+        throw error;
+    }
+};

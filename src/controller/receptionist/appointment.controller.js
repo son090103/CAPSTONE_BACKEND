@@ -1,5 +1,6 @@
 const appointmentService = require("../../service/receptionist/appointment.service");
 const { receiveAppointmentSchema, updateVehicleVinSchema } = require("../../validation/receptionist/appointment.validation");
+const { notifyRole } = require("../../util/notification.util");
 
 module.exports.getAppointment = async (req, res) => {
     try {
@@ -95,8 +96,32 @@ module.exports.receiveAppointment = async (req, res) => {
             });
         }
 
-        const { vehicleCondition } = req.body;
-        const result = await appointmentService.receiveAppointment(key, vehicleCondition);
+        const { status } = req.body;
+        const result = await appointmentService.receiveAppointment(key, status);
+        await notifyRole(
+            "TECHNICIAN_LEADER",
+            {
+                title: "Có lịch hẹn vừa được tiếp nhận",
+                content: `Lễ tân vừa tiếp nhận lịch hẹn APT-${String(result.id).padStart(3, "0")}.`,
+                notificationType: "APPOINTMENT",
+                referenceId: result.id,
+                link: "/leader/appointments",
+                priority: "HIGH"
+            },
+            "new_notification",
+            {
+                type: "CUSTOMER_RECEIVED",
+                appointmentId: result.id,
+                message: `Có khách hàng mới vừa được lễ tân tiếp nhận (APT-${String(result.id).padStart(3, "0")}).`
+            }
+        );
+        if (global._io) {
+            global._io.emit("customer_received", {
+                type: "CUSTOMER_RECEIVED",
+                appointmentId: result.id,
+                message: `Có khách hàng mới vừa được lễ tân tiếp nhận (APT-${String(result.id).padStart(3, "0")}).`
+            });
+        }
         return res.status(200).json({
             success: true,
             message: "Tiếp nhận lịch hẹn thành công",
@@ -142,6 +167,7 @@ module.exports.updateVehicleVin = async (req, res) => {
     }
 };
 
+
 module.exports.checkVehicleInfo = async (req, res) => {
     try {
         const requestUser = res.locals.user;
@@ -164,3 +190,47 @@ module.exports.checkVehicleInfo = async (req, res) => {
     }
 };
 
+module.exports.createWalkInTicket = async (req, res) => {
+    try {
+        const requestUser = res.locals.user;
+        if (!requestUser) {
+            return res.status(401).json({ message: "Unauthorized" });
+        }
+
+        const result = await appointmentService.createWalkInTicket(req.body, requestUser.id);
+        await notifyRole(
+            "TECHNICIAN_LEADER",
+            {
+                title: "Có khách hàng vừa được tiếp nhận",
+                content: `Lễ tân vừa tiếp nhận khách đến trực tiếp với mã APT-${String(result.id).padStart(3, "0")}.`,
+                notificationType: "APPOINTMENT",
+                referenceId: result.id,
+                link: "/leader/appointments",
+                priority: "HIGH"
+            },
+            "new_notification",
+            {
+                type: "CUSTOMER_RECEIVED",
+                appointmentId: result.id,
+                message: `Có khách hàng mới vừa được lễ tân tiếp nhận (APT-${String(result.id).padStart(3, "0")}).`
+            }
+        );
+        if (global._io) {
+            global._io.emit("customer_received", {
+                type: "CUSTOMER_RECEIVED",
+                appointmentId: result.id,
+                message: `Có khách hàng mới vừa được lễ tân tiếp nhận (APT-${String(result.id).padStart(3, "0")}).`
+            });
+        }
+        return res.status(201).json({
+            success: true,
+            message: "Tiếp nhận thông tin khách vãng lai thành công",
+            data: result
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error"
+        });
+    }
+};

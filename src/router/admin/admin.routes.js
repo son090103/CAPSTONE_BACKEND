@@ -12,6 +12,7 @@ const excelUpload = require("../../util/excelUpload.util");
 const manageCustomer = require("./../../controller/admin/manageCustomer.controller");
 const shiftController = require('../../controller/admin/shift.controller');
 const statisticsController = require("../../controller/admin/statistics.controller");
+const garageConfigurationsController = require("../../controller/common/garageConfigurations.controller");
 
 router.get("/role", staffController.getRoles);
 router.get("/staff", staffController.getStaffList);
@@ -70,5 +71,8 @@ router.post("/shift/templates/confirm", shiftController.confirmSchedule);
 // Thống kê báo cáo doanh thu
 router.get("/statistics/advanced", statisticsController.getAdvancedStats);
 router.get("/statistics", statisticsController.getDashboardStats);
+
+// Cấu hình chung của garage (vd RESTOCK_DAYS dùng cho đề xuất nhập hàng thông minh)
+router.put("/garage-configurations/:key", garageConfigurationsController.updateConfiguration);
 
 module.exports = router;

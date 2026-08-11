@@ -125,6 +125,7 @@ module.exports.getServiceHistory = async (userId) => {
                 include: [
                   { model: db.Spare_Parts, as: "sparePart", attributes: ["id", "name", "sku"] },
                   { model: db.Service_Catalog, as: "service_catalog", attributes: ["id", "service_name"] },
+                  { model: db.Custom_Part_Orders, as: "customPartOrder", attributes: ["id", "item_name", "status"] },
                 ],
               },
             ],

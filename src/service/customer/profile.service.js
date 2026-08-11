@@ -4,6 +4,34 @@ const { Op } = require("sequelize");
 const { notifyRole, notifyUser } = require("../../util/notification.util");
 const { normalizeVnPhone } = require("../../util/phone.util");
 const bcrypt = require("bcrypt");
+
+module.exports.getActiveRescueTracking = async (userId) => {
+    const customer = await db.Customers.findOne({ where: { user_id: userId } });
+    if (!customer) return null;
+
+    const rescue = await db.Rescue_Requests.findOne({
+        where: {
+            customer_id: customer.id,
+            status: { [Op.in]: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'TOWING'] }
+        },
+        include: [{
+            model: db.User,
+            as: 'technician',
+            attributes: ['id', 'fullName', 'latitude', 'longitude']
+        }],
+        order: [['createdAt', 'DESC']]
+    });
+    if (!rescue) return null;
+
+    return {
+        rescueId: rescue.id,
+        status: rescue.status,
+        customerLat: rescue.customer_lat,
+        customerLng: rescue.customer_lng,
+        technician: rescue.technician || null
+    };
+};
+
 module.exports.getProfile = async (userId) => {
     const user = await User.findOne({
         where: { id: userId },
@@ -158,7 +186,7 @@ module.exports.updateLocation = async (userId, latitude, longitude, contactName,
                     where: {
                         customer_id: customer.id,
                         status: {
-                            [Op.in]: ['PENDING', 'ASSIGNED', 'ACCEPTED', 'EN_ROUTE', 'ARRIVED', 'IN_PROGRESS']
+                            [Op.in]: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'TOWING']
                         }
                     }
                 }
@@ -200,7 +228,22 @@ module.exports.updateLocation = async (userId, latitude, longitude, contactName,
             }, "new_notification", { type: "RESCUE_REQUESTED", rescueId: newRescueId, status: "PENDING" });
         }
 
-        return { message: "Đã bật chia sẻ vị trí và thông báo cho bộ phận Lễ tân thành công" };
+        if (!newRescueId) {
+            const customer = await db.Customers.findOne({ where: { user_id: userId } });
+            const activeRescue = customer ? await db.Rescue_Requests.findOne({
+                where: {
+                    customer_id: customer.id,
+                    status: { [Op.in]: ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'TOWING'] }
+                },
+                order: [['createdAt', 'DESC']]
+            }) : null;
+            newRescueId = activeRescue?.id || null;
+        }
+
+        return {
+            message: "Đã bật chia sẻ vị trí và thông báo cho bộ phận Lễ tân thành công",
+            rescueId: newRescueId
+        };
     }
 
     return { message: "Tắt chia sẻ vị trí thành công" };

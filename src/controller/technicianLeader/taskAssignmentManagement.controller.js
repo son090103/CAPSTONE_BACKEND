@@ -80,3 +80,29 @@ module.exports.getAllTechnician = async (req, res) => {
   }
 };
 
+module.exports.getServiceOrdersWithTasks = async (req, res) => {
+  try {
+    const result = await taskAssignmentService.getServiceOrdersWithTasks();
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.completeTaskByLeader = async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+    const result = await taskAssignmentService.completeTaskByLeader(Number(assignmentId));
+    return res.status(200).json({
+      message: "Đã cập nhật hoàn thành công việc",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+

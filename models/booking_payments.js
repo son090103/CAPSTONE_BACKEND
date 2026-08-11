@@ -39,10 +39,7 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: 'PENDING'
     },
     transaction_code: DataTypes.STRING(100),
-    paid_at: DataTypes.DATE,
-    refund_account: DataTypes.STRING(100),
-    refund_bank: DataTypes.STRING(100),
-    refund_note: DataTypes.TEXT
+    paid_at: DataTypes.DATE
   }, {
     sequelize,
     modelName: 'Booking_Payments',
