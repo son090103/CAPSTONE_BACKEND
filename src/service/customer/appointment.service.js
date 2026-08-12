@@ -212,6 +212,23 @@ module.exports.createAppointment = async (userId, data) => {
         let resolvedVehicleId = data.vehicle_id || null;
 
         if (!resolvedVehicleId && data.vehicle_plate) {
+            const normalizedPlate = data.vehicle_plate.trim().toUpperCase();
+            const duplicateVehicle = await db.Vehicles.findOne({
+                where: db.sequelize.where(
+                    db.sequelize.fn('UPPER', db.sequelize.col('license_plate')),
+                    normalizedPlate
+                ),
+                transaction
+            });
+            if (duplicateVehicle) {
+                throw {
+                    status: 409,
+                    message: duplicateVehicle.customer_id === customer.id
+                        ? `Biển số ${normalizedPlate} đã có trong danh sách xe của anh/chị. Vui lòng chọn xe đã có thay vì thêm xe mới.`
+                        : `Biển số ${normalizedPlate} đã thuộc một tài khoản khác. Vui lòng kiểm tra lại biển số hoặc liên hệ gara để xác minh.`
+                };
+            }
+
             let make = null;
             if (data.vehicle_brand) {
                 const brandName = data.vehicle_brand.trim();
@@ -250,18 +267,14 @@ module.exports.createAppointment = async (userId, data) => {
                 }, { transaction });
             }
 
-            const [vehicle] = await db.Vehicles.findOrCreate({
-                where: { customer_id: customer.id, license_plate: data.vehicle_plate.trim() },
-                defaults: {
-                    customer_id: customer.id,
-                    model_id: model.id,
-                    license_plate: data.vehicle_plate.trim(),
-                    year: data.vehicle_year ? parseInt(data.vehicle_year, 10) : new Date().getFullYear(),
-                    color: data.vehicle_color || null,
-                    avg_daily_mileage: 0.0
-                },
-                transaction
-            });
+            const vehicle = await db.Vehicles.create({
+                customer_id: customer.id,
+                model_id: model.id,
+                license_plate: normalizedPlate,
+                year: data.vehicle_year ? parseInt(data.vehicle_year, 10) : new Date().getFullYear(),
+                color: data.vehicle_color || null,
+                avg_daily_mileage: 0.0
+            }, { transaction });
 
             resolvedVehicleId = vehicle.id;
         } else if (resolvedVehicleId) {

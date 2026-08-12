@@ -1,7 +1,6 @@
 const { GoogleGenAI } = require("@google/genai");
 const vectorStoreService = require('./vectorStore.service');
 const db = require('../../../models');
-const { Op } = require('sequelize');
 const appointmentService = require('../customer/appointment.service');
 const { searchUiWorkflows } = require('./customerUiKnowledge');
 
@@ -15,6 +14,139 @@ const cleanReplyForPlainTextWidget = value => String(value || '')
   .replace(/\n{3,}/g, '\n\n')
   .trim();
 
+const localDateKey = date => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const extractBookingDate = message => {
+  const value = String(message || '').toLowerCase();
+  const relativeDays = /ngày kia|mốt/.test(value) ? 2 : /ngày mai/.test(value) ? 1 : /hôm nay/.test(value) ? 0 : null;
+  if (relativeDays !== null) {
+    const date = new Date();
+    date.setDate(date.getDate() + relativeDays);
+    return localDateKey(date);
+  }
+  const match = value.match(/\b(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{4}))?\b/);
+  if (!match) return '';
+  const year = Number(match[3] || new Date().getFullYear());
+  const month = Number(match[2]);
+  const day = Number(match[1]);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return '';
+  return localDateKey(date);
+};
+
+const extractBookingTime = message => {
+  const match = String(message || '').toLowerCase().match(/\b([01]?\d|2[0-3])\s*(?:h|:|giờ)\s*([0-5]?\d)?\b/);
+  if (!match) return '';
+  return `${String(Number(match[1])).padStart(2, '0')}:${String(Number(match[2] || 0)).padStart(2, '0')}`;
+};
+
+const extractLabeledVehicleInfo = message => {
+  const text = String(message || '').replace(/\s+/g, ' ').trim();
+  const valueAfterLabel = label => text.match(new RegExp(`${label}\\s*:\\s*(.+?)(?=\\s+(?:Biển\\s*số|Hãng\\s*xe|Dòng\\s*xe(?:\\/Model)?|Model|Năm\\s*sản\\s*xuất)\\s*:|$)`, 'i'))?.[1]?.trim() || '';
+  return {
+    plate: (valueAfterLabel('Biển\\s*số') || text.match(/\b\d{2}[A-Z]\d?[-.]?[A-Z0-9.-]{4,12}\b/i)?.[0] || '').toUpperCase(),
+    brand: valueAfterLabel('Hãng\\s*xe'),
+    model: valueAfterLabel('(?:Dòng\\s*xe(?:\\/Model)?|Model)'),
+    year: valueAfterLabel('Năm\\s*sản\\s*xuất').match(/\b(?:19|20)\d{2}\b/)?.[0] || ''
+  };
+};
+
+const toBookingDateTime = (date, time) => new Date(`${date}T${time}:00+07:00`);
+const normalizeSearchText = value => String(value || '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+async function resolveBookingSelection(requested, existingSelection) {
+  if (existingSelection?.type && existingSelection?.id) return existingSelection;
+  const query = normalizeSearchText(requested);
+  if (!query) return null;
+
+  const services = await db.Service_Catalog.findAll({
+    where: { is_active: true },
+    attributes: ['id', 'service_name', 'description', 'estimated_duration', 'labor_price']
+  });
+  const combos = await db.Service_Combo.findAll({
+    where: { is_active: true },
+    attributes: ['id', 'combo_name', 'description', 'discount_percentage'],
+    include: [{ model: db.Service_Catalog, as: 'catalogs', attributes: ['id', 'service_name'], through: { attributes: [] } }]
+  });
+
+  const comboNumber = query.match(/\bcombo\s*(\d+)\b/)?.[1];
+  const rankedCombos = combos.map(combo => {
+    const haystack = normalizeSearchText(`${combo.combo_name} ${combo.description} ${(combo.catalogs || []).map(item => item.service_name).join(' ')}`);
+    const score = query.split(' ').filter(term => term.length > 1 && haystack.includes(term)).length +
+      (comboNumber && normalizeSearchText(combo.combo_name).includes(`combo ${comboNumber}`) ? 20 : 0);
+    return { item: combo, score };
+  }).sort((a, b) => b.score - a.score);
+
+  const explicitlyWantsCombo = /\bcombo\b/.test(query);
+  if (explicitlyWantsCombo && rankedCombos[0]?.score > 0) {
+    const combo = rankedCombos[0].item;
+    return { type: 'combo', id: combo.id, name: combo.combo_name };
+  }
+
+  const rankedServices = services.map(service => {
+    const name = normalizeSearchText(service.service_name);
+    const haystack = normalizeSearchText(`${service.service_name} ${service.description || ''}`);
+    const score = (query.includes(name) ? 20 : 0) + query.split(' ').filter(term => term.length > 1 && haystack.includes(term)).length;
+    return { item: service, score };
+  }).sort((a, b) => b.score - a.score);
+  if (rankedServices[0]?.score > 1) {
+    const service = rankedServices[0].item;
+    return { type: 'service', id: service.id, name: service.service_name };
+  }
+
+  const describesUnknownIssue = /không biết|không rõ|kiểm tra|chẩn đoán|bị|lỗi|hỏng|kêu|rung|khói|kẹt|không nổ|không chạy/.test(query);
+  if (describesUnknownIssue) return { type: 'repair', name: requested };
+  return null;
+}
+
+async function getBookingVehicles(userId) {
+  if (!userId) return [];
+  return appointmentService.getAppointmentVehicles(userId);
+}
+
+async function getAvailableBookingHours(date, selection) {
+  const garageConfigService = require('../common/garage_configurations.service');
+  const { calculateAppointmentTime } = require('../../util/calculateAppointmentTime.util');
+  const availability = await garageConfigService.getAvailability(date);
+  if (!availability || availability.capacity === 0) return [];
+  let details = [];
+  if (selection?.type === 'service') details = [{ catalog_id: selection.id }];
+  if (selection?.type === 'combo') details = [{ combo_id: selection.id }];
+  if (selection?.type === 'repair') {
+    const checkup = await db.Service_Catalog.findOne({ where: { labor_price: 0, is_active: true }, attributes: ['id'] });
+    if (checkup) details = [{ catalog_id: checkup.id }];
+  }
+  const result = [];
+  for (const shift of availability.shifts || []) {
+    const [startHour] = String(shift.start_time).split(':').map(Number);
+    const [endHour] = String(shift.end_time).split(':').map(Number);
+    for (let hour = startHour; hour < endHour; hour += 1) {
+      const start = toBookingDateTime(date, `${String(hour).padStart(2, '0')}:00`);
+      const { endTime } = await calculateAppointmentTime(details, start);
+      const localEndHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', hourCycle: 'h23' }).format(endTime));
+      const startUtcHour = start.getUTCHours();
+      let endUtcHour = endTime.getUTCHours();
+      if (endUtcHour < startUtcHour) endUtcHour += 24;
+      if (endTime.getUTCMinutes() === 0 && endUtcHour > startUtcHour) endUtcHour -= 1;
+      let hasCapacity = localEndHour <= endHour;
+      for (let checkedHour = startUtcHour; hasCapacity && checkedHour <= endUtcHour; checkedHour += 1) {
+        if ((availability.bookedCounts?.[checkedHour % 24] || 0) >= availability.capacity) hasCapacity = false;
+      }
+      if (hasCapacity) {
+        result.push(`${String(hour).padStart(2, '0')}:00`);
+      }
+    }
+  }
+  return result;
+}
+
 // Chatbot dùng SDK mới và Interactions API. Các module Gemini cũ khác trong
 // backend vẫn dùng @google/generative-ai cho đến khi được migrate riêng.
 const genAI = new GoogleGenAI({
@@ -24,12 +156,35 @@ const genAI = new GoogleGenAI({
 const GEMINI_CHAT_MODEL = process.env.GEMINI_CHAT_MODEL || "gemini-3.5-flash";
 
 async function createTextInteraction(input, options = {}) {
-  const interaction = await genAI.interactions.create({
-    model: GEMINI_CHAT_MODEL,
-    input,
-    store: false,
-    ...options,
-  });
+  let interaction;
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      interaction = await genAI.interactions.create({
+        model: GEMINI_CHAT_MODEL,
+        input,
+        store: false,
+        ...options,
+      }, {
+        // @google/genai 2.16 có thể clone lại Request đã consumed khi tự retry,
+        // làm Node/Undici ném TypeError "unusable". Tắt retry nội bộ và tạo
+        // request hoàn toàn mới ở vòng lặp này.
+        retries: { strategy: "none" },
+        timeout_ms: 30_000,
+      });
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message || error?.cause?.message || '');
+      const status = error?.status || error?.statusCode;
+      const transientConnectionError = !status && /connection|network|fetch|socket|timeout|unusable|unexpected http client/i.test(message);
+      const transientServerError = Number(status) >= 500;
+      if (attempt === 1 || (!transientConnectionError && !transientServerError)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  }
+  if (lastError) throw lastError;
 
   if (interaction.status !== "completed") {
     const details = interaction.errors?.map(item => item.message).filter(Boolean).join("; ");
@@ -71,6 +226,22 @@ const intentSchema = {
     query: {
       type: "string",
       description: "Nội dung câu hỏi của khách nếu hỏi thông tin chung (search_service).",
+    },
+    vehiclePlate: {
+      type: "string",
+      description: "Biển số xe khách cung cấp trong luồng thêm xe mới.",
+    },
+    vehicleBrand: {
+      type: "string",
+      description: "Hãng xe khách cung cấp trong luồng thêm xe mới.",
+    },
+    vehicleModel: {
+      type: "string",
+      description: "Dòng xe/model khách cung cấp trong luồng thêm xe mới.",
+    },
+    vehicleYear: {
+      type: "string",
+      description: "Năm sản xuất xe khách cung cấp trong luồng thêm xe mới.",
     }
   },
   required: ["intent"],
@@ -94,7 +265,9 @@ async function analyzeIntentWithGemini(message, context, history = []) {
   0. ƯU TIÊN CAO NHẤT: Nếu khách hỏi cách thao tác trên hệ thống, cách làm, các bước, bấm nút nào, vào trang nào -> intent: "search_service" và giữ nguyên câu hỏi trong field "query". Không phân loại là "book_appointment" chỉ vì câu có từ "đặt lịch".
   1. Nếu ngữ cảnh đang là {"step": "booking_get_phone"}: Hãy tìm số điện thoại. Nếu có SĐT -> intent: "provide_phone". Nếu KHÔNG có SĐT mà khách hỏi câu khác -> intent chuyển sang câu hỏi đó.
   2. Nếu ngữ cảnh đang là {"step": "booking_get_date"}: Lấy ngày giờ -> intent: "provide_date". Field date PHẢI là ISO 8601 có múi giờ +07:00.
+  2b. Nếu ngữ cảnh step là "booking_get_time", khách chỉ cần cung cấp giờ; không hỏi lại ngày đã có trong ngữ cảnh.
   3. Nếu ngữ cảnh đang là {"step": "booking_get_service"}: Lấy thông tin -> intent: "provide_service".
+  3b. Nếu ngữ cảnh step là "booking_get_vehicle", trích xuất các thông tin xe khách vừa cung cấp vào vehiclePlate, vehicleBrand, vehicleModel, vehicleYear. Có thể giữ intent "unknown" nếu khách chỉ cung cấp thông tin xe.
   4. Nếu khách hỏi "lịch rảnh", "giờ trống", "còn trống không", "hôm nay rảnh không" -> intent: "check_schedule".
   5. Nếu khách bảo muốn "đặt lịch", "tạo lịch", "book" -> intent: "book_appointment".
   6. Nếu khách hỏi giá, quy trình, bảo hành, hỏi dịch vụ, hoặc KỂ BỆNH, TÌM NGUYÊN NHÂN LỖI XE -> intent: "search_service", đồng thời điền câu hỏi vào field 'query'.
@@ -117,8 +290,42 @@ async function analyzeIntentWithGemini(message, context, history = []) {
     return parsed;
   } catch (error) {
     console.error("Lỗi gọi Gemini NLU:", error);
-    return { intent: "search_service", query: message };
+    return String(context?.step || '').startsWith('booking_')
+      ? { intent: "unknown", service: message }
+      : { intent: "search_service", query: message };
   }
+}
+
+function formatBookingReply(rawData, nextContext) {
+  if (rawData.status === 'SUCCESS') {
+    const detail = rawData.appointmentDetails || {};
+    const time = detail.date ? new Date(detail.date).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
+    return `Đặt lịch thành công${detail.id ? ` (mã #${detail.id})` : ''}.\n- Xe: ${detail.vehicle || 'đã ghi nhận'}\n- Nội dung: ${detail.selection || 'Kiểm tra và sửa chữa'}\n- Thời gian: ${time}`;
+  }
+  if (rawData.status === 'AUTH_REQUIRED') {
+    return 'Anh/chị vui lòng đăng nhập để tôi đọc danh sách xe, dịch vụ và giờ trống rồi đặt lịch trực tiếp. Các thông tin đã cung cấp vẫn được giữ lại.';
+  }
+  if (rawData.vehicles?.length) {
+    return `Anh/chị chọn xe cần đặt lịch bằng cách gửi biển số:\n${rawData.vehicles.map(vehicle => `- ${vehicle.licensePlate} - ${vehicle.model || 'Chưa rõ model'}`).join('\n')}\n- Hoặc nhắn "Thêm xe mới" nếu muốn dùng xe khác.`;
+  }
+  if (rawData.serviceSuggestions || rawData.comboSuggestions) {
+    const services = (rawData.serviceSuggestions || []).slice(0, 5).map(item => item.service_name).join(', ');
+    const combos = (rawData.comboSuggestions || []).slice(0, 3).map(item => item.combo_name).join(', ');
+    return `Anh/chị muốn chọn dịch vụ/combo hay mô tả lỗi để gara kiểm tra?${services ? `\n- Dịch vụ gợi ý: ${services}` : ''}${combos ? `\n- Combo gợi ý: ${combos}` : ''}\nAnh/chị cũng có thể nhập tên dịch vụ khác đang có trong catalog.`;
+  }
+  if (rawData.availableHours) {
+    return `Các giờ còn nhận xe ngày ${nextContext.bookingDate}:\n- ${rawData.availableHours.slice(0, 10).join(', ')}\nAnh/chị chọn một giờ phù hợp nhé.`;
+  }
+  if (rawData.status === 'ERROR') return rawData.message || 'Không thể tạo lịch. Vui lòng thử lại.';
+  if (nextContext.step === 'booking_get_vehicle') return String(rawData.action || 'Vui lòng cung cấp thông tin xe.').replace(/Chỉ yêu cầu khách/gi, 'Vui lòng').replace(/Tài khoản/g, 'Tài khoản');
+  if (nextContext.step === 'booking_get_service') return 'Anh/chị muốn chọn dịch vụ/combo nào, hoặc hãy mô tả tình trạng xe nếu chưa biết lỗi.';
+  if (nextContext.step === 'booking_get_repair_description') return 'Đã chọn Kiểm tra và sửa chữa. Anh/chị hãy mô tả triệu chứng hoặc tình trạng xe đang gặp phải.';
+  if (nextContext.step === 'booking_get_date') return /đã qua/i.test(rawData.action || '') ? 'Ngày anh/chị chọn đã qua. Vui lòng chọn một ngày trong tương lai.' : 'Anh/chị muốn đặt lịch vào ngày nào?';
+  if (nextContext.step === 'booking_get_time') {
+    const ranges = String(rawData.action || '').match(/\d{2}:\d{2}-\d{2}:\d{2}(?:, \d{2}:\d{2}-\d{2}:\d{2})*/)?.[0];
+    return ranges ? `Giờ đã chọn nằm ngoài ca nhận xe. Vui lòng chọn trong các ca: ${ranges}.` : 'Anh/chị muốn chọn giờ nào?';
+  }
+  return cleanReplyForPlainTextWidget(rawData.message || rawData.action || 'Vui lòng cung cấp thông tin còn thiếu để tiếp tục đặt lịch.');
 }
 
 // ==========================================
@@ -183,7 +390,7 @@ async function handleSearchService(parsed, context, userMessage) {
       currentScreen: context?.currentScreen || 'không xác định',
       responseMode: wantsUiGuide ? 'UI_GUIDE' : 'DIRECT_ANSWER'
     },
-    context: {}
+    context
   };
 }
 
@@ -241,20 +448,185 @@ async function handleCheckSchedule(parsed, context) {
   }
 }
 
-async function handleBookAppointment(parsed, context) {
-  return { rawData: { action: "Bắt đầu đặt lịch và hỏi ngày giờ mong muốn. Khách cần đăng nhập trước khi xác nhận tạo lịch." }, context: { step: "booking_get_date" } };
+async function handleBookingTurn(parsed, context, userMessage, authContext = {}) {
+  const normalizedUserMessage = normalizeSearchText(userMessage);
+  const wantsNewVehicle = Boolean(context.useNewVehicle) || /\b(thêm xe mới|xe mới|xe khác|thêm xe|dùng xe khác)\b/i.test(String(userMessage || ''));
+  const choosesRepairFlow = /\b(mô tả lỗi|không biết lỗi|không rõ lỗi|kiểm tra và sửa chữa|sửa chữa lỗi|để gara kiểm tra|chẩn đoán lỗi)\b/i.test(String(userMessage || ''));
+  // Người dùng có thể đổi ý ở bất kỳ bước nào. Những câu như "à thôi, cho tôi
+  // chọn combo/dịch vụ" phải chuyển nhánh, không được lưu thành mô tả lỗi.
+  const switchesToServiceCatalog = context.step === 'booking_get_repair_description' &&
+    /(?:a\s+thoi|thoi|doi|chuyen|quay lai|muon|cho toi|chon|dat).*(?:dich vu|combo)|(?:dich vu|combo).*(?:khac|thay|chon|dat)/.test(normalizedUserMessage);
+  const catalogIntentRemainder = normalizedUserMessage
+    .replace(/\b(?:a|ah|thoi|toi|em|minh|muon|cho|giup|dat|chon|doi|chuyen|sang|qua|quay|lai|nhe|nha|voi|dich|vu|combo|hoac)\b/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+  const requestsCatalogMenu = switchesToServiceCatalog &&
+    !/\bcombo\s*\d+\b/.test(normalizedUserMessage) &&
+    !catalogIntentRemainder;
+  const isProvidingRepairDescription = context.step === 'booking_get_repair_description' && !switchesToServiceCatalog;
+  const isProvidingServiceChoice = context.step === 'booking_get_service' || switchesToServiceCatalog;
+  const bookingDate = extractBookingDate(userMessage) || context.bookingDate || '';
+  const bookingTime = extractBookingTime(userMessage) || context.bookingTime || '';
+  const requestedService = String(
+    ((isProvidingRepairDescription || isProvidingServiceChoice) ? userMessage : '') || context.requestedService || (choosesRepairFlow ? userMessage : '') || (wantsNewVehicle ? '' : parsed.service) || ''
+  ).trim();
+  const bookingSelection = requestsCatalogMenu
+    ? null
+    : (choosesRepairFlow || isProvidingRepairDescription)
+    ? { type: 'repair', name: '' }
+    : await resolveBookingSelection(requestedService, switchesToServiceCatalog ? null : context.bookingSelection);
+  let nextContext = {
+    ...context,
+    bookingDate,
+    bookingTime,
+    requestedService: requestsCatalogMenu ? '' : requestedService,
+    bookingSelection,
+    ...(switchesToServiceCatalog ? { repairDescription: '' } : {})
+  };
+
+  if (!authContext.userId) {
+    return {
+      rawData: { status: 'AUTH_REQUIRED', action: 'Chỉ yêu cầu khách đăng nhập để chatbot đọc xe, dịch vụ/combo và lịch trống từ hệ thống rồi tiếp tục đặt giúp. Nói rõ thông tin đã nhập vẫn được giữ.' },
+      context: { ...nextContext, step: 'booking_auth_required' }
+    };
+  }
+
+  const vehicles = await getBookingVehicles(authContext.userId);
+  const availableVehicles = vehicles.filter(vehicle => !vehicle.isDisabled);
+  let vehicleId = wantsNewVehicle ? null : (Number(context.vehicleId) || null);
+  const labeledVehicle = extractLabeledVehicleInfo(userMessage);
+  const newVehicle = {
+    plate: String(labeledVehicle.plate || parsed.vehiclePlate || context.newVehicle?.plate || '').trim().toUpperCase(),
+    brand: String(labeledVehicle.brand || parsed.vehicleBrand || context.newVehicle?.brand || '').trim(),
+    model: String(labeledVehicle.model || parsed.vehicleModel || context.newVehicle?.model || '').trim(),
+    year: String(labeledVehicle.year || parsed.vehicleYear || context.newVehicle?.year || '').trim()
+  };
+  if (!vehicleId && !wantsNewVehicle) {
+    const normalizedMessage = normalizeSearchText(userMessage);
+    const matchedVehicle = availableVehicles.find(vehicle => normalizedMessage.includes(normalizeSearchText(vehicle.license_plate)));
+    if (matchedVehicle) vehicleId = matchedVehicle.id;
+    else if (availableVehicles.length === 1) vehicleId = availableVehicles[0].id;
+  }
+  nextContext = { ...nextContext, vehicleId, newVehicle, useNewVehicle: wantsNewVehicle };
+  if (!vehicleId) {
+    if (wantsNewVehicle || !availableVehicles.length) {
+      const missingVehicleFields = [
+        !newVehicle.plate && 'biển số',
+        !newVehicle.brand && 'hãng xe',
+        !newVehicle.model && 'dòng xe/model',
+        !newVehicle.year && 'năm sản xuất'
+      ].filter(Boolean);
+      if (!missingVehicleFields.length) {
+        const year = Number(newVehicle.year);
+        if (!Number.isInteger(year) || year < 1900 || year > new Date().getFullYear() + 1) {
+          return {
+            rawData: { action: `Năm sản xuất không hợp lệ. Chỉ yêu cầu nhập lại năm từ 1900 đến ${new Date().getFullYear() + 1}.` },
+            context: { ...nextContext, newVehicle: { ...newVehicle, year: '' }, step: 'booking_get_vehicle' }
+          };
+        }
+      } else {
+        return {
+          rawData: { action: `${wantsNewVehicle ? 'Đã chọn thêm xe mới.' : 'Tài khoản chưa có xe khả dụng.'} Chỉ yêu cầu khách cung cấp các thông tin xe còn thiếu: ${missingVehicleFields.join(', ')}. Có thể nhập cùng một tin nhắn, ví dụ: 30A-123.45, Toyota, Vios, 2022.` },
+          context: { ...nextContext, step: 'booking_get_vehicle' }
+        };
+      }
+    }
+    if (!wantsNewVehicle && availableVehicles.length) return {
+      rawData: {
+        action: 'Chỉ yêu cầu khách chọn một xe; không hỏi lại dịch vụ hoặc thời gian.',
+        vehicles: availableVehicles.map(vehicle => ({ id: vehicle.id, licensePlate: vehicle.license_plate, model: `${vehicle.model?.make?.make_name || ''} ${vehicle.model?.model_name || ''}`.trim() }))
+      },
+      context: { ...nextContext, step: 'booking_get_vehicle' }
+    };
+  }
+
+  if (!bookingSelection) {
+    return {
+      rawData: {
+        action: 'Chỉ hỏi khách chọn dịch vụ/combo hoặc mô tả tình trạng xe nếu chưa biết lỗi. Đưa vài lựa chọn thật, ngắn gọn và nói rõ khách vẫn có thể nhập tên dịch vụ khác trong catalog.',
+        serviceSuggestions: (await db.Service_Catalog.findAll({ where: { is_active: true }, attributes: ['id', 'service_name'], limit: 6 })).map(item => item.toJSON()),
+        comboSuggestions: (await db.Service_Combo.findAll({ where: { is_active: true }, attributes: ['id', 'combo_name'], limit: 4 })).map(item => item.toJSON())
+      },
+      context: { ...nextContext, step: 'booking_get_service' }
+    };
+  }
+
+  if (bookingSelection.type === 'repair' && !context.repairDescription) {
+    const isOnlyChoosingMode = choosesRepairFlow && normalizeSearchText(userMessage).split(' ').length <= 8;
+    if (isOnlyChoosingMode) {
+      return {
+        rawData: { action: 'Đã chọn Kiểm tra và sửa chữa. Chỉ yêu cầu khách mô tả triệu chứng hoặc tình trạng xe đang gặp phải.' },
+        context: { ...nextContext, requestedService: '', repairDescription: '', step: 'booking_get_repair_description' }
+      };
+    }
+    if (requestedService.length < 5) {
+      return {
+        rawData: { action: 'Mô tả quá ngắn. Chỉ yêu cầu khách mô tả rõ triệu chứng xe đang gặp phải.' },
+        context: { ...nextContext, requestedService: '', repairDescription: '', step: 'booking_get_repair_description' }
+      };
+    }
+    nextContext = { ...nextContext, requestedService, repairDescription: requestedService };
+  }
+
+  if (bookingDate && bookingDate < localDateKey(new Date())) {
+    return {
+      rawData: { action: "Ngày khách chọn đã qua. Chỉ yêu cầu khách chọn một ngày trong tương lai; không hỏi lại dịch vụ hoặc giờ đã có." },
+      context: { ...nextContext, bookingDate: '', step: 'booking_get_date' }
+    };
+  }
+  if (!bookingDate) {
+    return { rawData: { action: "Chỉ hỏi khách muốn đặt vào ngày nào." }, context: { ...nextContext, step: 'booking_get_date' } };
+  }
+  if (!bookingTime) {
+    const availableHours = await getAvailableBookingHours(bookingDate, bookingSelection);
+    if (!availableHours.length) {
+      return {
+        rawData: { action: `Ngày ${bookingDate} hiện không còn giờ nhận xe. Chỉ yêu cầu khách chọn ngày khác; không hỏi lại xe hoặc dịch vụ.` },
+        context: { ...nextContext, bookingDate: '', step: 'booking_get_date' }
+      };
+    }
+    return {
+      rawData: { action: `Đã ghi nhận ngày ${bookingDate}. Chỉ yêu cầu chọn một giờ còn trống; không hỏi lại xe hoặc dịch vụ.`, availableHours },
+      context: { ...nextContext, step: 'booking_get_time' }
+    };
+  }
+
+  const scheduled = toBookingDateTime(bookingDate, bookingTime);
+  if (Number.isNaN(scheduled.getTime()) || scheduled <= new Date()) {
+    return {
+      rawData: { action: "Thời gian khách chọn đã qua. Chỉ yêu cầu chọn thời gian tương lai; không hỏi lại dịch vụ đã có." },
+      context: { ...nextContext, bookingTime: '', step: bookingDate ? 'booking_get_time' : 'booking_get_date' }
+    };
+  }
+  try {
+    const garageConfigService = require('../common/garage_configurations.service');
+    const availability = await garageConfigService.getAvailability(bookingDate);
+    const timeMinutes = Number(bookingTime.slice(0, 2)) * 60 + Number(bookingTime.slice(3, 5));
+    const shifts = Array.isArray(availability?.shifts) ? availability.shifts : [];
+    const isInsideShift = shifts.some(shift => {
+      const [startHour, startMinute] = String(shift.start_time).split(':').map(Number);
+      const [endHour, endMinute] = String(shift.end_time).split(':').map(Number);
+      return timeMinutes >= startHour * 60 + startMinute && timeMinutes < endHour * 60 + endMinute;
+    });
+    if (availability?.capacity === 0 || (shifts.length && !isInsideShift)) {
+      const workingHours = shifts.map(shift => `${String(shift.start_time).slice(0, 5)}-${String(shift.end_time).slice(0, 5)}`).join(', ');
+      return {
+        rawData: { action: `Giờ ${bookingTime} nằm ngoài ca nhận xe. Chỉ báo các ca hợp lệ${workingHours ? `: ${workingHours}` : ''} và yêu cầu khách chọn lại giờ; không hỏi lại ngày hoặc dịch vụ.` },
+        context: { ...nextContext, bookingTime: '', step: 'booking_get_time' }
+      };
+    }
+  } catch (error) {
+    console.error('Lỗi kiểm tra giờ đặt lịch:', error);
+  }
+
+  return handleProvideService({ ...parsed, service: requestedService }, {
+    ...nextContext,
+    step: 'booking_confirming',
+    date: scheduled.toISOString()
+  }, authContext);
 }
 
 async function handleProvidePhone(parsed, context) {
   return { rawData: { action: "Xác nhận đã nhận số điện thoại. Tiếp theo, hãy hỏi khách muốn đặt lịch vào NGÀY, GIỜ nào.", phoneReceived: parsed.phone }, context: { ...context, step: "booking_get_date", phone: parsed.phone } };
-}
-
-async function handleProvideDate(parsed, context) {
-  const scheduled = new Date(parsed.date);
-  if (!parsed.date || Number.isNaN(scheduled.getTime()) || scheduled <= new Date()) {
-    return { rawData: { action: "Thời gian chưa rõ hoặc không nằm trong tương lai. Hãy yêu cầu khách nhập rõ ngày và giờ, ví dụ 09:00 ngày 15/08/2026." }, context: { ...context, step: "booking_get_date" } };
-  }
-  return { rawData: { action: "Xác nhận thời gian và hỏi khách muốn làm dịch vụ gì hoặc xe có triệu chứng gì.", dateReceived: scheduled.toISOString() }, context: { ...context, step: "booking_get_service", date: scheduled.toISOString() } };
 }
 
 async function handleProvideService(parsed, context, authContext = {}) {
@@ -262,39 +634,49 @@ async function handleProvideService(parsed, context, authContext = {}) {
     if (!authContext.userId) {
       return { rawData: { status: 'AUTH_REQUIRED', action: 'Giải thích rằng khách cần đăng nhập để bảo vệ thông tin và xác nhận lịch hẹn; giữ lại ngày và dịch vụ trong phiên chat.' }, context: { ...context, step: 'booking_get_service', requestedService: parsed.service } };
     }
-    const requested = String(parsed.service || '').trim();
-    const terms = requested.split(/\s+/).filter(x => x.length > 2).slice(0, 5);
-    const orConditions = terms.map(term => ({
-      [Op.or]: [
-        { service_name: { [Op.iLike]: `%${term}%` } },
-        { description: { [Op.iLike]: `%${term}%` } }
-      ]
-    }));
-    const matches = await db.Service_Catalog.findAll({
-      where: { is_active: true, ...(orConditions.length ? { [Op.or]: orConditions } : {}) },
-      attributes: ['id', 'service_name'],
-      limit: 3
-    });
-    if (!matches.length) {
+    const requested = String(parsed.service || context.requestedService || '').trim();
+    const selection = context.bookingSelection || await resolveBookingSelection(requested);
+    if (!selection) {
       return { rawData: { status: 'SERVICE_NOT_FOUND', action: 'Chưa khớp được dịch vụ cụ thể. Hãy đưa ra vài tên dịch vụ gần với mô tả và hỏi khách chọn lại.' }, context: { ...context, step: 'booking_get_service' } };
     }
-    const appointment = await appointmentService.createAppointment(authContext.userId, {
-      booking_type: 'CUSTOMER_REPAIR',
+
+    const isRepair = selection.type === 'repair';
+    const appointmentPayload = {
+      vehicle_id: context.vehicleId ? Number(context.vehicleId) : null,
+      booking_type: isRepair ? 'CUSTOMER_REPAIR' : 'CUSTOMER_SPECIFIC',
       scheduled_time: context.date,
-      notes: `Yêu cầu qua chatbot: ${requested}`.slice(0, 1000),
-      service_ids: [matches[0].id]
-    });
+      notes: isRepair ? `Mô tả qua chatbot: ${requested}`.slice(0, 1000) : `Đặt qua chatbot: ${selection.name}`.slice(0, 1000),
+      ...(selection.type === 'service' ? { service_ids: [selection.id] } : {}),
+      ...(selection.type === 'combo' ? { combo_ids: [selection.id] } : {}),
+      ...(!context.vehicleId && context.newVehicle ? {
+        vehicle_plate: context.newVehicle.plate,
+        vehicle_brand: context.newVehicle.brand,
+        vehicle_model: context.newVehicle.model,
+        vehicle_year: context.newVehicle.year
+      } : {})
+    };
+    const appointment = await appointmentService.createAppointment(authContext.userId, appointmentPayload);
     return {
       rawData: { 
         status: "SUCCESS", 
-        action: "Thông báo đặt lịch thành công. Nhân viên sẽ sớm gọi điện xác nhận.",
-        appointmentDetails: { id: appointment.id, date: appointment.scheduled_time, service: matches[0].service_name }
+        action: "Thông báo ngắn gọn rằng lịch đã được tạo thật trên hệ thống. Không hỏi thêm thông tin.",
+        appointmentDetails: {
+          id: appointment.id,
+          date: appointment.scheduled_time,
+          vehicle: appointment.vehicle?.license_plate,
+          selection: selection.name,
+          bookingType: appointment.booking_type
+        }
       },
       context: {}
     };
   } catch (error) {
     console.error("Lỗi tạo lịch hẹn:", error);
-    return { rawData: { status: "ERROR", message: "Lỗi hệ thống khi tạo lịch." }, context: {} };
+    const retryTime = /khung giờ|thời gian trống|lấn giờ/i.test(String(error.message || ''));
+    return {
+      rawData: { status: "ERROR", message: error.message || "Lỗi hệ thống khi tạo lịch.", action: retryTime ? 'Báo giờ vừa chọn không còn đủ chỗ và chỉ yêu cầu chọn giờ khác.' : 'Thông báo đúng lỗi, ngắn gọn.' },
+      context: retryTime ? { ...context, bookingTime: '', step: 'booking_get_time' } : context
+    };
   }
 }
 
@@ -333,6 +715,7 @@ NHIỆM VỤ CỦA BẠN:
 - Luôn trả lời đúng phạm vi câu hỏi. Khách hỏi quy trình thì chỉ nêu quy trình; không tự thêm bảng giá, cách đặt lịch hoặc nội dung quảng cáo. Khách hỏi giá mới báo giá; khách hỏi cách thao tác mới hướng dẫn nút bấm.
 - Nếu responseMode là DIRECT_ANSWER: trả lời thẳng, thông thường 3-5 ý, mỗi ý tối đa 2 dòng và toàn bộ không quá khoảng 130 từ, trừ khi khách yêu cầu chi tiết.
 - Nếu hệ thống yêu cầu "action" (VD: xin số điện thoại, xin ngày), hãy khéo léo hỏi khách.
+- Với mọi lượt trong luồng đặt lịch: trả lời tối đa 2-3 câu ngắn, không lặp lời chào, không nhắc lại dữ liệu đã biết quá một lần và chỉ hỏi đúng một thông tin còn thiếu. Nếu status là AUTH_REQUIRED, chỉ yêu cầu đăng nhập để xác nhận và nói dữ liệu đang được giữ; không hỏi khách có khó khăn khi đăng nhập hay không.
 - [QUAN TRỌNG] Trình bày câu trả lời phải thật ĐẸP dưới dạng văn bản thuần:
   + Dùng dấu xuống dòng (\\n) để chia đoạn văn cho dễ đọc.
   + Nếu liệt kê (giá cả, lịch rảnh, dịch vụ), BẮT BUỘC dùng dấu gạch ngang (-) ở đầu mỗi dòng.
@@ -360,6 +743,10 @@ const generateResponse = async (userMessage, history = [], context = {}, authCon
     // Tầng 1: Đọc Hiểu
     let parsed = await analyzeIntentWithGemini(userMessage, context, history);
 
+    if (!isUiGuidanceQuestion(userMessage) && /\b(đặt lịch|đặt hẹn|book)\b/i.test(userMessage)) {
+      parsed = { ...parsed, intent: 'book_appointment', service: parsed.service || userMessage };
+    }
+
     // Câu hỏi "làm thế nào trên hệ thống" là yêu cầu hướng dẫn giao diện,
     // không phải yêu cầu chatbot tự bắt đầu thu thập ngày/giờ để tạo lịch.
     // Luật xác định này tránh kết quả NLU dao động giữa các lần gọi model.
@@ -367,22 +754,35 @@ const generateResponse = async (userMessage, history = [], context = {}, authCon
       parsed = { ...parsed, intent: "search_service", query: userMessage };
     }
 
+    const isBookingContext = String(context.step || '').startsWith('booking_');
+    const isBookingChoiceResponse = /\b(mô tả lỗi|không biết lỗi|không rõ lỗi|kiểm tra và sửa chữa|sửa chữa lỗi|để gara kiểm tra|chẩn đoán lỗi)\b/i.test(userMessage);
+    const isRepairDescriptionTurn = context.step === 'booking_get_repair_description';
+    const isBookingTurn = !isUiGuidanceQuestion(userMessage) && (
+      ['book_appointment', 'provide_date', 'provide_service'].includes(parsed.intent) ||
+      isRepairDescriptionTurn ||
+      (isBookingContext && (parsed.intent !== 'search_service' || isBookingChoiceResponse))
+    );
+
     // Tầng 2: Đi lấy Raw Data
     let result;
-    switch (parsed.intent) {
+    if (isBookingTurn) {
+      result = await handleBookingTurn(parsed, context, userMessage, authContext);
+    } else switch (parsed.intent) {
       case "greeting": result = await handleGreeting(context); break;
       case "cancel": result = await handleCancel(context); break;
       case "search_service": result = await handleSearchService(parsed, context, userMessage); break;
       case "check_schedule": result = await handleCheckSchedule(parsed, context); break;
-      case "book_appointment": result = await handleBookAppointment(parsed, context); break;
+      case "book_appointment": result = await handleBookingTurn(parsed, context, userMessage, authContext); break;
       case "provide_phone": result = await handleProvidePhone(parsed, context); break;
-      case "provide_date": result = await handleProvideDate(parsed, context); break;
-      case "provide_service": result = await handleProvideService(parsed, context, authContext); break;
+      case "provide_date": result = await handleBookingTurn(parsed, context, userMessage, authContext); break;
+      case "provide_service": result = await handleBookingTurn(parsed, context, userMessage, authContext); break;
       default: result = { rawData: { action: "Em chưa hiểu rõ ý anh/chị. Yêu cầu khách diễn đạt lại rõ hơn." }, context };
     }
 
     // Tầng 3: Nhờ AI vắt óc viết câu trả lời dựa trên Raw Data
-    const finalReply = await generateFinalReplyWithGemini(userMessage, parsed, result.rawData, context, history);
+    const finalReply = isBookingTurn
+      ? formatBookingReply(result.rawData, result.context)
+      : await generateFinalReplyWithGemini(userMessage, parsed, result.rawData, context, history);
 
     return { reply: finalReply, context: result.context };
   } catch (error) {
