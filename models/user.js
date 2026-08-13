@@ -38,6 +38,12 @@ module.exports = (sequelize, DataTypes) => {
           as: 'shiftTemplates'
         });
       }
+      if (models.AI_Analysis_Histories) {
+        User.hasMany(models.AI_Analysis_Histories, {
+          foreignKey: 'created_by',
+          as: 'aiAnalysisHistories',
+        });
+      }
 
    if (models.Task_Assignment) {
         User.hasMany(models.Task_Assignment, {

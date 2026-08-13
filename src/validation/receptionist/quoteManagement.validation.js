@@ -68,20 +68,32 @@ const quotationDetailSchema = z
   });
 
 
-const createQuotationSchema = z.object({
-  task_id: z
-    .number({ error: "Công việc phải là số" })
-    .int("Công việc không hợp lệ")
-    .positive("Công việc không hợp lệ"),
-  items: z
-    .array(quotationDetailSchema)
-    .min(1, "Báo giá phải có ít nhất một dòng"),
-  deposit_amount: z
-    .number({ error: "Tiền cọc phải là số" })
-    .min(0, "Tiền cọc không được âm")
-    .optional(),
-  note: z.string({ error: "Ghi chú phải là chuỗi" }).optional(),
-});
+const createQuotationSchema = z
+  .object({
+    task_id: z
+      .number({ error: "Công việc phải là số" })
+      .int("Công việc không hợp lệ")
+      .positive("Công việc không hợp lệ")
+      .optional(),
+    // Lỗi phát sinh không gắn Task -> chọn thẳng lệnh sửa chữa, backend tự tìm 1 Task làm điểm neo.
+    service_order_id: z
+      .number({ error: "Lệnh sửa chữa phải là số" })
+      .int("Lệnh sửa chữa không hợp lệ")
+      .positive("Lệnh sửa chữa không hợp lệ")
+      .optional(),
+    items: z
+      .array(quotationDetailSchema)
+      .min(1, "Báo giá phải có ít nhất một dòng"),
+    deposit_amount: z
+      .number({ error: "Tiền cọc phải là số" })
+      .min(0, "Tiền cọc không được âm")
+      .optional(),
+    note: z.string({ error: "Ghi chú phải là chuỗi" }).optional(),
+  })
+  .refine((data) => data.task_id != null || data.service_order_id != null, {
+    message: "Vui lòng chọn công việc hoặc lệnh sửa chữa để lập báo giá",
+    path: ["task_id"],
+  });
 
 
 const updateQuotationSchema = z.object({

@@ -46,7 +46,7 @@ module.exports.getReceivedAppointments = async () => {
                     {
                         model: db.Service_Catalog,
                         as: 'catalog',
-                        attributes: ['id', 'service_name', 'estimated_duration', 'description']
+                        attributes: ['id', 'service_name', 'estimated_duration', 'description', 'is_default_inspection_service']
                     },
                     {
                         model: db.Service_Combo,

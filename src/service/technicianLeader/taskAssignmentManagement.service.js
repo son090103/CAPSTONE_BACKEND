@@ -545,3 +545,81 @@ module.exports.completeTaskByLeader = async (taskAssignmentId) => {
   emitProgress(serviceOrderId, { type: "PROGRESS_UPDATED", taskId });
   return taskAssignment;
 };
+
+// Toàn bộ báo cáo lỗi của cả đội KTV (không lọc theo 1 người) — dùng cho màn hình
+// Kỹ thuật viên trưởng xem lại lịch sử báo cáo lỗi đã tạo, giống cấu trúc dữ liệu
+// getIssuesReportHistory bên technician/taskAssignment.service.js nhưng bỏ where
+// technician_id và bổ sung tên KTV thực hiện để Leader biết ai đã báo cáo.
+module.exports.getIssuesReportHistoryForLeader = async () => {
+  const buildVehicleInclude = () => ({
+    model: Vehicles,
+    as: "vehicle",
+    attributes: ["id", "color", "license_plate"],
+    include: [
+      { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+      {
+        model: db.Customers,
+        as: "customer",
+        attributes: ["id", "name", "phone"],
+        include: [{ model: User, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+      },
+    ],
+  });
+
+  const issues = await Vehicle_Issues.findAll({
+    attributes: ["id", "error_description", "note", "createdAt", "service_order_id"],
+    // Issue phải gắn 1 trong 2: Task (luồng cũ qua Task INSPECTION/REPAIR) hoặc service_order_id
+    // trực tiếp (lỗi phát sinh không qua Task — createStandaloneIssueReport).
+    where: {
+      [Op.or]: [{ task_id: { [Op.ne]: null } }, { service_order_id: { [Op.ne]: null } }],
+    },
+    include: [
+      {
+        model: Task,
+        as: "task",
+        attributes: ["id", "status"],
+        required: false,
+        include: [
+          {
+            model: Task_Assignment,
+            as: "assignments",
+            attributes: ["id", "role_in_task"],
+            required: false,
+            include: [{ model: User, as: "technician", attributes: ["id", "fullName"] }],
+          },
+          {
+            model: db.Service_Orders,
+            as: "serviceOrder",
+            attributes: ["id"],
+            include: [buildVehicleInclude()],
+          },
+        ],
+      },
+      {
+        model: db.Service_Orders,
+        as: "serviceOrder",
+        attributes: ["id"],
+        required: false,
+        include: [buildVehicleInclude()],
+      },
+      {
+        model: Vehicle_Components,
+        as: "component",
+        attributes: ["id", "name", "parent_id"],
+        include: [
+          { model: Vehicle_Components, as: "parent", attributes: ["id", "name"] },
+          { model: Vehicle_Components, as: "children", attributes: ["id", "name"] },
+        ],
+      },
+      {
+        model: User,
+        as: "reportedByTechnician",
+        attributes: ["id", "fullName"],
+        required: false,
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+
+  return issues;
+};

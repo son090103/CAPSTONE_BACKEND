@@ -132,6 +132,21 @@ module.exports.updateServiceCatalog = async (req, res) => {
     }
 };
 
+module.exports.setDefaultInspectionService = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await serviceCatalog.setDefaultInspectionService(id);
+        return res.status(200).json({
+            message: "Đã đặt làm dịch vụ kiểm tra mặc định",
+            data: result,
+        });
+    } catch (error) {
+        return res.status(error.status || 500).json({
+            message: error.message || "Internal server error",
+        });
+    }
+};
+
 module.exports.getSparePartsForAdmin = async (req, res) => {
     try {
         const { search, brand, category_id, minPrice, maxPrice, page, limit } = req.query;

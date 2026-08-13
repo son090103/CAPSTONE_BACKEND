@@ -58,6 +58,7 @@ const catalogAttributes = [
   "estimated_duration",
   "labor_price",
   "is_active",
+  "is_default_inspection_service",
 ];
 
 const mapCatalogs = (catalogs) => mapServicePrices(catalogs.map(localizeCatalog));
@@ -107,7 +108,7 @@ module.exports.searchServiceCatalog = async ({
   page = 1,
   limit = 8,
 } = {}) => {
-  const where = { is_active: true };
+  const where = { is_active: true, is_default_inspection_service: { [Op.not]: true } };
   if (categoryId) where.category_id = categoryId;
   if (q) {
     where[Op.or] = [

@@ -372,7 +372,7 @@ module.exports.getServiceCatalog = async (filters = {}) => {
 
   const queryOptions = {
     where: userWhere,
-    attributes: ["id", "category_id", "service_name", "description", "estimated_duration", "labor_price", "spare_part_id", "is_active", "createdAt", "updatedAt"],
+    attributes: ["id", "category_id", "service_name", "description", "estimated_duration", "labor_price", "spare_part_id", "is_active", "is_default_inspection_service", "createdAt", "updatedAt"],
     include: [
       {
         model: Service_Categories,
@@ -427,7 +427,7 @@ module.exports.getServiceCatalog = async (filters = {}) => {
   };
 };
 
-module.exports.updateServiceCatalog = async (service_catalog_id, category_id, service_name, description, estimated_duration, is_active) => {
+module.exports.updateServiceCatalog = async (service_catalog_id, category_id, service_name, description, estimated_duration, is_active, labor_price, spare_part_id) => {
   const category = await Service_Categories.findOne({
     where: { id: category_id },
   });
@@ -450,11 +450,39 @@ module.exports.updateServiceCatalog = async (service_catalog_id, category_id, se
     description,
     estimated_duration,
     is_active,
+    labor_price,
+    spare_part_id: spare_part_id ?? null,
   });
 
   // [Real-time AI Sync] Chạy ngầm đồng bộ lên Pinecone
   syncVectorStoreInBackground();
 
   return serviceCatalog;
+};
+
+// Đánh dấu 1 dịch vụ làm "dịch vụ kiểm tra mặc định" — được hệ thống tự động gắn khi khách đặt
+// lịch "Kiểm tra và sửa chữa lỗi" mà không chọn dịch vụ cụ thể nào. Chỉ được đúng 1 dịch vụ
+// mang cờ này tại 1 thời điểm, nên luôn tắt cờ ở dịch vụ khác trước khi bật ở dịch vụ mới.
+module.exports.setDefaultInspectionService = async (service_catalog_id) => {
+  const serviceCatalog = await Service_Catalog.findByPk(service_catalog_id);
+  if (!serviceCatalog) {
+    throw { status: 404, message: "Dịch vụ không tồn tại" };
+  }
+  if (!serviceCatalog.is_active) {
+    throw { status: 400, message: "Chỉ có thể đặt dịch vụ đang hoạt động làm dịch vụ kiểm tra mặc định" };
+  }
+
+  await db.sequelize.transaction(async (t) => {
+    await Service_Catalog.update(
+      { is_default_inspection_service: false },
+      { where: { is_default_inspection_service: true }, transaction: t },
+    );
+    await Service_Catalog.update(
+      { is_default_inspection_service: true },
+      { where: { id: service_catalog_id }, transaction: t },
+    );
+  });
+
+  return await Service_Catalog.findByPk(service_catalog_id);
 };
 

@@ -61,6 +61,12 @@ module.exports.getActiveTasksForIssueReport = async () => {
         attributes: ["id", "type", "status", "createdAt"],
         include: [
           { model: Service_Catalog, as: "catalog", attributes: ["id", "service_name"] },
+          {
+            model: db.Task_Assignment,
+            as: "assignments",
+            attributes: ["id", "role_in_task"],
+            include: [{ model: Users, as: "technician", attributes: ["id", "fullName"] }],
+          },
         ],
       },
     ],
@@ -118,11 +124,62 @@ module.exports.createIssueReports = async (task_id, issues, note) => {
   return issuesRecords;
 };
 
-// Gộp chung: lỗi từ Task INSPECTION đã hoàn tất (báo giá lần đầu) VÀ lỗi phát sinh từ Task
-// REPAIR (báo giá bổ sung) — hiển thị cùng 1 danh sách duy nhất cho trưởng nhóm lập báo giá.
+// Báo cáo lỗi phát sinh gắn thẳng theo đơn dịch vụ (Service_Order) — không cần chọn Task.
+// Lỗi thuộc về chiếc xe/đơn sửa chữa, không thuộc về "Task đang làm lúc phát hiện" (VD: KTV
+// đang rửa xe phát hiện phanh mòn — lỗi đó không liên quan gì tới Task rửa xe). Không đụng tới
+// Task/bay/status đơn — chỉ thuần tạo Vehicle_Issues để đợt báo giá kế tiếp của đơn này gom vào.
+module.exports.createStandaloneIssueReport = async (service_order_id, issues, note, reported_by_technician_id) => {
+  const serviceOrder = await Service_Order.findByPk(service_order_id, {
+    attributes: ["id", "status"],
+  });
+  if (!serviceOrder) {
+    throw { status: 404, message: "Không tìm thấy lệnh sửa chữa phù hợp để ghi nhận lỗi." };
+  }
+  if (reported_by_technician_id) {
+    const technician = await Users.findByPk(reported_by_technician_id);
+    if (!technician) {
+      throw { status: 404, message: "Không tìm thấy kỹ thuật viên đã chọn." };
+    }
+  }
+  const records = issues.map((item) => ({
+    component_id: item.component_id,
+    service_order_id: service_order_id,
+    error_description: item.description,
+    note: note,
+    reported_by_technician_id: reported_by_technician_id || null,
+  }));
+  return await Issues.bulkCreate(records);
+};
+
+const buildVehicleIncludeForIssue = () => ({
+  model: Vehicles,
+  as: "vehicle",
+  attributes: ["id", "color", "license_plate"],
+  include: [
+    { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+    {
+      model: Customers,
+      as: "customer",
+      attributes: ["id", "name", "phone"],
+      include: [{ model: Users, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+    },
+  ],
+});
+
+// Gộp chung 3 nguồn: lỗi từ Task INSPECTION đã hoàn tất (báo giá lần đầu), lỗi phát sinh từ
+// Task REPAIR (báo giá bổ sung — luồng KTV/Leader báo qua Task), VÀ lỗi phát sinh gắn thẳng
+// theo Service_Order không qua Task (createStandaloneIssueReport) — hiển thị cùng 1 danh sách
+// duy nhất cho trưởng nhóm lập báo giá.
 module.exports.getIssuesReports = async () => {
+  // Task hợp lệ để báo giá: INSPECTION đã COMPLETED, hoặc REPAIR (bất kỳ status — lỗi phát
+  // sinh có thể ghi nhận cả khi task đang chạy dở). Dùng subquery thay vì required:true trên
+  // include để vẫn cho phép nhánh service_order_id (issue không gắn Task) đi qua where dưới.
+  const validTaskIdsSubquery = db.sequelize.literal(`(
+    SELECT t.id FROM "Tasks" t
+    WHERE (t.type = 'INSPECTION' AND t.status = 'COMPLETED') OR t.type = 'REPAIR'
+  )`);
   const issues = await Issues.findAll({
-    attributes: ["id", "error_description", "note", "createdAt"],
+    attributes: ["id", "error_description", "note", "createdAt", "service_order_id"],
     where: {
       id: {
         [Op.notIn]: db.sequelize.literal(`(
@@ -131,42 +188,32 @@ module.exports.getIssuesReports = async () => {
               WHERE qd.issue_id IS NOT NULL
             )`),
       },
+      [Op.or]: [
+        { task_id: { [Op.in]: validTaskIdsSubquery } },
+        { task_id: null, service_order_id: { [Op.ne]: null } },
+      ],
     },
     include: [
       {
         model: Tasks,
         as: "task",
         attributes: ["id"],
-        where: {
-          [Op.or]: [
-            { type: "INSPECTION", status: "COMPLETED" },
-            { type: "REPAIR" },
-          ],
-        },
-        required: true,
+        required: false,
         include: [
           {
             model: Service_Order,
             as: "serviceOrder",
             attributes: ["id"],
-            include: [
-              {
-                model: Vehicles,
-                as: "vehicle",
-                attributes: ["id", "color", "license_plate"],
-                include: [
-                  { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
-                  {
-                    model: Customers,
-                    as: "customer",
-                    attributes: ["id", "name", "phone"],
-                    include: [{ model: Users, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
-                  },
-                ],
-              },
-            ],
+            include: [buildVehicleIncludeForIssue()],
           },
         ],
+      },
+      {
+        model: Service_Order,
+        as: "serviceOrder",
+        attributes: ["id"],
+        required: false,
+        include: [buildVehicleIncludeForIssue()],
       },
       {
         model: Components,
@@ -176,6 +223,12 @@ module.exports.getIssuesReports = async () => {
           { model: Components, as: "parent", attributes: ["id", "name"] },
           { model: Components, as: "children", attributes: ["id", "name"] },
         ],
+      },
+      {
+        model: Users,
+        as: "reportedByTechnician",
+        attributes: ["id", "fullName"],
+        required: false,
       },
     ],
     order: [["createdAt", "DESC"]],
@@ -221,7 +274,7 @@ module.exports.createQuotation = async (data, leaderId) => {
   let customerUserId = null;
   const quotation = await db.sequelize.transaction(async (t) => {
     let totalAmount = 0;
-    const task = await Task.findByPk(data.task_id, {
+    const taskInclude = {
       include: [
         {
           model: Service_Order,
@@ -238,16 +291,36 @@ module.exports.createQuotation = async (data, leaderId) => {
         },
       ],
       transaction: t,
-    });
-    if (!task) {
-      throw { status: 404, message: `Công việc #${data.task_id} không tồn tại` };
+    };
+
+    let task;
+    if (data.task_id) {
+      task = await Task.findByPk(data.task_id, taskInclude);
+      if (!task) {
+        throw { status: 404, message: `Công việc #${data.task_id} không tồn tại` };
+      }
+    } else if (data.service_order_id) {
+      // Lỗi phát sinh gắn thẳng Service_Order (không qua Task) — Quotation.task_id vẫn NOT
+      // NULL ở tầng DB nên cần 1 Task bất kỳ của cùng đơn làm điểm neo kỹ thuật, không mang ý
+      // nghĩa "báo giá này thuộc hạng mục đó" (giống cách serviceOrder.service.js:549-551 đã
+      // làm với Quotation từ dịch vụ lẻ do lễ tân chọn thẳng).
+      task = await Task.findOne({
+        where: { service_order_id: data.service_order_id },
+        order: [["id", "ASC"]],
+        ...taskInclude,
+      });
+      if (!task) {
+        throw { status: 404, message: `Lệnh sửa chữa #${data.service_order_id} chưa có công việc nào để lập báo giá` };
+      }
+    } else {
+      throw { status: 400, message: "Thiếu task_id hoặc service_order_id để lập báo giá" };
     }
     customerUserId = task.serviceOrder?.vehicle?.customer?.user_id ?? null;
     const issueIds = [...new Set(data.items.map((item) => item.issue_id).filter(Boolean))];
     if (issueIds.length > 0) {
       const issues = await Issues.findAll({
         where: { id: issueIds },
-        attributes: ["id", "task_id"],
+        attributes: ["id", "task_id", "service_order_id"],
         transaction: t,
       });
       if (issues.length !== issueIds.length) {
@@ -255,7 +328,12 @@ module.exports.createQuotation = async (data, leaderId) => {
         const missingId = issueIds.find((id) => !foundIds.includes(id));
         throw { status: 404, message: `Lỗi #${missingId} không tồn tại` };
       }
-      const foreignIssue = issues.find((issue) => issue.task_id !== task.id);
+      // Issue thuộc đúng báo giá này nếu gắn cùng task_id (luồng cũ), HOẶC không gắn Task nào
+      // mà gắn thẳng cùng service_order_id (lỗi phát sinh không qua Task — createStandaloneIssueReport).
+      const foreignIssue = issues.find((issue) => {
+        if (issue.task_id) return issue.task_id !== task.id;
+        return issue.service_order_id !== task.service_order_id;
+      });
       if (foreignIssue) {
         throw { status: 400, message: `Lỗi #${foreignIssue.id} không thuộc công việc #${task.id}` };
       }
@@ -347,7 +425,7 @@ module.exports.createQuotation = async (data, leaderId) => {
     }
     const quotation = await Quotation.create(
       {
-        task_id: data.task_id,
+        task_id: task.id,
         created_by: leaderId,
         total_amount: totalAmount,
         deposit_amount: data.deposit_amount || 0,
@@ -395,7 +473,7 @@ module.exports.updateQuotation = async (id, data, leaderId) => {
         {
           model: Task,
           as: "task",
-          attributes: ["id"],
+          attributes: ["id", "service_order_id"],
           include: [
             {
               model: Service_Order,
@@ -426,7 +504,7 @@ module.exports.updateQuotation = async (id, data, leaderId) => {
     if (issueIds.length > 0) {
       const issues = await Issues.findAll({
         where: { id: issueIds },
-        attributes: ["id", "task_id"],
+        attributes: ["id", "task_id", "service_order_id"],
         transaction: t,
       });
       if (issues.length !== issueIds.length) {
@@ -434,7 +512,12 @@ module.exports.updateQuotation = async (id, data, leaderId) => {
         const missingId = issueIds.find((id) => !foundIds.includes(id));
         throw { status: 404, message: `Lỗi #${missingId} không tồn tại` };
       }
-      const foreignIssue = issues.find((issue) => issue.task_id !== quotation.task_id);
+      // Giống createQuotation: chấp nhận issue gắn cùng task_id, hoặc gắn thẳng cùng
+      // service_order_id khi không có task_id (lỗi phát sinh không qua Task).
+      const foreignIssue = issues.find((issue) => {
+        if (issue.task_id) return issue.task_id !== quotation.task_id;
+        return issue.service_order_id !== quotation.task?.service_order_id;
+      });
       if (foreignIssue) {
         throw { status: 400, message: `Lỗi #${foreignIssue.id} không thuộc công việc của báo giá` };
       }
@@ -737,7 +820,7 @@ module.exports.approveQuotation = async (id, approvedByRole = "TECHNICIAN_LEADER
     }
     const serviceItems = quotation.items.filter((item) => item.service_id);
     if (serviceItems.length > 0) {
-      await Task.bulkCreate(
+      const createdTasks = await Task.bulkCreate(
         serviceItems.map((item) => ({
           service_order_id: inspectionTask.service_order_id,
           quotation_item_id: item.id,
@@ -747,6 +830,24 @@ module.exports.approveQuotation = async (id, approvedByRole = "TECHNICIAN_LEADER
         })),
         { transaction: t },
       );
+      // Gán ngược task_id cho toàn bộ dòng Quotation_Details cùng issue_id với dòng dịch vụ vừa
+      // sinh Task — bao gồm cả dòng phụ tùng đi kèm (spare_part_id), để xuất/nhập kho sau này
+      // biết chính xác phụ tùng đó đang chờ đúng Task nào, không phải đi vòng qua Quotation.task_id.
+      // issue_id null (phí chung không gắn lỗi cụ thể) thì chỉ gán đúng chính dòng dịch vụ đó,
+      // tránh gộp nhầm các dòng phí chung khác cùng quotation cũng có issue_id null.
+      for (let i = 0; i < serviceItems.length; i++) {
+        const serviceItem = serviceItems[i];
+        const createdTask = createdTasks[i];
+        await QuotationDetail.update(
+          { task_id: createdTask.id },
+          {
+            where: serviceItem.issue_id
+              ? { quotation_id: quotation.id, issue_id: serviceItem.issue_id }
+              : { id: serviceItem.id },
+            transaction: t,
+          },
+        );
+      }
       await Service_Order.update(
         { status: "IN_PROGRESS" },
         { where: { id: inspectionTask.service_order_id, status: "PENDING_QUOTATION" }, transaction: t },
@@ -814,7 +915,12 @@ module.exports.getPaymentSummaryByServiceOrder = async (serviceOrderId) => {
     where: { status: "APPROVED" },
     include: [
       { model: Tasks, as: "task", attributes: ["id"], where: { service_order_id: serviceOrderId }, required: true },
-      { model: QuotationDetail, as: "items", attributes: ["id", "amount", "status"] },
+      {
+        model: QuotationDetail,
+        as: "items",
+        attributes: ["id", "amount", "status"],
+        include: [{ model: CustomPartOrder, as: "customPartOrder", attributes: ["id"], required: false }],
+      },
     ],
     order: [["createdAt", "ASC"]],
   });
@@ -822,7 +928,15 @@ module.exports.getPaymentSummaryByServiceOrder = async (serviceOrderId) => {
     (sum, q) => sum + q.items.filter((i) => i.status !== "CANCELLED").reduce((s, i) => s + Number(i.amount), 0),
     0,
   );
-  const totalDeposit = quotations.reduce((sum, q) => sum + Number(q.deposit_amount || 0), 0);
+  // Cọc đặt riêng không hoàn khi hạng mục bị hủy (đóng sớm), nhưng cũng không được trừ vào tiền
+  // phải trả của hạng mục khác còn giữ — tính lại 30% chỉ trên dòng đặt riêng CÒN GIỮ, giống
+  // đúng công thức ở getServiceOrdersAwaitingPayment (serviceOrder.service.js).
+  const totalDeposit = quotations.reduce((sum, q) => {
+    const customItemsTotal = q.items
+      .filter((i) => i.status !== "CANCELLED" && i.customPartOrder)
+      .reduce((s, i) => s + Number(i.amount), 0);
+    return sum + Math.round(customItemsTotal * 0.3);
+  }, 0);
   return {
     serviceOrderId,
     quotations,

@@ -95,3 +95,10 @@ module.exports.authorizeRoles = (...allowedRoleNames) => {
         next();
     };
 };
+
+// Cho cac route ho tro ca khach vang lai va khach da dang nhap (vi du chatbot).
+// Token khong hop le khong duoc bo qua, tranh de client nghi rang minh da dang nhap.
+module.exports.optionalAuthenticate = async (req, res, next) => {
+    if (!req.headers.authorization) return next();
+    return module.exports.authenticate(req, res, next);
+};

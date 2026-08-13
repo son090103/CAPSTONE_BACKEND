@@ -51,9 +51,29 @@ describe("Statistics Controller", () => {
 
       await controller.getAdvancedStats(req, res);
 
-      expect(mockGetAdvancedAnalysisStats).toHaveBeenCalledWith({ generateAi: true });
+      expect(mockGetAdvancedAnalysisStats).toHaveBeenCalledWith({
+        generateAi: true,
+        timeframe: undefined,
+        startDate: undefined,
+        endDate: undefined,
+        planHorizon: "1_month",
+      });
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({ success: true, data: fakeData });
+    });
+
+    it("should pass a three-month planning horizon", async () => {
+      mockGetAdvancedAnalysisStats.mockResolvedValue({ analysis: "ok" });
+      const req = { query: { generateAi: "true", planHorizon: "3_months" } };
+      const res = createMockResponse();
+
+      await controller.getAdvancedStats(req, res);
+
+      expect(mockGetAdvancedAnalysisStats).toHaveBeenCalledWith(expect.objectContaining({
+        generateAi: true,
+        planHorizon: "3_months",
+      }));
+      expect(res.status).toHaveBeenCalledWith(200);
     });
 
     it("should return 404 when no analysis result exists", async () => {

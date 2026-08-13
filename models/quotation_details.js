@@ -38,6 +38,12 @@ module.exports = (sequelize, DataTypes) => {
           as: "customPartOrder",
         });
       }
+      if (models.Task) {
+        this.belongsTo(models.Task, {
+          foreignKey: "task_id",
+          as: "task",
+        });
+      }
     }
   }
   Quotation_Details.init(
@@ -56,6 +62,14 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
       spare_part_id: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
+      // Task thật sự sinh ra từ dòng dịch vụ này lúc duyệt báo giá (approveQuotation) — cho
+      // phép xuất/nhập kho phụ tùng đặt riêng biết chính xác Task nào đang chờ, thay vì đi
+      // vòng qua Quotation.task_id (có thể chỉ là điểm neo kỹ thuật, không phải Task thật sự
+      // liên quan khi báo giá được tạo từ lỗi phát sinh không gắn Task cụ thể).
+      task_id: {
         type: DataTypes.INTEGER,
         allowNull: true,
       },
