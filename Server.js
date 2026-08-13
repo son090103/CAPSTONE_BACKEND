@@ -173,6 +173,7 @@ io.on('connection', (socket) => {
 const ROUTES = require("./src/router/registry.routes");
 require("./src/jobs/pricingRule.job");
 require("./src/jobs/maintenanceReminder.job");
+require("./src/jobs/appointmentNoShow.job");
 app.use(
   cors({
     origin(origin, callback) {

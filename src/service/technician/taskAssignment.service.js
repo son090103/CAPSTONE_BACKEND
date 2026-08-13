@@ -1836,7 +1836,7 @@ module.exports.getCompletedTasks = async (technicianId) => {
               {
                 model: Vehicles,
                 as: "vehicle",
-                attributes: ["id", "license_plate", "color"],
+                attributes: ["id", "license_plate", "color", "year"],
                 include: [
                   {
                     model: Vehicle_Models,
@@ -1893,6 +1893,124 @@ module.exports.getCompletedTasks = async (technicianId) => {
   });
 };
 
+module.exports.addRepairNote = async (taskId, technicianId, content) => {
+  const trimmedContent = String(content || "").trim();
+  if (!trimmedContent) {
+    throw { status: 400, message: "Vui lòng nhập nội dung kinh nghiệm sửa chữa." };
+  }
+  const assignment = await Task_Assignments.findOne({
+    where: { technician_id: technicianId, status: "COMPLETED" },
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id", "type", "status"],
+        where: { id: taskId, type: "REPAIR", status: "COMPLETED" },
+        required: true,
+      },
+    ],
+  });
+  if (!assignment) {
+    throw { status: 404, message: "Không tìm thấy công việc sửa chữa đã hoàn thành phù hợp." };
+  }
+  return await Repair_Notes.create({ task_id: taskId, content: trimmedContent });
+};
+
+module.exports.getMyRepairNotes = async (technicianId) => {
+  const notes = await Repair_Notes.findAll({
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Task_Assignments,
+            as: "assignments",
+            attributes: ["id"],
+            where: { technician_id: technicianId },
+            required: true,
+          },
+          {
+            model: Service_Catalog,
+            as: "catalog",
+            attributes: ["id", "service_name"],
+          },
+          {
+            model: db.Quotation_Details,
+            as: "quotationItem",
+            attributes: ["id"],
+            required: false,
+            include: [
+              {
+                model: db.Vehicle_Issues,
+                as: "issue",
+                attributes: ["id", "error_description"],
+                required: false,
+                include: [{ model: db.Vehicle_Components, as: "component", attributes: ["id", "name"], required: false }],
+              },
+            ],
+          },
+          {
+            model: Service_Order,
+            as: "serviceOrder",
+            attributes: ["id"],
+            required: true,
+            include: [
+              {
+                model: Vehicles,
+                as: "vehicle",
+                attributes: ["id", "license_plate", "color", "year"],
+                include: [
+                  {
+                    model: db.Vehicle_Models,
+                    as: "model",
+                    attributes: ["id", "model_name"],
+                    include: [
+                      {
+                        model: db.Vehicle_Makes,
+                        as: "make",
+                        attributes: ["id", "make_name"],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+    subQuery: false,
+  });
+
+  return notes.map((note) => {
+    const data = note.toJSON();
+    const issue = data.task?.quotationItem?.issue;
+    const componentName = issue?.component?.name?.trim() || "";
+    const errorDescription = issue?.error_description?.trim() || "";
+    const issueText = componentName && errorDescription
+      ? `${componentName} - ${errorDescription}`
+      : componentName || errorDescription || data.task?.catalog?.service_name || `Công việc #${data.task?.id}`;
+    const vehicle = data.task?.serviceOrder?.vehicle;
+    return {
+      id: data.id,
+      content: data.content,
+      createdAt: data.createdAt,
+      taskId: data.task?.id,
+      serviceOrderCode: `SO-${data.task?.serviceOrder?.id}`,
+      vehiclePlate: vehicle?.license_plate || "—",
+      vehicleBrand: vehicle?.model?.make?.make_name || "",
+      vehicleModel: vehicle?.model?.model_name || "",
+      vehicleYear: vehicle?.year ?? null,
+      vehicleColor: vehicle?.color || "",
+      issueText,
+    };
+  });
+};
 
 // Danh sách phụ tùng (đã có trong báo giá đã duyệt, thuộc chính Task này) mà KTV có thể
 // yêu cầu xuất kho - chỉ lấy các dòng còn PENDING (chưa yêu cầu/xuất).

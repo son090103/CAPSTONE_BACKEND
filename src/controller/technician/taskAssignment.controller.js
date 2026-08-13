@@ -500,6 +500,34 @@ module.exports.getMyCompletedTasks = async (req, res) => {
   }
 };
 
+module.exports.addRepairNote = async (req, res) => {
+  try {
+    const { taskId, content } = req.body;
+    const technicianId = res.locals.user.id;
+    if (!taskId) {
+      return res.status(400).json({ message: "Vui lòng truyền taskId vào body." });
+    }
+    const result = await taskAssignmentService.addRepairNote(taskId, technicianId, content);
+    return res.status(201).json({ message: "Đã lưu kinh nghiệm sửa chữa.", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getMyRepairNotes = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const result = await taskAssignmentService.getMyRepairNotes(technicianId);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
 module.exports.pauseTask = async (req, res) => {
   try {
     const { taskAssignmentId, reason, status } = req.body;
