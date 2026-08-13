@@ -322,9 +322,6 @@ const hasAllPartsReady = async (task) => {
 };
 module.exports.hasAllPartsReady = hasAllPartsReady;
 
-// KTV tự bấm "Yêu cầu xuất kho" 1 lần cho CẢ ĐƠN — gộp mọi Task của chính KTV đó trong Service
-// Order, gửi yêu cầu xuất kho cho toàn bộ phụ tùng còn PENDING (đủ tồn, chỉ chưa xuất). Tách
-// riêng khỏi startTask, gọi được bất cứ lúc nào, không phụ thuộc trạng thái Task.
 module.exports.requestPartsExport = async (serviceOrderId, technicianId) => {
   const assignments = await Task_Assignments.findAll({
     where: { technician_id: technicianId },
@@ -333,7 +330,7 @@ module.exports.requestPartsExport = async (serviceOrderId, technicianId) => {
         model: Tasks,
         as: "task",
         attributes: ["id", "service_order_id", "quotation_item_id"],
-        where: { service_order_id: serviceOrderId },
+        where: { service_order_id: serviceOrderId, status: { [Op.ne]: "PENDING" } },
         required: true,
       },
     ],
@@ -562,14 +559,15 @@ async function completeServiceOrder(serviceOrderId) {
     });
     if (!serviceOrder) return;
     customerUserId = serviceOrder.vehicle?.customer?.user_id ?? null;
+    const previousBayId = serviceOrder.bay_id;
     await serviceOrder.update(
-      { status: "COMPLETED", actual_finish_time: new Date() },
+      { status: "COMPLETED", actual_finish_time: new Date(), bay_id: null, bay_status: "NOT_NEEDED" },
       { transaction: t },
     );
-    if (serviceOrder.bay_id) {
+    if (previousBayId) {
       await db.Service_Bays.update(
         { status: "available", current_service_order_id: null },
-        { where: { id: serviceOrder.bay_id }, transaction: t },
+        { where: { id: previousBayId }, transaction: t },
       );
       await assignQueuedOrders(t);
     }
@@ -1458,6 +1456,12 @@ module.exports.getAllInspectionHistory = async () => {
                       },
                     ],
                   },
+                  {
+                    model: Customers,
+                    as: "customer",
+                    attributes: ["id", "name", "phone"],
+                    include: [{ model: Users, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+                  },
                 ],
               },
             ],
@@ -1522,6 +1526,12 @@ module.exports.searchInspectionHistory = async (keyword) => {
                         attributes: ["id", "make_name"],
                       },
                     ],
+                  },
+                  {
+                    model: Customers,
+                    as: "customer",
+                    attributes: ["id", "name", "phone"],
+                    include: [{ model: Users, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
                   },
                 ],
               },
@@ -1740,7 +1750,15 @@ module.exports.filterInspectionHistory = async ({ makeId, modelId }) => {
                 where: Object.keys(vehicleWhere).length
                   ? vehicleWhere
                   : undefined,
-                include: [modelInclude],
+                include: [
+                  modelInclude,
+                  {
+                    model: Customers,
+                    as: "customer",
+                    attributes: ["id", "name", "phone"],
+                    include: [{ model: Users, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+                  },
+                ],
               },
             ],
           },

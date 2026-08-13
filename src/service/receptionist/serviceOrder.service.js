@@ -512,9 +512,9 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
 
     if (uniqueTaskCatalogs.length === 0) {
       // Khách sửa chữa chưa rõ bệnh -> Tạo một Task kiểm tra xe chung,
-      // gắn vào dịch vụ đặc biệt "Kiểm tra hoặc sửa chữa" (labor_price = 0)
+      // gắn vào dịch vụ kiểm tra mặc định
       const inspectionCatalog = await db.Service_Catalog.findOne({
-        where: { labor_price: 0 },
+        where: { is_default_inspection_service: true },
         transaction,
       });
       const task = await db.Task.create(
@@ -542,7 +542,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       }
     } else {
       const freeCheckupCatalog = await db.Service_Catalog.findOne({
-        where: { labor_price: 0 },
+        where: { is_default_inspection_service: true },
         transaction,
       });
 
@@ -800,6 +800,7 @@ module.exports.getServiceOrdersAwaitingPayment = async () => {
           model: Quotation_Details,
           as: "items",
           attributes: ["id", "amount", "status"],
+          include: [{ model: db.Custom_Part_Orders, as: "customPartOrder", attributes: ["id"], required: false }],
         },
       ],
     });
@@ -815,10 +816,18 @@ module.exports.getServiceOrdersAwaitingPayment = async () => {
       (sum, q) => sum + q.items.filter((i) => i.status !== "CANCELLED").reduce((s, i) => s + Number(i.amount), 0),
       0,
     ) + rescuePrice;
-    const totalDeposit = quotations.reduce(
-      (sum, q) => sum + Number(q.deposit_amount || 0),
-      0,
-    );
+    // Cọc đã thu cho phụ tùng đặt riêng KHÔNG hoàn khi hạng mục đó bị hủy (đóng sớm) — nhưng
+    // cũng KHÔNG được trừ vào tiền phải trả của các hạng mục khác còn giữ. deposit_amount gốc
+    // là 30% gộp của MỌI dòng đặt riêng lúc duyệt — tính lại theo đúng công thức đó nhưng chỉ
+    // trên các dòng đặt riêng CÒN GIỮ (chưa CANCELLED). Nhận diện "dòng đặt riêng" bằng việc CÓ
+    // Custom_Part_Orders liên kết (không dùng status: nó đổi liên tục theo tiến trình xuất kho —
+    // PENDING/CUSTOM_ORDERED lúc tạo, EXPORTED sau khi xuất — nên không đáng tin để lọc).
+    const totalDeposit = quotations.reduce((sum, q) => {
+      const customItemsTotal = q.items
+        .filter((i) => i.status !== "CANCELLED" && i.customPartOrder)
+        .reduce((s, i) => s + Number(i.amount), 0);
+      return sum + Math.round(customItemsTotal * 0.3);
+    }, 0);
     const remainingAmount = grandTotal - totalDeposit;
     if (remainingAmount > 0) {
       result.push({

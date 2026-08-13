@@ -5,6 +5,7 @@ const {
 } = require("../../validation/receptionist/quoteManagement.validation");
 const {
   createIssueReportSchema,
+  createStandaloneIssueReportSchema,
 } = require("../../validation/technicianLeader/issueReport.validation");
 
 module.exports.getAllComponents = async (req, res) => {
@@ -42,6 +43,39 @@ module.exports.createIssuesReport = async (req, res) => {
       });
     }
     const result = await quoteManagementService.createIssueReports(task_id, issues, note);
+    return res.status(201).json({
+      success: true,
+      message: "Ghi nhận lỗi thành công",
+      data: result,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Đã xảy ra lỗi.",
+    });
+  }
+};
+
+module.exports.createStandaloneIssueReport = async (req, res) => {
+  try {
+    const { service_order_id, note, issues, reported_by_technician_id } = req.body;
+    const validation = createStandaloneIssueReportSchema.safeParse({
+      service_order_id,
+      issues,
+      note,
+      reported_by_technician_id,
+    });
+    if (!validation.success) {
+      return res.status(400).json({
+        message: validation.error.issues[0].message,
+      });
+    }
+    const result = await quoteManagementService.createStandaloneIssueReport(
+      service_order_id,
+      issues,
+      note,
+      reported_by_technician_id,
+    );
     return res.status(201).json({
       success: true,
       message: "Ghi nhận lỗi thành công",
@@ -105,9 +139,10 @@ module.exports.getAllService = async (req, res) => {
 module.exports.createQuotation = async (req, res) => {
   try {
     const leaderId = res.locals.user.id;
-    const { task_id, items, note, deposit_amount } = req.body;
+    const { task_id, service_order_id, items, note, deposit_amount } = req.body;
     const validation = createQuotationSchema.safeParse({
       task_id,
+      service_order_id,
       items,
       note,
       deposit_amount,

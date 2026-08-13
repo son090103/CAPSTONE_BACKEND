@@ -877,7 +877,14 @@ module.exports.getWaitingStockItems = async () => {
 
 module.exports.confirmCustomPartArrival = async (manager_id, customPartOrderId, actualUnitPrice) => {
   const order = await CustomPartOrder.findByPk(customPartOrderId, {
-    include: [{ model: QuotationDetail, as: "quotationDetail", attributes: ["id", "unit_price", "issue_id"] }],
+    include: [
+      {
+        model: QuotationDetail,
+        as: "quotationDetail",
+        attributes: ["id", "unit_price", "issue_id"],
+        include: [{ model: db.Quotations, as: "quotation", attributes: ["id", "task_id"] }],
+      },
+    ],
   });
   if (!order) {
     throw { status: 404, message: "Không tìm thấy đơn phụ tùng đặt riêng" };
@@ -897,11 +904,13 @@ module.exports.confirmCustomPartArrival = async (manager_id, customPartOrderId, 
     arrived_at: new Date(),
   });
 
-  if (order.quotationDetail?.issue_id) {
-    const issue = await db.Vehicle_Issues.findByPk(order.quotationDetail.issue_id, {
-      attributes: ["id", "task_id"],
-    });
-    const task = issue?.task_id ? await Task.findByPk(issue.task_id, { attributes: ["id", "service_order_id"] }) : null;
+  {
+    // Đi qua Quotation.task_id (luôn tồn tại, không phụ thuộc issue có gắn Task hay không)
+    // thay vì issue.task_id — báo giá phụ tùng đặt riêng luôn thuộc 1 Quotation/Task cụ thể.
+    const quotationTaskId = order.quotationDetail?.quotation?.task_id;
+    const task = quotationTaskId
+      ? await Task.findByPk(quotationTaskId, { attributes: ["id", "service_order_id"] })
+      : null;
     if (task?.service_order_id) {
       const assignments = await db.Task_Assignment.findAll({
         attributes: ["technician_id"],
@@ -930,7 +939,14 @@ module.exports.confirmCustomPartArrival = async (manager_id, customPartOrderId, 
 module.exports.exportCustomPartOrder = async (manager_id, customPartOrderId) => {
   return await db.sequelize.transaction(async (t) => {
     const order = await CustomPartOrder.findByPk(customPartOrderId, {
-      include: [{ model: QuotationDetail, as: "quotationDetail", attributes: ["id", "issue_id"] }],
+      include: [
+        {
+          model: QuotationDetail,
+          as: "quotationDetail",
+          attributes: ["id", "issue_id", "task_id"],
+          include: [{ model: db.Quotations, as: "quotation", attributes: ["id", "task_id"] }],
+        },
+      ],
       transaction: t,
     });
     if (!order) {
@@ -947,15 +963,16 @@ module.exports.exportCustomPartOrder = async (manager_id, customPartOrderId) => 
 
     let technicianIds = [];
     let serviceOrderId = null;
-    if (order.quotationDetail?.issue_id) {
-      const issueId = order.quotationDetail.issue_id;
-      const issue = await db.Vehicle_Issues.findByPk(issueId, {
-        attributes: ["id", "task_id"],
+    const issueId = order.quotationDetail?.issue_id;
+    // Task thật sự đang chờ phụ tùng này: ưu tiên quotationDetail.task_id (gán chính xác lúc
+    // approveQuotation) — không dùng quotation.task_id vì đó chỉ là điểm neo kỹ thuật, có thể
+    // không phải Task thật khi báo giá được tạo từ lỗi phát sinh không gắn Task cụ thể.
+    const targetTaskId = order.quotationDetail?.task_id ?? order.quotationDetail?.quotation?.task_id;
+    if (targetTaskId) {
+      const task = await Task.findByPk(targetTaskId, {
+        attributes: ["id", "service_order_id"],
         transaction: t,
       });
-      const task = issue?.task_id
-        ? await Task.findByPk(issue.task_id, { attributes: ["id", "service_order_id"], transaction: t })
-        : null;
       serviceOrderId = task?.service_order_id ?? null;
       if (serviceOrderId) {
         const assignments = await db.Task_Assignment.findAll({

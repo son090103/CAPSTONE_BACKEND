@@ -58,6 +58,7 @@ const catalogAttributes = [
   "estimated_duration",
   "labor_price",
   "is_active",
+  "is_default_inspection_service",
 ];
 
 const mapCatalogs = (catalogs) => mapServicePrices(catalogs.map(localizeCatalog));

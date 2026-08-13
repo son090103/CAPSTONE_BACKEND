@@ -26,6 +26,7 @@ router.post("/service-catalog/import/confirm", serviceCatalogController.confirmI
 router.get("/service-catalog", serviceCatalogController.getServiceCatalog);
 router.get("/service-catalog/search", serviceCatalogController.searchServiceCatalog);
 router.patch("/service-catalog/:id", serviceCatalogController.updateServiceCatalog);
+router.patch("/service-catalog/:id/set-default-inspection", serviceCatalogController.setDefaultInspectionService);
 router.get("/spare-parts", serviceCatalogController.getSparePartsForAdmin);
 
 router.get("/service-combos", serviceCombosController.getServiceCombos);
