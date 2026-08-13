@@ -1,7 +1,7 @@
 const { Op, where } = require("sequelize");
 const db = require("../../../models");
 const Issues = db.Vehicle_Issues;
-const { emitProgress } = require("../../util/socket.util");
+const { emitProgress, emitToRole } = require("../../util/socket.util");
 const { notifyRole, notifyUser } = require("../../util/notification.util");
 const assignQueuedOrders = require("../../util/assignQueuedOrders.util");
 const geminiClient = require("../../config/gemini.config");
@@ -925,6 +925,33 @@ module.exports.startRescueTask = async (rescueId, technicianId, newStatus, techn
       status: rescue.status,
       technicianLat: technician?.latitude ?? null,
       technicianLng: technician?.longitude ?? null,
+    });
+  }
+
+  // Lễ tân cần biết ngay khi KTV bắt đầu để mở bản đồ theo dõi realtime.
+  if (rescue.status === 'EN_ROUTE') {
+    await notifyRole('RECEPTIONIST', {
+      title: 'Kỹ thuật viên đã bắt đầu cứu hộ',
+      content: `Kỹ thuật viên ${technician?.fullName || 'ẩn danh'} đã bắt đầu cứu hộ cho khách hàng ${rescue.customer?.name || 'ẩn danh'}.`,
+      notificationType: 'SYSTEM',
+      referenceId: rescue.id,
+      priority: 'HIGH',
+      link: '/reception/customers'
+    }, 'new_notification', {
+      type: 'RESCUE_STATUS_UPDATED',
+      rescueId: rescue.id,
+      status: rescue.status,
+      technicianName: technician?.fullName || '',
+      customerId: rescue.customer_id,
+      message: `Kỹ thuật viên ${technician?.fullName || ''} đã bắt đầu cứu hộ.`
+    });
+    // Trang quản lý khách hàng admin cũng hiển thị nút theo dõi theo yêu cầu, chỉ phát sự kiện
+    // làm mới dữ liệu (không tạo thêm notification DB cho admin).
+    emitToRole('ADMIN', 'new_notification', {
+      type: 'RESCUE_STATUS_UPDATED',
+      rescueId: rescue.id,
+      status: rescue.status,
+      customerId: rescue.customer_id,
     });
   }
 
