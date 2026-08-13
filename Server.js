@@ -14,8 +14,6 @@ const whitelist = [
   "https://agm-garage.id.vn",
   "https://www.agm-garage.id.vn",
   "192.168.0.191:8081",
-  "https://12bf-171-225-184-240.ngrok-free.app",
-  "https://bd50-171-225-184-240.ngrok-free.app",
   "http://localhost:5173/"
 ];
 const isOriginAllowed = (origin) => {
@@ -120,7 +118,9 @@ io.on('connection', (socket) => {
 
     const isTechnician = Number(rescue.technician_id) === Number(decoded.id);
     const isCustomer = Number(rescue.customer?.user_id) === Number(decoded.id);
-    if ((requireTechnician && !isTechnician) || (!requireTechnician && !isTechnician && !isCustomer)) {
+    const trackingRole = await db.Role.findByPk(decoded.roleId, { attributes: ['roleCode'] });
+    const isOperationsStaff = ['RECEPTIONIST', 'ADMIN'].includes(trackingRole?.roleCode);
+    if ((requireTechnician && !isTechnician) || (!requireTechnician && !isTechnician && !isCustomer && !isOperationsStaff)) {
       throw new Error('Bạn không có quyền theo dõi yêu cầu cứu hộ này');
     }
     return { rescue, userId: Number(decoded.id) };

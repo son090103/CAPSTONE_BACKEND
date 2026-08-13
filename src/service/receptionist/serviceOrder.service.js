@@ -829,14 +829,19 @@ module.exports.getServiceOrdersAwaitingPayment = async () => {
       return sum + Math.round(customItemsTotal * 0.3);
     }, 0);
     const remainingAmount = grandTotal - totalDeposit;
-    if (remainingAmount > 0) {
-      result.push({
-        serviceOrder: order,
-        grandTotal,
-        totalDeposit,
-        remainingAmount,
-      });
-    }
+    if (remainingAmount <= 0) continue;
+
+    const bookingPayment = await db.Booking_Payments.findOne({
+      where: { order_id: order.id, payment_status: "PAID" },
+    });
+    if (bookingPayment) continue;
+
+    result.push({
+      serviceOrder: order,
+      grandTotal,
+      totalDeposit,
+      remainingAmount,
+    });
   }
 
   return result;
