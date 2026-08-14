@@ -1911,8 +1911,16 @@ module.exports.filterInspectionHistory = async ({ makeId, modelId }) => {
 };
 
 module.exports.getCompletedTasks = async (technicianId) => {
+  const notedTaskIds = (
+    await Repair_Notes.findAll({ attributes: ["task_id"], raw: true })
+  ).map((n) => n.task_id);
+
   const assignments = await Task_Assignments.findAll({
-    where: { technician_id: technicianId, status: "COMPLETED" },
+    where: {
+      technician_id: technicianId,
+      status: "COMPLETED",
+      ...(notedTaskIds.length ? { task_id: { [Op.notIn]: notedTaskIds } } : {}),
+    },
     attributes: ["id", "status", "actual_start_time", "actual_end_time", "role_in_task"],
     include: [
       {
