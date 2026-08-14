@@ -46,7 +46,7 @@ module.exports.getInventoryDashboardSummary = async () => {
     const totalValue = parts.reduce((sum, item) => sum + Number(item.stock_quantity || 0) * Number(item.retail_price || 0), 0);
     const totalSku = parts.length;
     const lowStockCount = lowStock.length;
-    const stockByCategory = categories.map((category) => {
+    let stockByCategory = categories.map((category) => {
         const categoryParts = parts.filter((item) => Number(item.category_id) === Number(category.id));
         const totalQty = categoryParts.reduce((sum, item) => sum + Number(item.stock_quantity || 0), 0);
         return {
@@ -130,15 +130,15 @@ module.exports.getInventoryDashboardSummary = async () => {
         summary: {
             totalValue,
             totalSku,
-            lowStockCount: lowStockList.length,
+            lowStockCount: lowStock.length,
             transactionsToday: todayIn + todayOut || 4,
             importsToday: todayIn || 1,
             exportsToday: todayOut || 3,
         },
         stockByCategory,
-        lowStock: lowStockList,
-        importExportTrend: finalTrend,
-        recentTransactions,
+        lowStock,
+        importExportTrend,
+        recentTransactions: recentLogs,
         topConsumed,
         topAgingStock,
     };

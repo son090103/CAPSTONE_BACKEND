@@ -470,11 +470,11 @@ const confirmPayment = async (orderId, amount, paymentMethod = 'VIETQR', recepti
                 if (!maxPercentConfig) {
                     maxPercentConfig = await db.Garage_Configurations.create({
                         config_key: 'MAX_LOYALTY_DISCOUNT_PERCENT',
-                        config_value: '30',
+                        config_value: '10',
                         description: 'Phần trăm tối đa của hóa đơn được phép thanh toán bằng điểm'
                     });
                 }
-                const maxPercent = parseInt(maxPercentConfig.config_value) || 30;
+                const maxPercent = parseInt(maxPercentConfig.config_value) || 10;
 
                 // Calculate original amount (approximate based on amount + pointsRedeemed * 1000)
                 // Actually the best way is to fetch the full total from tasks/quotation, but for now we trust frontend validation
