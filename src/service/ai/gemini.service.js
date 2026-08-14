@@ -337,6 +337,10 @@ function formatBookingReply(rawData, nextContext) {
   if (rawData.availableHours) {
     return `Các giờ còn nhận xe ngày ${nextContext.bookingDate}:\n- ${rawData.availableHours.slice(0, 10).join(', ')}\nAnh/chị chọn một giờ phù hợp nhé.`;
   }
+  if (rawData.bookingSummary) {
+    const s = rawData.bookingSummary;
+    return `Anh/chị vui lòng kiểm tra lại thông tin đặt lịch:\n- Xe: ${s.vehicle}\n- Dịch vụ: ${s.service}\n- Ngày: ${s.date}\n- Giờ: ${s.time}\nAnh/chị nhắn "Xác nhận" để em đặt lịch ngay nhé.`;
+  }
   if (rawData.status === 'ERROR') return rawData.message || 'Không thể tạo lịch. Vui lòng thử lại.';
   if (nextContext.step === 'booking_get_vehicle') return String(rawData.action || 'Vui lòng cung cấp thông tin xe.').replace(/Chỉ yêu cầu khách/gi, 'Vui lòng').replace(/Tài khoản/g, 'Tài khoản');
   if (nextContext.step === 'booking_get_service') return 'Anh/chị muốn chọn dịch vụ/combo nào, hoặc hãy mô tả tình trạng xe nếu chưa biết lỗi.';
@@ -642,11 +646,35 @@ async function handleBookingTurn(parsed, context, userMessage, authContext = {})
     console.error('Lỗi kiểm tra giờ đặt lịch:', error);
   }
 
-  return handleProvideService({ ...parsed, service: requestedService }, {
+  const confirmedContext = {
     ...nextContext,
     step: 'booking_confirming',
     date: scheduled.toISOString()
-  }, authContext);
+  };
+
+  const isConfirming = context.step === 'booking_confirming' &&
+    /\b(xác nhận|đồng ý|dong y|xac nhan|ok|oke|okay|đúng rồi|dung roi|chốt|chot|có|co)\b/i.test(normalizedUserMessage);
+
+  if (!isConfirming) {
+    const vehicleLabel = vehicleId
+      ? (availableVehicles.find(v => v.id === vehicleId)?.license_plate || 'xe đã chọn')
+      : `${newVehicle.plate} (${newVehicle.brand} ${newVehicle.model})`;
+    const serviceLabel = bookingSelection.type === 'repair' ? `Kiểm tra và sửa chữa (${context.repairDescription || requestedService})` : bookingSelection.name;
+    return {
+      rawData: {
+        action: 'Tóm tắt lại đầy đủ thông tin đặt lịch cho khách xem và hỏi khách xác nhận (gõ "xác nhận" hoặc "đồng ý") để đặt lịch thật; không tự ý tạo lịch khi chưa có xác nhận.',
+        bookingSummary: {
+          vehicle: vehicleLabel,
+          service: serviceLabel,
+          date: bookingDate,
+          time: bookingTime
+        }
+      },
+      context: confirmedContext
+    };
+  }
+
+  return handleProvideService({ ...parsed, service: requestedService }, confirmedContext, authContext);
 }
 
 async function handleProvidePhone(parsed, context) {
@@ -706,6 +734,52 @@ async function handleProvideService(parsed, context, authContext = {}) {
 }
 
 // ==========================================
+// TẦNG 3 THAY THẾ (KHÔNG DÙNG - giữ lại để khôi phục nếu cần tiết kiệm token)
+// ==========================================
+function formatDirectReply(parsed, rawData) {
+  switch (parsed.intent) {
+    case "greeting":
+      return "Chào anh/chị, em là trợ lý ảo của Gara ạ. Anh/chị cần đặt lịch, tra cứu giá dịch vụ hay hỏi tình trạng xe, cứ nhắn cho em nhé!";
+
+    case "cancel":
+      return "Dạ em đã hủy thao tác vừa rồi. Anh/chị cần em hỗ trợ gì khác không ạ?";
+
+    case "check_schedule": {
+      if (rawData.status === "GARAGE_CLOSED") return "Dạ hiện gara chưa mở nhận xe vào thời điểm này, anh/chị vui lòng chọn ngày khác giúp em nhé.";
+      if (rawData.status === "FULLY_BOOKED") return `Dạ ngày ${rawData.targetDate} gara đã kín lịch hết rồi ạ. Anh/chị chọn ngày khác giúp em nhé.`;
+      if (rawData.status === "AVAILABLE") return `Dạ ngày ${rawData.targetDate} gara còn các khung giờ trống sau:\n- ${rawData.freeSlots.slice(0, 10).join(', ')}\nAnh/chị chọn giúp em một giờ phù hợp nhé.`;
+      return "Dạ hiện em chưa kiểm tra được lịch trống, anh/chị vui lòng thử lại sau nhé.";
+    }
+
+    case "search_service": {
+      const isUiGuide = rawData.responseMode === 'UI_GUIDE';
+      if (isUiGuide) {
+        if (rawData.uiWorkflowContext) {
+          return cleanReplyForPlainTextWidget(rawData.uiWorkflowContext);
+        }
+        return "Dạ em chưa tìm thấy hướng dẫn phù hợp cho thao tác này, anh/chị mô tả rõ hơn giúp em nhé.";
+      }
+
+      const lines = [];
+      if (rawData.pineconeContext && !/^(Không tìm thấy|Hệ thống tra cứu)/.test(rawData.pineconeContext)) {
+        lines.push(rawData.pineconeContext);
+      }
+      if (rawData.catalogList) {
+        const catalogLines = rawData.catalogList.split('\n').slice(0, 4);
+        lines.push(`Một số dịch vụ tham khảo:\n${catalogLines.join('\n')}`);
+        lines.push('Anh/chị đang quan tâm dịch vụ nào ạ? Vui lòng nhắn đúng tên dịch vụ để em tư vấn tiếp nhé.');
+      } else if (!lines.length) {
+        lines.push("Dạ em chưa tìm thấy thông tin phù hợp, anh/chị mô tả rõ hơn tình trạng xe hoặc dịch vụ đang cần giúp em nhé.");
+      }
+      return cleanReplyForPlainTextWidget(lines.join('\n\n'));
+    }
+
+    default:
+      return "Dạ em chưa hiểu rõ ý anh/chị, anh/chị vui lòng nói rõ hơn giúp em nhé (ví dụ: đặt lịch, tra cứu giá dịch vụ...).";
+  }
+}
+
+// ==========================================
 // TẦNG 3: ĂN NÓI (Generative Language)
 // ==========================================
 async function generateFinalReplyWithGemini(userMessage, parsed, rawData, context, history = []) {
@@ -736,7 +810,7 @@ NHIỆM VỤ CỦA BẠN:
 - Tư vấn kỹ thuật chỉ là đánh giá sơ bộ. Với dấu hiệu nguy hiểm liên quan phanh, lái, cháy, khói, quá nhiệt hoặc áp suất dầu, ưu tiên yêu cầu dừng xe và gọi cứu hộ.
 - Tùy biến văn phong đa dạng, không lặp lại y chang các câu máy móc.
 - Nếu khách đang hỏi cách sử dụng giao diện và có uiWorkflowContext: chỉ hướng dẫn thao tác đúng trọng tâm; không chẩn đoán xe và không chèn bảng giá không liên quan.
-- Nếu khách hỏi triệu chứng/giá dịch vụ: dùng pineconeContext để đánh giá sơ bộ và chỉ liệt kê dịch vụ, giá có thật trong catalogList. Không ép phải đưa dịch vụ nếu dữ liệu không đủ liên quan.
+- Nếu khách hỏi triệu chứng/giá dịch vụ: dùng pineconeContext để đánh giá sơ bộ và chỉ liệt kê dịch vụ, giá có thật trong catalogList. Không ép phải đưa dịch vụ nếu dữ liệu không đủ liên quan. Nếu khách chưa nói rõ đang cần dịch vụ gì (chào hỏi chung chung, hỏi mở), CHỈ liệt kê tối đa 3-4 dịch vụ tiêu biểu nhất kèm giá, không liệt kê toàn bộ catalogList; sau đó hỏi lại khách đang quan tâm dịch vụ nào để tư vấn tiếp, và nhắc khách gõ đúng TÊN dịch vụ muốn chọn (không dùng số thứ tự vì hệ thống không nhận diện theo số).
 - Luôn trả lời đúng phạm vi câu hỏi. Khách hỏi quy trình thì chỉ nêu quy trình; không tự thêm bảng giá, cách đặt lịch hoặc nội dung quảng cáo. Khách hỏi giá mới báo giá; khách hỏi cách thao tác mới hướng dẫn nút bấm.
 - Nếu responseMode là DIRECT_ANSWER: trả lời thẳng, thông thường 3-5 ý, mỗi ý tối đa 2 dòng và toàn bộ không quá khoảng 130 từ, trừ khi khách yêu cầu chi tiết.
 - Nếu hệ thống yêu cầu "action" (VD: xin số điện thoại, xin ngày), hãy khéo léo hỏi khách.
@@ -781,10 +855,13 @@ const generateResponse = async (userMessage, history = [], context = {}, authCon
 
     const isBookingContext = String(context.step || '').startsWith('booking_');
     const isBookingChoiceResponse = /\b(mô tả lỗi|không biết lỗi|không rõ lỗi|kiểm tra và sửa chữa|sửa chữa lỗi|để gara kiểm tra|chẩn đoán lỗi)\b/i.test(userMessage);
+    const isBookingConfirmResponse = context.step === 'booking_confirming' &&
+      /\b(xác nhận|đồng ý|dong y|xac nhan|ok|oke|okay|đúng rồi|dung roi|chốt|chot)\b/i.test(userMessage);
     const isRepairDescriptionTurn = context.step === 'booking_get_repair_description';
     const isBookingTurn = !isUiGuidanceQuestion(userMessage) && (
       ['book_appointment', 'provide_date', 'provide_service'].includes(parsed.intent) ||
       isRepairDescriptionTurn ||
+      isBookingConfirmResponse ||
       (isBookingContext && (parsed.intent !== 'search_service' || isBookingChoiceResponse))
     );
 

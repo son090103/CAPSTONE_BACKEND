@@ -124,9 +124,9 @@ module.exports.autoGenerateSchedule = async (startDate, endDate) => {
                 let available = [...validStaff]
                     .filter(s => {
                         const key = `${dateStr}_${s.id}`;
-                        return (dailySlotCounts[key] || 0) < 2; // tối đa 2 ca/ngày
+                        return (dailySlotCounts[key] || 0) < 2;
                     })
-                    .sort(() => Math.random() - 0.5)           // shuffle trước
+                    .sort(() => Math.random() - 0.5)
                     .sort((a, b) => workCounts[a.id] - workCounts[b.id]); // sort ưu tiên người làm ít ca hơn
 
                 // Hàm assign theo điều kiện
@@ -138,7 +138,6 @@ module.exports.autoGenerateSchedule = async (startDate, endDate) => {
                         if (done >= count || assignedCount >= maxNeeded) return true;
                         if (!condFn(s)) return true;
 
-                        // Nếu không phải là Hard Rule (bắt buộc), thì phải tuân thủ giới hạn 6 ca/tuần
                         if (!isHardRule && workCounts[s.id] >= 6) return true;
 
                         const key = `${dateStr}_${s.id}`;
@@ -171,7 +170,6 @@ module.exports.autoGenerateSchedule = async (startDate, endDate) => {
             }
         }
 
-        // 7. Bulk insert vào DB
         await db.Shift_Templates.bulkCreate(generatedTemplates, { transaction });
         await transaction.commit();
 

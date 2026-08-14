@@ -20,7 +20,6 @@ function getChartData(payments, timeframe, start, end) {
   const ordersMap = {};
 
   if (timeframe === 'today') {
-    // 2-hour slots: 08:00, 10:00, 12:00, 14:00, 16:00, 18:00
     const slots = ['08:00', '10:00', '12:00', '14:00', '16:00', '18:00'];
     slots.forEach(slot => {
       days.push(slot);
@@ -47,7 +46,7 @@ function getChartData(payments, timeframe, start, end) {
     for (let i = 6; i >= 0; i--) {
       const d = new Date(end.getTime() - i * 24 * 60 * 60 * 1000);
       const label = dayNames[d.getDay()];
-      const key = getVietnamDateKey(d); // YYYY-MM-DD in Vietnam time
+      const key = getVietnamDateKey(d);
       days.push(label);
       revenueMap[key] = 0;
       ordersMap[key] = 0;
@@ -61,7 +60,6 @@ function getChartData(payments, timeframe, start, end) {
       }
     });
 
-    // Map keys back to chronological order of days
     const revenueList = [];
     const ordersList = [];
     for (let i = 6; i >= 0; i--) {
@@ -803,14 +801,14 @@ module.exports.getAdminDashboardStats = async (query) => {
         durationAvg: Math.round(Number(row.durationAvg || 0))
       })),
       topPaidParts: topPaidParts.map(row => ({
-      ...row,
-      quantity: Number(row.quantity || 0),
-      orderCount: Number(row.orderCount || 0),
-      revenue: Number(row.revenue || 0),
-      averageInputPrice: Number(row.averageInputPrice || 0),
-      averageOutputPrice: Number(row.quantity || 0) > 0 ? Number(row.revenue || 0) / Number(row.quantity) : 0,
-      cost: Number(row.cost || 0),
-      marginAfterPartCost: Number(row.revenue || 0) - Number(row.cost || 0)
+        ...row,
+        quantity: Number(row.quantity || 0),
+        orderCount: Number(row.orderCount || 0),
+        revenue: Number(row.revenue || 0),
+        averageInputPrice: Number(row.averageInputPrice || 0),
+        averageOutputPrice: Number(row.quantity || 0) > 0 ? Number(row.revenue || 0) / Number(row.quantity) : 0,
+        cost: Number(row.cost || 0),
+        marginAfterPartCost: Number(row.revenue || 0) - Number(row.cost || 0)
       }))
     },
     customersBreakdown: {
