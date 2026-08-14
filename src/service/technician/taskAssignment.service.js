@@ -520,7 +520,7 @@ module.exports.completeTask = async (
         where: {
           service_order_id: serviceOrderId,
           type: "REPAIR",
-          status: { [Op.ne]: "COMPLETED" },
+          status: { [Op.notIn]: ["COMPLETED", "CANCELLED"] },
         },
       });
       if (remainingRepair === 0) {
