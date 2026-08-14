@@ -449,7 +449,7 @@ module.exports.getServiceOrdersWithTasks = async () => {
   const serviceOrders = await db.Service_Orders.findAll({
     attributes: ["id", "status", "createdAt"],
     where: {
-      status: { [Op.in]: ["INSPECTING", "IN_PROGRESS", "WAITING_FOR_PARTS"] },
+      status: { [Op.in]: ["INSPECTING", "IN_PROGRESS", "WAITING_FOR_PARTS", "CLOSED_PARTIAL"] },
     },
     include: [
       {
