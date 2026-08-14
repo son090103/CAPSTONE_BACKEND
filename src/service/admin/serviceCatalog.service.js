@@ -103,9 +103,7 @@ const normalizeRow = (row) => {
   const normalized = {};
   Object.keys(row).forEach((key) => {
     let rawKey = key.toString().trim();
-    // Remove BOM and common zero-width/invisible chars that Excel may add
     rawKey = rawKey.replace(/^[\uFEFF\u200B\u200C\u200D\u2060]+/, '');
-    // Only attempt latin1->utf8 re-decode when the string shows mojibake signatures
     let decoded = rawKey;
     try {
       if (/Ã|Â|ï»¿|�|á»|áº|á¼|Ä|Å|Æ|â/.test(rawKey)) {
@@ -113,7 +111,6 @@ const normalizeRow = (row) => {
         if (redecoded && redecoded !== rawKey) decoded = redecoded;
       }
     } catch (e) {
-      // ignore
     }
 
     let safeKey = decoded.toLowerCase().replace(/\s+/g, "_");
@@ -140,7 +137,6 @@ const normalizeRow = (row) => {
 
 const parseNumber = (value, fallback = undefined) => {
   if (value === null || value === undefined || value === "") return fallback;
-  // Remove common thousands separators (dot, comma, spaces) then parse
   const cleaned = value.toString().replace(/[.,\s]/g, "");
   const parsed = Number(cleaned);
   return Number.isNaN(parsed) ? fallback : parsed;
