@@ -546,6 +546,17 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         transaction,
       });
 
+      const manualSparePartMap = new Map(
+        Object.entries(data.service_spare_parts || {})
+          .map(([catalogId, sparePartId]) => [Number(catalogId), Number(sparePartId)])
+          .filter(([catalogId, sparePartId]) => Number.isInteger(catalogId) && Number.isInteger(sparePartId)),
+      );
+      const manualSparePartIds = [...new Set(manualSparePartMap.values())];
+      const manualSpareParts = manualSparePartIds.length
+        ? await db.Spare_Parts.findAll({ where: { id: { [Op.in]: manualSparePartIds } }, transaction })
+        : [];
+      const manualSparePartById = new Map(manualSpareParts.map((p) => [p.id, p]));
+
       // Báo giá tự động (APPROVED) cho các dịch vụ lẻ/combo lễ tân chọn thẳng khi tạo hóa đơn —
       // cần có Quotation_Details để KTV yêu cầu xuất kho phụ tùng đi kèm dịch vụ (nếu có).
       // Quotation.task_id chỉ là điểm neo kỹ thuật (ràng buộc DB không cho null) — dùng luôn Task
@@ -625,6 +636,9 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         );
         await task.update({ quotation_item_id: serviceDetail.id }, { transaction });
 
+        const manualSparePartId = manualSparePartMap.get(catalogId);
+        const manualSparePart = manualSparePartId ? manualSparePartById.get(manualSparePartId) : null;
+
         let partAmount = 0;
         if (catalog.spare_part_id && catalog.sparePart) {
           partAmount = Number(catalog.sparePart.retail_price || 0);
@@ -633,6 +647,21 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
               quotation_id: quotation.id,
               issue_id: issue.id,
               spare_part_id: catalog.spare_part_id,
+              quantity: 1,
+              unit_price: partAmount,
+              repair_price: 0,
+              amount: partAmount,
+              status: "PENDING",
+            },
+            { transaction },
+          );
+        } else if (manualSparePart) {
+          partAmount = Number(manualSparePart.retail_price || 0);
+          await db.Quotation_Details.create(
+            {
+              quotation_id: quotation.id,
+              issue_id: issue.id,
+              spare_part_id: manualSparePart.id,
               quantity: 1,
               unit_price: partAmount,
               repair_price: 0,
@@ -775,7 +804,7 @@ module.exports.getServiceOrdersAwaitingPayment = async () => {
           {
             model: db.Customers,
             as: "customer",
-            attributes: ["id", "name", "phone"],
+            attributes: ["id", "name", "phone", "loyalty_points"],
           },
         ],
       },

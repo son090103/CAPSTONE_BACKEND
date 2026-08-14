@@ -167,10 +167,10 @@ async function getAvailableBookingHours(date, selection) {
 // Chatbot dùng SDK mới và Interactions API. Các module Gemini cũ khác trong
 // backend vẫn dùng @google/generative-ai cho đến khi được migrate riêng.
 const genAI = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
+  apiKey: process.env.GEMINI_API_KEY2,
   apiVersion: "v1beta",
 });
-const GEMINI_CHAT_MODEL = process.env.GEMINI_CHAT_MODEL || "gemini-2.5-flash";
+const GEMINI_CHAT_MODEL = process.env.GEMINI_CHAT_MODEL || "gemini-3.5-flash";
 
 async function createTextInteraction(input, options = {}) {
   let interaction;
