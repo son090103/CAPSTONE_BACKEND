@@ -40,7 +40,6 @@ module.exports.getCustomers = async (searchParams = "") => {
             order: [['createdAt', 'DESC']]
         });
 
-        // Phân loại khách hàng: đã đăng ký hệ thống (có user_id) và vãng lai (không có user_id)
         const registeredCustomers = customers.filter(c => c.user_id !== null);
         const guestCustomers = customers.filter(c => c.user_id === null);
 
