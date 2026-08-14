@@ -311,45 +311,14 @@ module.exports.getAdminDashboardStats = async (query) => {
   const totalOrders = payments.length;
   const avgRevPerOrder = totalOrders > 0 ? Math.round(totalRevenue / totalOrders) : 0;
 
-  const paidOrderIds = [...new Set(payments.map(p => p.order_id).filter(Boolean))];
-  let totalCost = 0;
-  if (paidOrderIds.length > 0) {
-    const costRows = await db.sequelize.query(`
-      SELECT
-        qd.spare_part_id AS "sparePartId",
-        SUM(qd.quantity) AS "quantitySold"
-      FROM "Quotation_Details" qd
-      INNER JOIN "Quotations" q ON q.id = qd.quotation_id
-      INNER JOIN "Tasks" t ON t.id = q.task_id
-      WHERE t.service_order_id IN (:orderIds)
-        AND qd.spare_part_id IS NOT NULL
-        AND qd.status != 'CANCELLED'
-        AND q.status = 'APPROVED'
-      GROUP BY qd.spare_part_id
-    `, {
-      replacements: { orderIds: paidOrderIds },
-      type: db.Sequelize.QueryTypes.SELECT
-    });
-
-    if (costRows.length > 0) {
-      const avgCostRows = await db.sequelize.query(`
-        SELECT part_id AS "sparePartId", AVG(unit_cost) AS "avgUnitCost"
-        FROM "Inventory_Batches" ib
-        INNER JOIN "Inventory_Logs" il ON il.id = ib.inventory_log_id
-        WHERE il.part_id IN (:sparePartIds)
-        GROUP BY part_id
-      `, {
-        replacements: { sparePartIds: costRows.map(r => r.sparePartId) },
-        type: db.Sequelize.QueryTypes.SELECT
-      });
-      const avgCostBySparePartId = new Map(avgCostRows.map(r => [r.sparePartId, parseFloat(r.avgUnitCost || 0)]));
-      totalCost = costRows.reduce((sum, row) => {
-        const avgCost = avgCostBySparePartId.get(row.sparePartId) || 0;
-        return sum + avgCost * Number(row.quantitySold || 0);
-      }, 0);
-    }
-  }
-  const totalProfit = totalRevenue - totalCost;
+  const periodOrders = await db.Service_Orders.findAll({
+    attributes: ['id', 'status'],
+    where: { entry_time: { [Op.between]: [start, end] } },
+    raw: true
+  });
+  const completionRate = periodOrders.length > 0
+    ? Number(((periodOrders.filter(o => ['COMPLETED', 'DELIVERED'].includes(o.status)).length / periodOrders.length) * 100).toFixed(1))
+    : 0;
   const previousRevenue = previousPayments.reduce((sum, payment) => sum + parseFloat(payment.amount || 0), 0);
   const previousOrders = previousPayments.length;
   const previousAvgRevPerOrder = previousOrders > 0 ? Math.round(previousRevenue / previousOrders) : 0;
@@ -748,7 +717,7 @@ module.exports.getAdminDashboardStats = async (query) => {
     revenueChart: chartData,
     kpis: {
       totalRevenue,
-      totalProfit,
+      completionRate,
       totalOrders,
       avgRevenuePerOrder: avgRevPerOrder,
       activeCustomers: activeCustomersCount,
