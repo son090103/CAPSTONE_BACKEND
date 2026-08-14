@@ -343,18 +343,6 @@ const handleSepayTransaction = async (paymentData) => {
             };
             if (!isDeposit) {
                 updateFields.payment_status = 'PAID';
-
-                // Update appointment status to CONFIRMED
-                const serviceOrder = await db.Service_Orders.findOne({
-                    where: { id: bookingPayment.order_id }
-                });
-                if (serviceOrder && serviceOrder.appointment_id) {
-                    await db.Appointments.update(
-                        { status: 'CONFIRMED' },
-                        { where: { id: serviceOrder.appointment_id } }
-                    );
-                    console.log(`✅ [Sepay] Đã cập nhật trạng thái Appointments thành CONFIRMED cho đơn hàng ${bookingPayment.order_id}`);
-                }
             }
             await bookingPayment.update(updateFields);
             console.log(`✅ [Sepay] Đã cập nhật Booking_Payments (ID: ${bookingPayment.id}) ${isDeposit ? 'cho đặt cọc (DEPOSITED)' : 'thành PAID'}`);
@@ -524,18 +512,6 @@ const confirmPayment = async (orderId, amount, paymentMethod = 'VIETQR', recepti
 
         // Add Loyalty Points (Earn points based on the actual cash amount paid)
         await loyaltyService.addPointsOnPayment(numericOrderId, amount);
-
-        // Update appointment status to CONFIRMED
-        const serviceOrder = await db.Service_Orders.findOne({
-            where: { id: numericOrderId }
-        });
-        if (serviceOrder && serviceOrder.appointment_id) {
-            await db.Appointments.update(
-                { status: 'CONFIRMED' },
-                { where: { id: serviceOrder.appointment_id } }
-            );
-            console.log(`✅ [Payment] Đã cập nhật trạng thái Appointments thành CONFIRMED cho đơn hàng ${numericOrderId}`);
-        }
 
         return { success: true, bookingPayment };
     } catch (error) {
