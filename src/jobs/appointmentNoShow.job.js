@@ -6,7 +6,7 @@ const Appointments = db.Appointments;
 const NO_SHOW_GRACE_PERIOD_MS = 60 * 60 * 1000;
 const NO_SHOW_NOTE = '[Hệ thống tự hủy] Quá giờ hẹn trên 1 tiếng mà chưa tiếp nhận xe.';
 
-cron.schedule('*/15 * * * *', async () => {
+cron.schedule('* * * * *', async () => {
     try {
         const cutoff = new Date(Date.now() - NO_SHOW_GRACE_PERIOD_MS);
 
