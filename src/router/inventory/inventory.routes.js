@@ -2,6 +2,7 @@ const express = require("express");
 
 const router = express.Router();
 const upload = require("../../util/upload.util");
+const uploadExcel = require("../../util/excelUpload.util");
 const sparePartManagementController = require("../../controller/inventory/sparePartManagement.controller");
 const sparePartCategoryManagementController = require("../../controller/inventory/sparePartCategoryManagement.controller");
 const supplierManagementController = require("../../controller/inventory/supplierManagement.controller");
@@ -16,7 +17,6 @@ router.get("/export-requests", importAndExportManagementController.getExportRequ
 router.post("/export-requests/approve", importAndExportManagementController.approveExportRequest);
 router.post("/export-requests/reject", importAndExportManagementController.rejectExportRequest);
 router.get("/export-requests/:receiptCode/receipt", importAndExportManagementController.getExportReceiptDetail);
-router.post("/export-requests/:receiptCode/sign", upload.single("proofPhoto"), importAndExportManagementController.signExportReceipt);
 
 router.get("/export", importAndExportManagementController.viewExportHistory);
 router.get("/export/:receiptCode", importAndExportManagementController.viewExportDetail);
@@ -27,7 +27,22 @@ router.patch("/part/:id", sparePartManagementController.updateSparePart);
 router.post("/import", importAndExportManagementController.importSparePart);
 router.get("/import", importAndExportManagementController.viewImportHistory);
 router.get("/import/:receiptCode", importAndExportManagementController.viewImportDetail);
-router.post("/import/order-item", importAndExportManagementController.importSparePartForOrderItem);
+
+router.post("/custom-part-orders/:id/confirm-arrival", importAndExportManagementController.confirmCustomPartArrival);
+router.post("/custom-part-orders/:id/export", importAndExportManagementController.exportCustomPartOrder);
+
+router.post("/restock-requests", importAndExportManagementController.createRestockRequest);
+router.get("/restock-requests", importAndExportManagementController.getRestockRequests);
+router.post("/restock-requests/:id/resolve", importAndExportManagementController.resolveRestockRequest);
+router.get("/restock-requests/summary", importAndExportManagementController.getRestockRequestsSummary);
+router.get("/restock-requests/history", importAndExportManagementController.getRestockRequestsHistory);
+router.get("/restock-requests/export-excel", importAndExportManagementController.exportRestockRequestsExcel);
+router.post(
+  "/restock-requests/import-excel",
+  uploadExcel.single("file"),
+  importAndExportManagementController.previewImportRestockExcel,
+);
+router.post("/restock-requests/confirm-import", importAndExportManagementController.confirmRestockImport);
 
 router.get("/part-category", sparePartCategoryManagementController.getPartCategory);
 router.post("/part-category", sparePartCategoryManagementController.createPartCategory);
@@ -38,6 +53,10 @@ router.post("/supplier", supplierManagementController.createSupplier);
 router.patch("/supplier/:id", supplierManagementController.updateSupplier);
 
 router.get("/inventory/waiting-stock", importAndExportManagementController.getWaitingStockItems);
+router.get("/restock-suggestions", importAndExportManagementController.getRestockSuggestions);
+router.post("/restock-proposals/analyze", importAndExportManagementController.analyzeRestockSuggestions);
+router.get("/restock-proposals", importAndExportManagementController.getRestockProposals);
+router.get("/restock-proposals/:id", importAndExportManagementController.getRestockProposalDetail);
 
 router.get("/notifications", notificationController.getNotifications);
 router.get("/notifications/unread-count", notificationController.getUnreadCount);

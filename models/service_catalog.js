@@ -73,6 +73,11 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: true // false = dịch vụ không cần lên cầu nâng (rửa xe, kiểm tra nhanh...)
+    },
+    is_default_inspection_service: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false // true = dịch vụ được tự động gắn khi khách đặt lịch "Kiểm tra và sửa chữa lỗi" (không chọn dịch vụ cụ thể). Chỉ được đúng 1 dòng true tại 1 thời điểm.
     }
   }, {
     sequelize,

@@ -6,6 +6,15 @@ const { normalizeVnPhone } = require("../../util/phone.util");
 const cloudinary = require("../../config/cloudinary.config");
 const streamifier = require("streamifier");
 
+module.exports.getActiveRescueTracking = async (req, res) => {
+    try {
+        const data = await profileService.getActiveRescueTracking(res.locals.user.id);
+        return res.status(200).json({ success: true, data });
+    } catch (error) {
+        return res.status(error.status || 500).json({ success: false, message: error.message || 'Không thể lấy cuốc cứu hộ đang hoạt động' });
+    }
+};
+
 module.exports.getProfile = async (req, res) => {
     try {
         const requestUser = res.locals.user;
@@ -161,6 +170,7 @@ module.exports.changePassword = async (req, res) => {
         );
         return res.status(200).json({
             message: result.message,
+            rescueId: result.rescueId || null,
         });
     } catch (error) {
         return res.status(error.status || 500).json({

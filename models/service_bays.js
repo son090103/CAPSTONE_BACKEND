@@ -18,12 +18,6 @@ module.exports = (sequelize, DataTypes) => {
           as: 'serviceOrders'
         });
       }
-      if (models.Workshop_Tools) {
-        this.hasMany(models.Workshop_Tools, {
-          foreignKey: 'bay_id',
-          as: 'tools'
-        });
-      }
     }
   }
   Service_Bays.init({

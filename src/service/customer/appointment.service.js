@@ -132,10 +132,10 @@ module.exports.createAppointment = async (userId, data) => {
         }
     }
 
-    // Nếu đặt lịch sửa chữa (REPAIR), tự động thêm dịch vụ kiểm tra (labor_price = 0)
+    // Nếu đặt lịch sửa chữa (REPAIR), tự động thêm dịch vụ kiểm tra mặc định
     if (data.booking_type && data.booking_type.includes('REPAIR')) {
         const freeCheckupService = await db.Service_Catalog.findOne({
-            where: { labor_price: 0, is_active: true }
+            where: { is_default_inspection_service: true, is_active: true }
         });
         if (freeCheckupService) {
             const existing = allDetails.find(d => d.catalog_id === freeCheckupService.id);
@@ -212,6 +212,23 @@ module.exports.createAppointment = async (userId, data) => {
         let resolvedVehicleId = data.vehicle_id || null;
 
         if (!resolvedVehicleId && data.vehicle_plate) {
+            const normalizedPlate = data.vehicle_plate.trim().toUpperCase();
+            const duplicateVehicle = await db.Vehicles.findOne({
+                where: db.sequelize.where(
+                    db.sequelize.fn('UPPER', db.sequelize.col('license_plate')),
+                    normalizedPlate
+                ),
+                transaction
+            });
+            if (duplicateVehicle) {
+                throw {
+                    status: 409,
+                    message: duplicateVehicle.customer_id === customer.id
+                        ? `Biển số ${normalizedPlate} đã có trong danh sách xe của anh/chị. Vui lòng chọn xe đã có thay vì thêm xe mới.`
+                        : `Biển số ${normalizedPlate} đã thuộc một tài khoản khác. Vui lòng kiểm tra lại biển số hoặc liên hệ gara để xác minh.`
+                };
+            }
+
             let make = null;
             if (data.vehicle_brand) {
                 const brandName = data.vehicle_brand.trim();
@@ -250,18 +267,14 @@ module.exports.createAppointment = async (userId, data) => {
                 }, { transaction });
             }
 
-            const [vehicle] = await db.Vehicles.findOrCreate({
-                where: { customer_id: customer.id, license_plate: data.vehicle_plate.trim() },
-                defaults: {
-                    customer_id: customer.id,
-                    model_id: model.id,
-                    license_plate: data.vehicle_plate.trim(),
-                    year: data.vehicle_year ? parseInt(data.vehicle_year, 10) : new Date().getFullYear(),
-                    color: data.vehicle_color || null,
-                    avg_daily_mileage: 0.0
-                },
-                transaction
-            });
+            const vehicle = await db.Vehicles.create({
+                customer_id: customer.id,
+                model_id: model.id,
+                license_plate: normalizedPlate,
+                year: data.vehicle_year ? parseInt(data.vehicle_year, 10) : new Date().getFullYear(),
+                color: data.vehicle_color || null,
+                avg_daily_mileage: 0.0
+            }, { transaction });
 
             resolvedVehicleId = vehicle.id;
         } else if (resolvedVehicleId) {
@@ -455,12 +468,19 @@ module.exports.getAppointmentVehicles = async (userId) => {
     const availableVehicles = [];
 
     for (const vehicle of vehicles) {
-        // Kiểm tra xem xe có đang có lịch hẹn chờ xử lý hoặc đang xử lý không (chỉ khóa khi lịch hẹn đã được CONFIRMED thanh toán)
+        // Khóa xe khi đã có lịch đang chờ hoặc xe đã được lễ tân tiếp nhận tại gara.
         const activeAppointment = await db.Appointments.findOne({
             where: {
                 vehicle_id: vehicle.id,
-                status: 'CONFIRMED'
-            }
+                status: {
+                    [db.Sequelize.Op.in]: [
+                        'PENDING',
+                        'CONFIRMED',
+                        'INFORMATION_RECEIVED'
+                    ]
+                }
+            },
+            order: [['created_at', 'DESC']]
         });
 
         // Kiểm tra xem xe có đang nằm trong xưởng sửa chữa không
@@ -485,7 +505,10 @@ module.exports.getAppointmentVehicles = async (userId) => {
 
         if (activeAppointment) {
             vehicleData.isDisabled = true;
-            vehicleData.disableReason = 'Xe đang có lịch hẹn chờ xử lý';
+            const hasArrivedAtGarage = activeAppointment.status === 'INFORMATION_RECEIVED';
+            vehicleData.disableReason = hasArrivedAtGarage
+                ? 'Xe đã được tiếp nhận tại gara'
+                : 'Xe đang có lịch hẹn chờ xử lý';
         } else if (isServiceOrderActive) {
             vehicleData.isDisabled = true;
             vehicleData.disableReason = 'Xe đang được sửa tại xưởng';

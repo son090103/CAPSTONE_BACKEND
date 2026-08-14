@@ -72,7 +72,7 @@ module.exports.searchServiceCatalog = async (req, res) => {
 
     const data = await guestService.searchServiceCatalog({
       lang: getLanguage(req.query.lang),
-      q: String(req.query.q || "").trim(),
+      q: String(req.query.q || req.query.search || "").trim(),
       categoryId,
       page,
       limit,

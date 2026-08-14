@@ -136,6 +136,7 @@ module.exports.updateSparePart = async (
   retail_price,
   warranty_period_months,
   warranty_km_limit,
+  min_threshold,
 ) => {
   const part = await SparePart.findOne({
     where: { id: id },
@@ -149,6 +150,7 @@ module.exports.updateSparePart = async (
     retail_price: retail_price,
     warranty_period_months: warranty_period_months,
     warranty_km_limit: warranty_km_limit,
+    ...(min_threshold !== undefined ? { min_threshold } : {}),
   });
   return updatePart;
 };

@@ -8,16 +8,14 @@ const quoteManagementController = require("./../../controller/receptionist/quote
 const technicianController = require("../../controller/receptionist/technician.controller");
 const chatController = require("../../controller/chat/chat.controller");
 
-router.get("/issues", quoteManagementController.getIssueReports);
-router.post("/quote", quoteManagementController.createQuotation);
-router.patch("/quote/:id", quoteManagementController.updateQuotation);
-router.get("/quote", quoteManagementController.getQuoteHistory);
 router.get("/quote/service-order/:serviceOrderId/payment-summary",quoteManagementController.getPaymentSummary);
-router.get("/spare-parts", quoteManagementController.getSpareParts);
-router.get("/services", quoteManagementController.getAllService);
+router.get("/quote", quoteManagementController.getQuoteHistory);
+router.get("/quotation/:id", quoteManagementController.getQuotationById);
+router.patch("/quotation/:id/approve", quoteManagementController.approveQuote);
 
 router.get("/appointments", appointmentController.getAppointment);
 router.post("/appointment", appointmentController.createAppointmentForCustomer);
+router.post("/appointment/walk-in", appointmentController.createWalkInTicket);
 router.get("/appointment/:key", appointmentController.getAppointmentByKey);
 router.put("/appointment/:key/receive", appointmentController.receiveAppointment);
 router.post("/appointment/:key/vin", appointmentController.updateVehicleVin);
@@ -39,9 +37,7 @@ router.get("/notifications/unread-count", notificationController.getUnreadCount)
 router.get("/notification/:id", notificationController.getNotificationById)
 router.put("/notification/:id/read", notificationController.markAsRead)
 
-router.get("/quotation/:id", quoteManagementController.getQuotationById);
-router.patch("/quotation/:id/approve", quoteManagementController.approveQuote);
-// lấy ra toàn bộ technician làm hôm nay 
+// lấy ra toàn bộ technician làm hôm nay
 router.get("/technicians/working-today", technicianController.getTechniciansWorkingToday);
 
 // Phân công technician cho 1 yêu cầu cứu hộ

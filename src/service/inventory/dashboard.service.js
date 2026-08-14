@@ -7,7 +7,7 @@ const InventoryLog = db.Inventory_Logs;
 const InventoryBatch = db.Inventory_Batches;
 
 module.exports.getInventoryDashboardSummary = async () => {
-    const [parts, categories, lowStock, todayIn, todayOut, recentLogsToday, importExportTrend, topConsumedDb] = await Promise.all([
+    const [parts, categories, lowStock, todayIn, todayOut, recentLogs, importExportTrend, topConsumed, topAgingStock] = await Promise.all([
         SparePart.findAll({
             attributes: ["id", "name", "stock_quantity", "min_threshold", "retail_price", "category_id"],
             raw: true,
@@ -31,7 +31,6 @@ module.exports.getInventoryDashboardSummary = async () => {
             where: { type: "OUT", createdAt: { [Op.gte]: startOfDay() } },
         }),
         InventoryLog.findAll({
-            where: { createdAt: { [Op.gte]: startOfDay() } },
             attributes: ["receipt_code", "type", "quantity", "unit_price", "createdAt"],
             include: [{ model: SparePart, as: "part", attributes: ["name", "sku"] }],
             order: [["createdAt", "DESC"]],
@@ -41,55 +40,13 @@ module.exports.getInventoryDashboardSummary = async () => {
         }),
         getImportExportTrend(),
         getTopConsumed(),
+        getTopAgingStock(),
     ]);
 
-    // Fallback: If no transactions today, fetch 8 most recent transactions overall
-    let recentTransactions = recentLogsToday;
-    if (!recentTransactions || recentTransactions.length === 0) {
-        recentTransactions = await InventoryLog.findAll({
-            attributes: ["receipt_code", "type", "quantity", "unit_price", "createdAt"],
-            include: [{ model: SparePart, as: "part", attributes: ["name", "sku"] }],
-            order: [["createdAt", "DESC"]],
-            limit: 8,
-            raw: true,
-            nest: true,
-        });
-    }
-
-    // High fidelity mockup fallback for recent transactions if database is completely empty
-    if (!recentTransactions || recentTransactions.length === 0) {
-        recentTransactions = [
-          { receipt_code: "PX-0808-01", type: "OUT", quantity: 2, unit_price: 120000, createdAt: new Date(Date.now() - 3600000).toISOString(), part: { name: "Lọc dầu động cơ Toyota Vios", sku: "SP-TOY-0001" } },
-          { receipt_code: "PN-0808-01", type: "IN", quantity: 20, unit_price: 85000, createdAt: new Date(Date.now() - 7200000).toISOString(), part: { name: "Lọc dầu động cơ Toyota Vios", sku: "SP-TOY-0001" } },
-          { receipt_code: "PX-0807-02", type: "OUT", quantity: 4, unit_price: 280000, createdAt: new Date(Date.now() - 86400000).toISOString(), part: { name: "Bugi BMW 320i", sku: "SP-BMW-0003" } },
-          { receipt_code: "PX-0807-01", type: "OUT", quantity: 2, unit_price: 560000, createdAt: new Date(Date.now() - 100000000).toISOString(), part: { name: "Má phanh trước Honda City", sku: "SP-HON-0002" } },
-        ];
-    }
-
-    // Fallback lowStock list if empty
-    const lowStockList = lowStock.length > 0 ? lowStock : [
-        { id: 1, name: "Má phanh trước Honda City", stock_quantity: 2, min_threshold: 5 },
-        { id: 2, name: "Lọc dầu Mercedes C200", stock_quantity: 1, min_threshold: 3 }
-    ];
-
-    // Fallback topConsumed if empty
-    const topConsumed = topConsumedDb && topConsumedDb.length > 0 ? topConsumedDb : [
-        { name: "Lọc nhớt Toyota Vios", qty: 45 },
-        { name: "Má phanh trước Honda City", qty: 32 },
-        { name: "Bugi BMW 320i", qty: 24 },
-        { name: "Lọc dầu Mercedes C200", qty: 15 }
-    ];
-
-    // Fallback trend if empty
-    const finalTrend = importExportTrend.importQty.reduce((s, v) => s + v, 0) > 0 ? importExportTrend : {
-        labels: ["T2", "T3", "T4", "T5", "T6", "T7", "CN"],
-        importQty: [15, 20, 18, 12, 25, 30, 5],
-        exportQty: [12, 15, 14, 18, 20, 22, 8]
-    };
-
-    const totalValue = parts.reduce((sum, item) => sum + Number(item.stock_quantity || 0) * Number(item.retail_price || 0), 0) || 125000000;
-    const totalSku = parts.length || 6;
-    let stockByCategory = categories.map((category) => {
+    const totalValue = parts.reduce((sum, item) => sum + Number(item.stock_quantity || 0) * Number(item.retail_price || 0), 0);
+    const totalSku = parts.length;
+    const lowStockCount = lowStock.length;
+    const stockByCategory = categories.map((category) => {
         const categoryParts = parts.filter((item) => Number(item.category_id) === Number(category.id));
         const totalQty = categoryParts.reduce((sum, item) => sum + Number(item.stock_quantity || 0), 0);
         return {
@@ -183,7 +140,7 @@ module.exports.getInventoryDashboardSummary = async () => {
         importExportTrend: finalTrend,
         recentTransactions,
         topConsumed,
-        upcomingDemand,
+        topAgingStock,
     };
 };
 
@@ -194,18 +151,68 @@ async function getTopConsumed() {
             [fn("SUM", col("quantity")), "totalQty"],
         ],
         where: { type: "OUT" },
-        include: [{ model: SparePart, as: "part", attributes: ["name", "brand"] }],
-        group: ["part_id", "part.id", "part.name", "part.brand"],
+        include: [{ model: SparePart, as: "part", attributes: ["name", "brand", "sku"] }],
+        group: ["part_id", "part.id", "part.name", "part.brand", "part.sku"],
         order: [[fn("SUM", col("quantity")), "DESC"]],
-        limit: 7,
+        limit: 10,
         raw: true,
         nest: true,
     });
 
     return rows.map((row) => ({
         name: row.part?.brand ? `${row.part.name} (${row.part.brand})` : (row.part?.name || "Phụ tùng"),
+        sku: row.part?.sku || null,
         qty: Number(row.totalQty || 0),
     }));
+}
+
+// Top 10 phụ tùng còn tồn kho (stock_quantity > 0) nhưng lâu nhất chưa có ai xuất ra dùng -
+// tính bằng số ngày kể từ lần xuất kho (type OUT) gần nhất đến nay. Nếu phụ tùng chưa từng
+// được xuất lần nào, tính từ lần nhập kho (type IN) gần nhất - coi như "nằm im từ lúc nhập".
+async function getTopAgingStock() {
+    const parts = await SparePart.findAll({
+        where: { stock_quantity: { [Op.gt]: 0 } },
+        attributes: ["id", "name", "brand", "sku", "stock_quantity"],
+        raw: true,
+    });
+    if (parts.length === 0) return [];
+
+    const partIds = parts.map((p) => p.id);
+    const [lastOutRows, lastInRows] = await Promise.all([
+        InventoryLog.findAll({
+            where: { part_id: { [Op.in]: partIds }, type: "OUT" },
+            attributes: ["part_id", [fn("MAX", col("createdAt")), "lastAt"]],
+            group: ["part_id"],
+            raw: true,
+        }),
+        InventoryLog.findAll({
+            where: { part_id: { [Op.in]: partIds }, type: "IN" },
+            attributes: ["part_id", [fn("MAX", col("createdAt")), "lastAt"]],
+            group: ["part_id"],
+            raw: true,
+        }),
+    ]);
+
+    const lastOutByPart = new Map(lastOutRows.map((row) => [row.part_id, row.lastAt]));
+    const lastInByPart = new Map(lastInRows.map((row) => [row.part_id, row.lastAt]));
+    const now = new Date();
+
+    const aging = parts
+        .map((part) => {
+            const referenceDate = lastOutByPart.get(part.id) ?? lastInByPart.get(part.id);
+            if (!referenceDate) return null;
+            const days = Math.floor((now - new Date(referenceDate)) / (1000 * 60 * 60 * 24));
+            return {
+                name: part.brand ? `${part.name} (${part.brand})` : part.name,
+                sku: part.sku || null,
+                days,
+            };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.days - a.days)
+        .slice(0, 10);
+
+    return aging;
 }
 
 async function getImportExportTrend() {

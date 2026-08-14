@@ -32,6 +32,18 @@ module.exports = (sequelize, DataTypes) => {
           as: "requestedByUser",
         });
       }
+      if (models.Custom_Part_Orders) {
+        this.hasOne(models.Custom_Part_Orders, {
+          foreignKey: "quotation_detail_id",
+          as: "customPartOrder",
+        });
+      }
+      if (models.Task) {
+        this.belongsTo(models.Task, {
+          foreignKey: "task_id",
+          as: "task",
+        });
+      }
     }
   }
   Quotation_Details.init(
@@ -50,6 +62,14 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
       spare_part_id: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
+      // Task thật sự sinh ra từ dòng dịch vụ này lúc duyệt báo giá (approveQuotation) — cho
+      // phép xuất/nhập kho phụ tùng đặt riêng biết chính xác Task nào đang chờ, thay vì đi
+      // vòng qua Quotation.task_id (có thể chỉ là điểm neo kỹ thuật, không phải Task thật sự
+      // liên quan khi báo giá được tạo từ lỗi phát sinh không gắn Task cụ thể).
+      task_id: {
         type: DataTypes.INTEGER,
         allowNull: true,
       },
@@ -79,12 +99,18 @@ module.exports = (sequelize, DataTypes) => {
           isIn: [[
             "PENDING",
             "REQUESTED",
-            "WAITING_SIGNATURE",
             "EXPORTED",
             "RECEIVED",
-            "WAITING_DEPOSIT",
-            "WAITING_STOCK",
+            "CUSTOM_ORDERED",
             "CANCELLED",
+            // WAITING_DEPOSIT: giữ tạm cho dòng dữ liệu cũ chưa migrate sang Custom_Part_Orders
+            // (xem migrate-custom-items-to-custom-part-orders) — không còn dòng mới nào ghi giá
+            // trị này, sẽ xóa khỏi danh sách sau khi migrate xong.
+            "WAITING_DEPOSIT",
+            // WAITING_STOCK: phụ tùng kho thiếu tồn khả dụng lúc lập báo giá — vẫn được thêm vào
+            // báo giá bình thường (không chặn chọn), khách vẫn thấy đầy đủ hạng mục khi duyệt.
+            // Khi khách duyệt báo giá, các dòng này được dùng để tự động tạo Restock_Requests.
+            "WAITING_STOCK",
           ]],
         },
       },

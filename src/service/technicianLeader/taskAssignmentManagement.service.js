@@ -181,7 +181,6 @@ module.exports.getAssignmentHistory = async () => {
           "INSPECTING",
           "IN_PROGRESS",
           "WAITING_FOR_PARTS",
-          "PENDING_FINAL_QC",
         ],
       },
       id: {
@@ -441,4 +440,186 @@ module.exports.getAllTechnician = async () => {
       paused_count: active.filter((a) => a.status === "PAUSED").length,
     };
   });
+};
+
+// Trang "Theo dõi công việc theo đơn": mỗi Service Order đang hoạt động xổ ra toàn bộ Task
+// (mọi trạng thái, không chỉ PENDING chưa gán như getAllTasks) kèm thợ đang phụ trách, để
+// trưởng nhóm tới xem trực tiếp rồi tự tay hoàn thành (completeTaskByLeader bên dưới).
+module.exports.getServiceOrdersWithTasks = async () => {
+  const serviceOrders = await db.Service_Orders.findAll({
+    attributes: ["id", "status", "createdAt"],
+    where: {
+      status: { [Op.in]: ["INSPECTING", "IN_PROGRESS", "WAITING_FOR_PARTS"] },
+    },
+    include: [
+      {
+        model: Vehicles,
+        as: "vehicle",
+        attributes: ["id", "license_plate", "color"],
+        include: [
+          {
+            model: Vehicle_Models,
+            as: "model",
+            attributes: ["id", "model_name"],
+          },
+          {
+            model: db.Customers,
+            as: "customer",
+            attributes: ["id", "name", "phone"],
+            include: [
+              { model: db.User, as: "user", attributes: ["id", "fullName", "phoneNumber"] },
+            ],
+          },
+        ],
+      },
+      {
+        model: Task,
+        as: "tasks",
+        attributes: ["id", "type", "status", "createdAt"],
+        include: [
+          {
+            model: Service_Catalog,
+            as: "catalog",
+            attributes: ["id", "service_name"],
+          },
+          {
+            model: Task_Assignment,
+            as: "assignments",
+            attributes: ["id", "status", "actual_start_time"],
+            include: [
+              { model: User, as: "technician", attributes: ["id", "fullName"] },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+  return serviceOrders;
+};
+
+// Kỹ thuật viên trưởng tới hiện trường xem trực tiếp sau khi thợ báo xong bằng miệng, tự tay
+// đánh dấu hoàn thành thay vì bắt thợ tự bấm — chỉ áp dụng cho assignment đang IN_PROGRESS.
+// Không còn bước "nghiệm thu tổng thể" chờ duyệt: hết task REPAIR của Service Order thì đơn
+// tự động chuyển thẳng COMPLETED (dùng chung completeServiceOrder bên technician).
+module.exports.completeTaskByLeader = async (taskAssignmentId) => {
+  const { completeServiceOrder, hasAllPartsReady } = require("../technician/taskAssignment.service");
+  const taskAssignment = await Task_Assignment.findOne({
+    where: { id: taskAssignmentId, status: "IN_PROGRESS" },
+    include: [
+      { model: Task, as: "task", attributes: ["id", "service_order_id", "type", "quotation_item_id"] },
+    ],
+  });
+  if (!taskAssignment) {
+    throw { status: 404, message: "Không tìm thấy công việc đang thực hiện." };
+  }
+  const task = taskAssignment.task;
+  const allReady = await hasAllPartsReady(task);
+  if (!allReady) {
+    throw {
+      status: 409,
+      message: "Còn phụ tùng chưa nhận đủ, chưa thể hoàn thành công việc.",
+    };
+  }
+  await taskAssignment.update({ status: "COMPLETED", actual_end_time: new Date() });
+  const taskId = task.id;
+  const serviceOrderId = task.service_order_id;
+  const remainingAsg = await Task_Assignment.count({
+    where: { task_id: taskId, status: { [Op.ne]: "COMPLETED" } },
+  });
+  if (remainingAsg === 0) {
+    await Task.update({ status: "COMPLETED" }, { where: { id: taskId } });
+    if (task.type === "REPAIR") {
+      const remainingRepair = await Task.count({
+        where: {
+          service_order_id: serviceOrderId,
+          type: "REPAIR",
+          status: { [Op.ne]: "COMPLETED" },
+        },
+      });
+      if (remainingRepair === 0) {
+        await completeServiceOrder(serviceOrderId);
+      }
+    }
+  }
+  emitProgress(serviceOrderId, { type: "PROGRESS_UPDATED", taskId });
+  return taskAssignment;
+};
+
+// Toàn bộ báo cáo lỗi của cả đội KTV (không lọc theo 1 người) — dùng cho màn hình
+// Kỹ thuật viên trưởng xem lại lịch sử báo cáo lỗi đã tạo, giống cấu trúc dữ liệu
+// getIssuesReportHistory bên technician/taskAssignment.service.js nhưng bỏ where
+// technician_id và bổ sung tên KTV thực hiện để Leader biết ai đã báo cáo.
+module.exports.getIssuesReportHistoryForLeader = async () => {
+  const buildVehicleInclude = () => ({
+    model: Vehicles,
+    as: "vehicle",
+    attributes: ["id", "color", "license_plate"],
+    include: [
+      { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+      {
+        model: db.Customers,
+        as: "customer",
+        attributes: ["id", "name", "phone"],
+        include: [{ model: User, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+      },
+    ],
+  });
+
+  const issues = await Vehicle_Issues.findAll({
+    attributes: ["id", "error_description", "note", "createdAt", "service_order_id"],
+    // Issue phải gắn 1 trong 2: Task (luồng cũ qua Task INSPECTION/REPAIR) hoặc service_order_id
+    // trực tiếp (lỗi phát sinh không qua Task — createStandaloneIssueReport).
+    where: {
+      [Op.or]: [{ task_id: { [Op.ne]: null } }, { service_order_id: { [Op.ne]: null } }],
+    },
+    include: [
+      {
+        model: Task,
+        as: "task",
+        attributes: ["id", "status"],
+        required: false,
+        include: [
+          {
+            model: Task_Assignment,
+            as: "assignments",
+            attributes: ["id", "role_in_task"],
+            required: false,
+            include: [{ model: User, as: "technician", attributes: ["id", "fullName"] }],
+          },
+          {
+            model: db.Service_Orders,
+            as: "serviceOrder",
+            attributes: ["id"],
+            include: [buildVehicleInclude()],
+          },
+        ],
+      },
+      {
+        model: db.Service_Orders,
+        as: "serviceOrder",
+        attributes: ["id"],
+        required: false,
+        include: [buildVehicleInclude()],
+      },
+      {
+        model: Vehicle_Components,
+        as: "component",
+        attributes: ["id", "name", "parent_id"],
+        include: [
+          { model: Vehicle_Components, as: "parent", attributes: ["id", "name"] },
+          { model: Vehicle_Components, as: "children", attributes: ["id", "name"] },
+        ],
+      },
+      {
+        model: User,
+        as: "reportedByTechnician",
+        attributes: ["id", "fullName"],
+        required: false,
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+
+  return issues;
 };

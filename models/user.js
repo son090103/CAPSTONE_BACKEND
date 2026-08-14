@@ -14,12 +14,6 @@ module.exports = (sequelize, DataTypes) => {
           as: "customerProfile",
         });
       }
-      if (models.Tool_History) {
-        User.hasMany(models.Tool_History, {
-          foreignKey: "technician_id",
-          as: "operatedTools",
-        });
-      }
       if (models.Inventory_Logs) {
         User.hasMany(models.Inventory_Logs, {
           foreignKey: "manager_id",
@@ -42,6 +36,12 @@ module.exports = (sequelize, DataTypes) => {
         User.hasMany(models.Shift_Templates, {
           foreignKey: 'user_id',
           as: 'shiftTemplates'
+        });
+      }
+      if (models.AI_Analysis_Histories) {
+        User.hasMany(models.AI_Analysis_Histories, {
+          foreignKey: 'created_by',
+          as: 'aiAnalysisHistories',
         });
       }
 
