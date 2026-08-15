@@ -877,8 +877,6 @@ module.exports.approveQuotation = async (id, approvedByRole = "TECHNICIAN_LEADER
       { transaction: t },
     );
 
-    // Phụ tùng kho thiếu tồn được giữ nguyên trong báo giá (không chặn lúc soạn) — chỉ khi
-    // báo giá thực sự được duyệt mới tạo yêu cầu nhập kho cho thủ kho xử lý.
     const waitingStockItems = quotation.items.filter((item) => item.status === "WAITING_STOCK" && item.spare_part_id);
     if (waitingStockItems.length > 0) {
       await db.Restock_Requests.bulkCreate(
@@ -921,7 +919,6 @@ module.exports.approveQuotation = async (id, approvedByRole = "TECHNICIAN_LEADER
   });
 };
 
-// Giữ nguyên cho lễ tân dùng khi thu cọc/thanh toán — không thuộc phạm vi việc chuyển giao lần này.
 module.exports.getPaymentSummaryByServiceOrder = async (serviceOrderId) => {
   const quotations = await Quotation.findAll({
     attributes: ["id", "total_amount", "deposit_amount", "deposit_paid_at", "approved_at", "createdAt"],
@@ -941,9 +938,6 @@ module.exports.getPaymentSummaryByServiceOrder = async (serviceOrderId) => {
     (sum, q) => sum + q.items.filter((i) => i.status !== "CANCELLED").reduce((s, i) => s + Number(i.amount), 0),
     0,
   );
-  // Cọc đặt riêng không hoàn khi hạng mục bị hủy (đóng sớm), nhưng cũng không được trừ vào tiền
-  // phải trả của hạng mục khác còn giữ — tính lại 30% chỉ trên dòng đặt riêng CÒN GIỮ, giống
-  // đúng công thức ở getServiceOrdersAwaitingPayment (serviceOrder.service.js).
   const totalDeposit = quotations.reduce((sum, q) => {
     const customItemsTotal = q.items
       .filter((i) => i.status !== "CANCELLED" && i.customPartOrder)
