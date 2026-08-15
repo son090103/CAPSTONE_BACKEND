@@ -60,16 +60,20 @@ const extractLabeledVehicleInfo = message => {
 const extractCsvVehicleInfo = message => {
   const text = String(message || '').trim().replace(/[.!?]+$/, '');
   const parts = text.split(',').map(part => part.trim().replace(/[.!?]+$/, '')).filter(Boolean);
-  if (parts.length < 4 || parts.length > 5) return {};
   const platePattern = /\b\d{2}[A-Z]\d?[-.]?[A-Z0-9.-]{4,12}\b/i;
-  const yearPattern = /^(?:19|20)\d{2}$/;
-  if (!platePattern.test(parts[0]) || !yearPattern.test(parts[3])) return {};
+  const yearPattern = /\b(?:19|20)\d{2}\b/;
+  const plateIndex = parts.findIndex(part => platePattern.test(part) && yearPattern.test(parts[parts.indexOf(part) + 3] || ''));
+  if (plateIndex === -1) return {};
+  const plateMatch = parts[plateIndex].match(platePattern)?.[0] || '';
+  const rest = parts.slice(plateIndex + 1);
+  if (rest.length < 3 || rest.length > 4) return {};
+  if (!yearPattern.test(rest[2])) return {};
   return {
-    plate: parts[0].toUpperCase(),
-    brand: parts[1] || '',
-    model: parts[2] || '',
-    year: parts[3] || '',
-    color: parts[4] || ''
+    plate: plateMatch.toUpperCase(),
+    brand: rest[0] || '',
+    model: rest[1] || '',
+    year: rest[2].match(yearPattern)?.[0] || '',
+    color: rest[3] || ''
   };
 };
 
@@ -288,7 +292,7 @@ async function analyzeIntentWithGemini(message, context, history = []) {
   2. Nếu ngữ cảnh đang là {"step": "booking_get_date"}: Lấy ngày giờ -> intent: "provide_date". Field date PHẢI là ISO 8601 có múi giờ +07:00.
   2b. Nếu ngữ cảnh step là "booking_get_time", khách chỉ cần cung cấp giờ; không hỏi lại ngày đã có trong ngữ cảnh.
   3. Nếu ngữ cảnh đang là {"step": "booking_get_service"}: Lấy thông tin -> intent: "provide_service".
-  3b. Nếu ngữ cảnh step là "booking_get_vehicle", trích xuất TOÀN BỘ thông tin xe khách vừa cung cấp vào vehiclePlate, vehicleBrand, vehicleModel, vehicleYear, vehicleColor (đều là các trường bắt buộc). Khách có thể liệt kê tự do không cần nhãn, phân cách bằng dấu phẩy, đúng thứ tự biển số, hãng xe, dòng xe, năm sản xuất, màu sắc (ví dụ "30A-123.45, Toyota, Vios, 2022, Đen" nghĩa là vehiclePlate="30A-123.45", vehicleBrand="Toyota", vehicleModel="Vios", vehicleYear="2022", vehicleColor="Đen") — PHẢI điền đủ mọi trường xuất hiện trong câu, không chỉ lấy phần đầu tiên. Có thể giữ intent "unknown" nếu khách chỉ cung cấp thông tin xe.
+  3b. Nếu tin nhắn khách CÓ CHỨA thông tin xe (biển số dạng XXA-XXX.XX hoặc tương tự, kèm theo hãng xe/dòng xe/năm sản xuất/màu sắc) — bất kể ngữ cảnh step hiện tại là gì, kể cả khi khách cung cấp thông tin xe cùng lúc với ngày giờ/dịch vụ trong CÙNG một câu — PHẢI trích xuất TOÀN BỘ thông tin xe đó vào vehiclePlate, vehicleBrand, vehicleModel, vehicleYear, vehicleColor. Khách có thể liệt kê tự do không cần nhãn, phân cách bằng dấu phẩy, đúng thứ tự biển số, hãng xe, dòng xe, năm sản xuất, màu sắc. QUY TẮC BẮT BUỘC: PHẢI copy chính xác từng ký tự biển số/năm sản xuất/hãng xe/dòng xe/màu sắc TỪ TIN NHẮN THẬT CỦA KHÁCH ở trên, đây là dữ liệu do người dùng gõ trực tiếp, KHÔNG được tự bịa, làm tròn, đoán, hay tái sử dụng bất kỳ con số nào không xuất hiện nguyên văn trong tin nhắn khách. PHẢI điền đủ mọi trường xuất hiện trong câu, không chỉ lấy phần đầu tiên. Nếu khách đồng thời nói về ngày/giờ/dịch vụ, vẫn phải điền intent tương ứng (book_appointment/provide_date/provide_service...) CÙNG LÚC với việc điền các trường vehicle*.
   4. Nếu khách hỏi "lịch rảnh", "giờ trống", "còn trống không", "hôm nay rảnh không" -> intent: "check_schedule".
   5. Nếu khách bảo muốn "đặt lịch", "tạo lịch", "book" -> intent: "book_appointment".
   6. Nếu khách hỏi giá, quy trình, bảo hành, hỏi dịch vụ, hoặc KỂ BỆNH, TÌM NGUYÊN NHÂN LỖI XE -> intent: "search_service", đồng thời điền câu hỏi vào field 'query'.
@@ -520,8 +524,15 @@ async function handleBookingTurn(parsed, context, userMessage, authContext = {})
   let vehicleId = wantsNewVehicle ? null : (Number(context.vehicleId) || null);
   const labeledVehicle = extractLabeledVehicleInfo(userMessage);
   const csvVehicle = extractCsvVehicleInfo(userMessage);
+  const freshPlate = String(csvVehicle.plate || labeledVehicle.plate || parsed.vehiclePlate || '').trim().toUpperCase();
+  if (vehicleId && freshPlate) {
+    const currentVehiclePlate = availableVehicles.find(vehicle => vehicle.id === vehicleId)?.license_plate || '';
+    if (normalizeSearchText(currentVehiclePlate) !== normalizeSearchText(freshPlate)) {
+      vehicleId = null;
+    }
+  }
   const newVehicle = {
-    plate: String(csvVehicle.plate || labeledVehicle.plate || parsed.vehiclePlate || context.newVehicle?.plate || '').trim().toUpperCase(),
+    plate: String(freshPlate || context.newVehicle?.plate || '').trim().toUpperCase(),
     brand: String(csvVehicle.brand || labeledVehicle.brand || parsed.vehicleBrand || context.newVehicle?.brand || '').trim(),
     model: String(csvVehicle.model || labeledVehicle.model || parsed.vehicleModel || context.newVehicle?.model || '').trim(),
     year: String(csvVehicle.year || labeledVehicle.year || parsed.vehicleYear || context.newVehicle?.year || '').trim(),
@@ -533,9 +544,11 @@ async function handleBookingTurn(parsed, context, userMessage, authContext = {})
     if (matchedVehicle) vehicleId = matchedVehicle.id;
     else if (availableVehicles.length === 1) vehicleId = availableVehicles[0].id;
   }
+  const hasFullNewVehicleInfo = !vehicleId &&
+    Boolean(newVehicle.plate && newVehicle.brand && newVehicle.model && newVehicle.year && newVehicle.color);
   nextContext = { ...nextContext, vehicleId, newVehicle, useNewVehicle: wantsNewVehicle };
   if (!vehicleId) {
-    if (wantsNewVehicle || !availableVehicles.length) {
+    if (wantsNewVehicle || hasFullNewVehicleInfo || !availableVehicles.length) {
       const missingVehicleFields = [
         !newVehicle.plate && 'biển số',
         !newVehicle.brand && 'hãng xe',
@@ -558,7 +571,7 @@ async function handleBookingTurn(parsed, context, userMessage, authContext = {})
         };
       }
     }
-    if (!wantsNewVehicle && availableVehicles.length) return {
+    if (!wantsNewVehicle && !hasFullNewVehicleInfo && availableVehicles.length) return {
       rawData: {
         action: 'Chỉ yêu cầu khách chọn một xe; không hỏi lại dịch vụ hoặc thời gian.',
         vehicles: availableVehicles.map(vehicle => ({ id: vehicle.id, licensePlate: vehicle.license_plate, model: `${vehicle.model?.make?.make_name || ''} ${vehicle.model?.model_name || ''}`.trim() }))
