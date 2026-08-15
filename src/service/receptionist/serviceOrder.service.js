@@ -1196,7 +1196,8 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
 
     const hasNoApprovedQuotation = approvedQuotations.length === 0;
     const survivingItemCount = approvedQuotations.reduce(
-      (sum, quotation) => sum + quotation.items.filter((item) => !itemIds.includes(item.id)).length,
+      (sum, quotation) =>
+        sum + quotation.items.filter((item) => item.status !== "CANCELLED" && !itemIds.includes(item.id)).length,
       0,
     );
     const hasFullyCancelled = !hasNoApprovedQuotation && survivingItemCount === 0;
