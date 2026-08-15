@@ -1910,16 +1910,12 @@ module.exports.filterInspectionHistory = async ({ makeId, modelId }) => {
   });
 };
 
-module.exports.getCompletedTasks = async (technicianId) => {
-  const notedTaskIds = (
-    await Repair_Notes.findAll({ attributes: ["task_id"], raw: true })
-  ).map((n) => n.task_id);
-
+const fetchCompletedAssignments = async (technicianId, extraWhere) => {
   const assignments = await Task_Assignments.findAll({
     where: {
       technician_id: technicianId,
       status: "COMPLETED",
-      ...(notedTaskIds.length ? { task_id: { [Op.notIn]: notedTaskIds } } : {}),
+      ...extraWhere,
     },
     attributes: ["id", "status", "actual_start_time", "actual_end_time", "role_in_task"],
     include: [
@@ -2039,6 +2035,27 @@ module.exports.getCompletedTasks = async (technicianId) => {
     }
     return data;
   });
+};
+
+// Dùng cho tab "Ghi mới" của trang kinh nghiệm sửa chữa — chỉ những task CHƯA có
+// Repair_Notes, để KTV chọn ghi. Không dùng cho trang lịch sử công việc chung.
+module.exports.getCompletedTasks = async (technicianId) => {
+  const notedTaskIds = (
+    await Repair_Notes.findAll({ attributes: ["task_id"], raw: true })
+  )
+    .map((n) => n.task_id)
+    .filter((id) => id !== null);
+
+  return fetchCompletedAssignments(
+    technicianId,
+    notedTaskIds.length ? { task_id: { [Op.notIn]: notedTaskIds } } : {},
+  );
+};
+
+// Dùng cho trang "Lịch sử công việc" — lấy TOÀN BỘ công việc đã hoàn thành của KTV,
+// không loại trừ theo Repair_Notes (khác mục đích với getCompletedTasks ở trên).
+module.exports.getMyWorkHistory = async (technicianId) => {
+  return fetchCompletedAssignments(technicianId, {});
 };
 
 module.exports.addRepairNote = async (taskId, technicianId, content) => {

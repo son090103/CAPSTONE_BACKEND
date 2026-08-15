@@ -500,6 +500,18 @@ module.exports.getMyCompletedTasks = async (req, res) => {
   }
 };
 
+module.exports.getMyWorkHistory = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const result = await taskAssignmentService.getMyWorkHistory(technicianId);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
 module.exports.addRepairNote = async (req, res) => {
   try {
     const { taskId, content } = req.body;
