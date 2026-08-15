@@ -891,12 +891,14 @@ module.exports.getServiceOrderById = async (id) => {
 
   const rawServiceOrder = serviceOrder.toJSON();
 
-  // Fetch associated Quotation with items (both services and spare parts)
+  // Đơn có thể phát sinh nhiều Quotation theo thời gian (báo giá gốc lúc tạo đơn + báo giá
+  // phát sinh mỗi lần duyệt sửa chữa thêm), mỗi lần là 1 record Quotations riêng gắn với Task
+  // REPAIR mới — cần gộp items của TẤT CẢ Quotation lại, không chỉ lấy 1 bản ghi đầu tiên.
   const taskIds = rawServiceOrder.tasks ? rawServiceOrder.tasks.map(t => t.id) : [];
-  let quotation = null;
+  let quotations = [];
   if (taskIds.length > 0) {
-    quotation = await db.Quotations.findOne({
-      where: { 
+    quotations = await db.Quotations.findAll({
+      where: {
         task_id: { [db.Sequelize.Op.in]: taskIds }
       },
       include: [{
@@ -919,10 +921,18 @@ module.exports.getServiceOrderById = async (id) => {
             attributes: ["id", "item_name", "quantity", "unit_price", "status"],
           }
         ]
-      }]
+      }],
+      order: [["id", "ASC"]],
     });
   }
-  rawServiceOrder.quotation = quotation ? quotation.toJSON() : null;
+  const quotationsJson = quotations.map((q) => q.toJSON());
+  rawServiceOrder.quotation = quotationsJson.length > 0
+    ? {
+        ...quotationsJson[0],
+        items: quotationsJson.flatMap((q) => q.items || []),
+        total_amount: quotationsJson.reduce((sum, q) => sum + Number(q.total_amount || 0), 0),
+      }
+    : null;
 
   if (rawServiceOrder.tasks) {
     rawServiceOrder.tasks = rawServiceOrder.tasks.map(task => {
