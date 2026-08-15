@@ -1,4 +1,5 @@
 const db = require("../../../models");
+const { Op } = require("sequelize");
 const Quotation = db.Quotations;
 const QuotationDetail = db.Quotation_Details;
 const Task = db.Task;
@@ -195,13 +196,47 @@ module.exports.approveQuotation = async (userId, quotationId) => {
         },
       );
 
-      // Báo giá được duyệt -> phát sinh Task REPAIR mới -> xe cần cầu nâng trở lại (đã nhả lúc
-      // kiểm tra xong chờ duyệt). Xếp vào hàng đợi, chờ kỹ thuật viên trưởng tự gán cầu nâng +
-      // KTV thủ công (assignTask) — không còn tự động gán ngay khi duyệt.
-      await db.Service_Orders.update(
-        { bay_status: "WAITING" },
-        { where: { id: inspectionTask.service_order_id }, transaction: t },
-      );
+      if (serviceItems.length <= 1) {
+        const techRole = await db.Role.findOne({ where: { roleCode: "TECHNICIAN" }, transaction: t });
+        if (techRole) {
+          const technicians = await db.User.findAll({
+            where: { roleId: techRole.id, status: "ACTIVE" },
+            transaction: t,
+          });
+          if (technicians.length > 0) {
+            const createdRepairTasks = await Task.findAll({
+              where: { service_order_id: inspectionTask.service_order_id, type: "REPAIR", status: "PENDING" },
+              order: [["id", "DESC"]],
+              limit: serviceItems.length,
+              transaction: t,
+            });
+            const technicianTasksCount = await Promise.all(
+              technicians.map(async (tech) => {
+                const count = await db.Task_Assignment.count({
+                  where: { technician_id: tech.id, status: { [Op.in]: ["ASSIGNED", "IN_PROGRESS"] } },
+                  transaction: t,
+                });
+                return { id: tech.id, count };
+              }),
+            );
+            technicianTasksCount.sort((a, b) => a.count - b.count);
+            const technicianId = technicianTasksCount[0].id;
+            if (createdRepairTasks[0]) {
+              await db.Task_Assignment.create(
+                {
+                  task_id: createdRepairTasks[0].id,
+                  technician_id: technicianId,
+                  bay_id: null,
+                  role_in_task: "LEAD",
+                  contribution_percent: 100,
+                  status: "ASSIGNED",
+                },
+                { transaction: t },
+              );
+            }
+          }
+        }
+      }
     }
     await quotation.update(
       { status: "APPROVED", approved_at: new Date() },

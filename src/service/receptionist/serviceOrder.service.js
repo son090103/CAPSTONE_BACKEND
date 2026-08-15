@@ -168,16 +168,10 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       }
     }
 
-    // Khách vãng lai vẫn được tiếp nhận khi công suất đã được lịch hẹn đặt trước giữ chỗ,
-    // nhưng lệnh dịch vụ phải vào hàng chờ và tuyệt đối chưa được chiếm cầu nâng.
-    // Lịch đặt trước không đi qua nhánh WALK nên vẫn được phân cầu bình thường khi tạo lệnh.
-    let mustWaitForReservedBay = false;
     let calculatedWalkInFinishTime = null;
 
-    // Kiểm tra công suất đối với khách vãng lai (Walk-in)
     const isWalkIn = !hasReservedAppointment || (currentBookingType && currentBookingType.includes("WALK"));
     if (isWalkIn) {
-      // Calculate estimated duration
       let totalDurationMinutes = 0;
       if (data.service_ids && data.service_ids.length > 0) {
         const catalogs = await db.Service_Catalog.findAll({
@@ -209,148 +203,11 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       }
 
       const entryTime = new Date();
-      const estimatedFinishTime = new Date(entryTime.getTime() + totalDurationMinutes * 60 * 1000);
-      calculatedWalkInFinishTime = estimatedFinishTime;
-
-      const getGarageCapacity = require("../../util/getGarageCapacity.util");
-      const capacityData = await getGarageCapacity();
-      const capacity = capacityData.maxCapacity;
-
-      const startOfDay = new Date(entryTime);
-      startOfDay.setUTCHours(0,0,0,0);
-      const endOfDay = new Date(entryTime);
-      endOfDay.setUTCHours(23,59,59,999);
-
-      const appointments = await db.Appointments.findAll({
-        where: {
-          scheduled_time: { [Op.between]: [startOfDay, endOfDay] },
-          booking_type: { [Op.notLike]: '%WALK%' },
-          status: { [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECEIVED'] },
-          id: { [Op.ne]: actualAppointmentId || 0 }
-        },
-        include: [{ model: db.Appointment_Details, as: 'appointmentDetails' }],
-        transaction
-      });
-
-      const activeOrders = await db.Service_Orders.findAll({
-        where: {
-          status: { [Op.in]: ['INSPECTING', 'IN_PROGRESS', 'WAITING_FOR_PARTS'] },
-          bay_status: 'ASSIGNED',
-          bay_id: { [Op.ne]: null },
-          estimated_finish_time: { [Op.ne]: null, [Op.gt]: startOfDay },
-          entry_time: { [Op.lt]: endOfDay }
-        },
-        transaction
-      });
-
-      const { calculateAppointmentTime } = require("../../util/calculateAppointmentTime.util");
-
-      const bookedCounts = {};
-      const getOccupiedHours = (startTime, endTime) => {
-        if (endTime <= startOfDay || startTime >= endOfDay) return [];
-        const effectiveStart = startTime < startOfDay ? startOfDay : startTime;
-        const effectiveEnd = endTime > endOfDay ? endOfDay : endTime;
-        const startHour = effectiveStart.getUTCHours();
-        let endHour = effectiveEnd.getUTCHours();
-        if (effectiveEnd.getMinutes() === 0 && effectiveEnd.getSeconds() === 0 && endHour > startHour) {
-          endHour -= 1;
-        }
-        const hours = [];
-        for (let h = startHour; h <= endHour; h++) {
-          hours.push(h);
-        }
-        return hours;
-      };
-
-      await Promise.all(appointments.map(async (app) => {
-        const timeStart = app.scheduled_time;
-        const { endTime } = await calculateAppointmentTime(app.appointmentDetails, timeStart);
-        const occupiedHours = getOccupiedHours(timeStart, endTime);
-        occupiedHours.forEach(h => {
-          bookedCounts[h] = (bookedCounts[h] || 0) + 1;
-        });
-      }));
-
-      activeOrders.forEach(order => {
-        const occupiedHours = getOccupiedHours(order.entry_time, order.estimated_finish_time);
-        occupiedHours.forEach(h => {
-          bookedCounts[h] = (bookedCounts[h] || 0) + 1;
-        });
-      });
-
-      // Luôn bảo vệ tối thiểu 60 phút lịch sắp tới. Ví dụ xe vãng lai đến 09:45
-      // thì các lịch 10:00 vẫn phải được giữ cầu, kể cả dịch vụ walk-in rất ngắn.
-      const minimumReservationHorizon = new Date(entryTime.getTime() + 60 * 60 * 1000);
-      const reservationCheckEndTime = estimatedFinishTime > minimumReservationHorizon
-        ? estimatedFinishTime
-        : minimumReservationHorizon;
-      const protectedWalkInHours = getOccupiedHours(entryTime, reservationCheckEndTime);
-      for (const h of protectedWalkInHours) {
-        const currentCount = bookedCounts[h] || 0;
-        if (currentCount >= capacity) {
-          mustWaitForReservedBay = true;
-          break;
-        }
-      }
+      calculatedWalkInFinishTime = new Date(entryTime.getTime() + totalDurationMinutes * 60 * 1000);
     }
 
-    // 2. Xác định Service_Order này có cần cầu nâng hay không, dựa trên các dịch vụ đã chọn
-    // (kể cả dịch vụ nằm trong combo). Không có dịch vụ cụ thể nào (vd REPAIR chưa rõ hạng mục)
-    // thì mặc định coi là cần cầu nâng để an toàn.
-    const catalogIdsToCheck = new Set(data.service_ids || []);
-    if (data.combo_ids && data.combo_ids.length > 0) {
-      const comboCatalogs = await db.Service_Combo_Catalogs.findAll({
-        where: { combo_id: { [Op.in]: data.combo_ids } },
-        transaction,
-      });
-      comboCatalogs.forEach((cc) => catalogIdsToCheck.add(cc.catalog_id));
-    }
-
-    let needsBay = true;
-    if (catalogIdsToCheck.size > 0) {
-      const catalogs = await db.Service_Catalog.findAll({
-        where: { id: { [Op.in]: Array.from(catalogIdsToCheck) } },
-        attributes: ["id", "requires_bay"],
-        transaction,
-      });
-      needsBay = catalogs.some((c) => c.requires_bay !== false);
-    }
-
-    // 3. Kiểm tra cầu nâng tồn tại (nếu có chọn), hoặc tự phân bổ nếu không.
-    // Nguồn sự thật duy nhất về cầu nâng đang bận/rảnh là Service_Bays.status/current_service_order_id
-    // (không tự đếm lại qua Service_Orders nữa).
-    // Khi công suất đã được lịch đặt trước giữ chỗ, bỏ qua cả cầu do client gửi lên.
-    // Xe được tạo lệnh với bay_status=WAITING và sẽ được assignQueuedOrders xử lý sau.
-    let bayIdToUse = needsBay && !mustWaitForReservedBay ? data.bay_id : null;
-    let forceAutoAssign = false;
-
-    if (needsBay && bayIdToUse) {
-      const bay = await db.Service_Bays.findByPk(bayIdToUse, {
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-      });
-      if (!bay) {
-        throw { status: 404, message: "Cầu nâng không tồn tại" };
-      }
-
-      // Nếu cầu này đang bận, tự động phân bổ sang cầu khác rảnh
-      if (bay.status !== "available") {
-        forceAutoAssign = true;
-      }
-    }
-
-    if (needsBay && !mustWaitForReservedBay && (!bayIdToUse || forceAutoAssign)) {
-      const freeBay = await db.Service_Bays.findOne({
-        where: { is_active: true, status: "available" },
-        order: [["id", "ASC"]],
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-        skipLocked: true,
-      });
-      bayIdToUse = freeBay ? freeBay.id : null;
-    }
-
-    const bayStatus = !needsBay ? "NOT_NEEDED" : (bayIdToUse ? "ASSIGNED" : "WAITING");
+    const bayIdToUse = null;
+    const bayStatus = "NOT_NEEDED";
 
     // 3. Xử lý lịch hẹn (nếu được truyền vào từ trước)
     if (data.appointment_id && !data.walk_in) {
@@ -407,7 +264,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         appointment_id: actualAppointmentId || null,
         vehicle_id: actualVehicleId,
         receptionist_id: receptionistId,
-        bay_id: bayIdToUse || null,
+        bay_id: null,
         bay_status: bayStatus,
         current_odo: data.current_odo,
         status: "INSPECTING",
@@ -417,13 +274,6 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       },
       { transaction },
     );
-
-    if (bayIdToUse) {
-      await db.Service_Bays.update(
-        { status: "in_use", current_service_order_id: serviceOrder.id },
-        { where: { id: bayIdToUse }, transaction },
-      );
-    }
 
     // Rescue chỉ hoàn tất quy trình khi kỹ thuật trưởng tạo Service Order từ phiếu tiếp nhận.
     const rescueRequest = data.rescue_id
@@ -493,17 +343,22 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
 
     // 6. Tạo Tasks cho các dịch vụ được chọn và gán thợ
     const taskCatalogs = [];
+    const catalogDiscountPercent = new Map();
     if (data.service_ids && data.service_ids.length > 0) {
       taskCatalogs.push(...data.service_ids);
     }
     if (data.combo_ids && data.combo_ids.length > 0) {
       for (const comboId of data.combo_ids) {
+        const combo = await db.Service_Combo.findByPk(comboId, { transaction });
         const comboCatalogs = await db.Service_Combo_Catalogs.findAll({
           where: { combo_id: comboId },
           transaction,
         });
         for (const cc of comboCatalogs) {
           taskCatalogs.push(cc.catalog_id);
+          if (!catalogDiscountPercent.has(cc.catalog_id)) {
+            catalogDiscountPercent.set(cc.catalog_id, Number(combo?.discount_percentage || 0));
+          }
         }
       }
     }
@@ -527,12 +382,12 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         { transaction },
       );
 
-      if (technicianId && bayStatus !== "WAITING") {
+      if (technicianId) {
         await db.Task_Assignment.create(
           {
             task_id: task.id,
             technician_id: technicianId,
-            bay_id: bayIdToUse || null,
+            bay_id: null,
             role_in_task: "LEAD",
             contribution_percent: 100,
             status: "ASSIGNED",
@@ -583,12 +438,12 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
           { transaction },
         );
 
-        if (technicianId && bayStatus !== "WAITING" && uniqueTaskCatalogs.length <= 1) {
+        if (technicianId && uniqueTaskCatalogs.length <= 1) {
           await db.Task_Assignment.create(
             {
               task_id: task.id,
               technician_id: technicianId,
-              bay_id: bayIdToUse || null,
+              bay_id: null,
               role_in_task: "LEAD",
               contribution_percent: 100,
               status: "ASSIGNED",
@@ -621,6 +476,10 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
           { transaction },
         );
 
+        const discountPercent = catalogDiscountPercent.get(catalogId) || 0;
+        const discountFactor = 1 - discountPercent / 100;
+
+        const laborPrice = Number(catalog.labor_price || 0) * discountFactor;
         const serviceDetail = await db.Quotation_Details.create(
           {
             quotation_id: quotation.id,
@@ -628,8 +487,8 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
             service_id: catalogId,
             quantity: 1,
             unit_price: 0,
-            repair_price: catalog.labor_price || 0,
-            amount: catalog.labor_price || 0,
+            repair_price: laborPrice,
+            amount: laborPrice,
             status: "PENDING",
           },
           { transaction },
@@ -641,7 +500,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
 
         let partAmount = 0;
         if (catalog.spare_part_id && catalog.sparePart) {
-          partAmount = Number(catalog.sparePart.retail_price || 0);
+          partAmount = Number(catalog.sparePart.retail_price || 0) * discountFactor;
           await db.Quotation_Details.create(
             {
               quotation_id: quotation.id,
@@ -656,7 +515,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
             { transaction },
           );
         } else if (manualSparePart) {
-          partAmount = Number(manualSparePart.retail_price || 0);
+          partAmount = Number(manualSparePart.retail_price || 0) * discountFactor;
           await db.Quotation_Details.create(
             {
               quotation_id: quotation.id,
@@ -671,7 +530,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
             { transaction },
           );
         }
-        totalQuotationAmount += Number(catalog.labor_price || 0) + partAmount;
+        totalQuotationAmount += laborPrice + partAmount;
       }
 
       if (quotation) {
@@ -680,8 +539,8 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
     }
 
     await transaction.commit();
-    console.log("[createServiceOrder] transaction commit xong, serviceOrder.id:", serviceOrder.id, "technicianId:", technicianId, "bayStatus:", bayStatus);
-    if (technicianId && bayStatus !== "WAITING") {
+    console.log("[createServiceOrder] transaction commit xong, serviceOrder.id:", serviceOrder.id, "technicianId:", technicianId);
+    if (technicianId) {
       await notifyUser(
         technicianId,
         {
@@ -794,12 +653,19 @@ module.exports.getServiceOrdersAwaitingPayment = async () => {
       {
         model: db.Vehicles,
         as: "vehicle",
-        attributes: ["id", "license_plate", "vin_number"],
+        attributes: ["id", "license_plate", "vin_number", "color", "year"],
         include: [
           {
             model: db.Vehicle_Models,
             as: "model",
             attributes: ["id", "model_name"],
+            include: [
+              {
+                model: db.Vehicle_Makes,
+                as: "make",
+                attributes: ["id", "make_name"],
+              },
+            ],
           },
           {
             model: db.Customers,
@@ -1221,6 +1087,20 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
     if (!serviceOrder) {
       throw { status: 404, message: "Không tìm thấy lệnh sửa chữa" };
     }
+
+    const comboDetail = serviceOrder.appointment_id
+      ? await db.Appointment_Details.findOne({
+          where: { appointment_id: serviceOrder.appointment_id, combo_id: { [Op.not]: null } },
+          transaction,
+        })
+      : null;
+    if (comboDetail) {
+      throw {
+        status: 400,
+        message: "Lệnh sửa chữa thuộc gói combo, không thể đóng sớm. Vui lòng hoàn thành đầy đủ các hạng mục của combo.",
+      };
+    }
+
     if (serviceOrder.status === "COMPLETED") {
       throw { status: 400, message: "Lệnh sửa chữa đã hoàn thành, không thể đóng sớm" };
     }

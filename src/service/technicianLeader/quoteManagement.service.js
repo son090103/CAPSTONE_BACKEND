@@ -23,12 +23,7 @@ module.exports.getAllComponents = async () => {
   return components;
 };
 
-// Kỹ thuật viên trưởng cầm tablet ra hiện trường, thợ báo lỗi bằng miệng, trưởng nhóm nhập hộ
-// vào hệ thống — không còn ràng buộc theo technicianId/Task_Assignment như luồng KTV tự báo cũ.
-// INSPECTION chỉ hiện khi đã COMPLETED (kiểm tra xong mới biết lỗi để báo giá lần đầu).
-// REPAIR hiện khi chưa xong (PENDING/IN_PROGRESS/WAITING_STOCK — Task không có PAUSED, trạng
-// thái đó chỉ tồn tại ở Task_Assignment) — thợ có thể phát hiện lỗi phát sinh bất cứ lúc nào
-// trong quá trình sửa, trước khi tự tay hoàn thành task.
+
 module.exports.getActiveTasksForIssueReport = async () => {
   const serviceOrders = await Service_Order.findAll({
     attributes: ["id", "status"],
@@ -124,10 +119,6 @@ module.exports.createIssueReports = async (task_id, issues, note) => {
   return issuesRecords;
 };
 
-// Báo cáo lỗi phát sinh gắn thẳng theo đơn dịch vụ (Service_Order) — không cần chọn Task.
-// Lỗi thuộc về chiếc xe/đơn sửa chữa, không thuộc về "Task đang làm lúc phát hiện" (VD: KTV
-// đang rửa xe phát hiện phanh mòn — lỗi đó không liên quan gì tới Task rửa xe). Không đụng tới
-// Task/bay/status đơn — chỉ thuần tạo Vehicle_Issues để đợt báo giá kế tiếp của đơn này gom vào.
 module.exports.createStandaloneIssueReport = async (service_order_id, issues, note, reported_by_technician_id) => {
   const serviceOrder = await Service_Order.findByPk(service_order_id, {
     attributes: ["id", "status"],
@@ -166,14 +157,8 @@ const buildVehicleIncludeForIssue = () => ({
   ],
 });
 
-// Gộp chung 3 nguồn: lỗi từ Task INSPECTION đã hoàn tất (báo giá lần đầu), lỗi phát sinh từ
-// Task REPAIR (báo giá bổ sung — luồng KTV/Leader báo qua Task), VÀ lỗi phát sinh gắn thẳng
-// theo Service_Order không qua Task (createStandaloneIssueReport) — hiển thị cùng 1 danh sách
-// duy nhất cho trưởng nhóm lập báo giá.
+
 module.exports.getIssuesReports = async () => {
-  // Task hợp lệ để báo giá: INSPECTION đã COMPLETED, hoặc REPAIR (bất kỳ status — lỗi phát
-  // sinh có thể ghi nhận cả khi task đang chạy dở). Dùng subquery thay vì required:true trên
-  // include để vẫn cho phép nhánh service_order_id (issue không gắn Task) đi qua where dưới.
   const validTaskIdsSubquery = db.sequelize.literal(`(
     SELECT t.id FROM "Tasks" t
     WHERE (t.type = 'INSPECTION' AND t.status = 'COMPLETED') OR t.type = 'REPAIR'
@@ -852,12 +837,40 @@ module.exports.approveQuotation = async (id, approvedByRole = "TECHNICIAN_LEADER
         { status: "IN_PROGRESS" },
         { where: { id: inspectionTask.service_order_id, status: "PENDING_QUOTATION" }, transaction: t },
       );
-      // Xếp vào hàng đợi, chờ kỹ thuật viên trưởng tự gán cầu nâng + KTV thủ công (assignTask)
-      // — không còn tự động gán ngay khi duyệt.
-      await Service_Order.update(
-        { bay_status: "WAITING" },
-        { where: { id: inspectionTask.service_order_id }, transaction: t },
-      );
+
+      if (createdTasks.length <= 1) {
+        const techRole = await db.Role.findOne({ where: { roleCode: "TECHNICIAN" }, transaction: t });
+        if (techRole) {
+          const technicians = await Users.findAll({
+            where: { roleId: techRole.id, status: "ACTIVE" },
+            transaction: t,
+          });
+          if (technicians.length > 0) {
+            const technicianTasksCount = await Promise.all(
+              technicians.map(async (tech) => {
+                const count = await db.Task_Assignment.count({
+                  where: { technician_id: tech.id, status: { [Op.in]: ["ASSIGNED", "IN_PROGRESS"] } },
+                  transaction: t,
+                });
+                return { id: tech.id, count };
+              }),
+            );
+            technicianTasksCount.sort((a, b) => a.count - b.count);
+            const technicianId = technicianTasksCount[0].id;
+            await db.Task_Assignment.create(
+              {
+                task_id: createdTasks[0].id,
+                technician_id: technicianId,
+                bay_id: null,
+                role_in_task: "LEAD",
+                contribution_percent: 100,
+                status: "ASSIGNED",
+              },
+              { transaction: t },
+            );
+          }
+        }
+      }
     }
     await quotation.update(
       { status: "APPROVED", approved_at: new Date(), approval_method: approvedByRole },
