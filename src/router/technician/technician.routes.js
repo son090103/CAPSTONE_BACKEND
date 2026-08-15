@@ -31,6 +31,7 @@ router.get("/inspection-history/search", taskAssignment.searchInspectionHistory)
 router.get("/inspection-history/filter", taskAssignment.filterInspectionHistory);
 
 router.get("/completed-tasks", taskAssignment.getMyCompletedTasks);
+router.get("/work-history", taskAssignment.getMyWorkHistory);
 router.post("/repair-notes", taskAssignment.addRepairNote);
 router.get("/repair-notes", taskAssignment.getMyRepairNotes);
 router.get("/issues", taskAssignment.getIssuesReportHistory);
