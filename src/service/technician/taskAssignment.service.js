@@ -489,7 +489,7 @@ module.exports.completeTask = async (
       {
         model: Tasks,
         as: "task",
-        attributes: ["id", "service_order_id", "type", "quotation_item_id"],
+        attributes: ["id", "service_order_id", "type", "quotation_item_id", "service_catalog_id"],
       },
     ],
   });
@@ -510,6 +510,22 @@ module.exports.completeTask = async (
   });
   const taskId = task.id;
   const serviceOrderId = task.service_order_id;
+
+  const technician = await Users.findByPk(technicianId, { attributes: ["fullName"] });
+  const catalog = await Service_Catalog.findByPk(task.service_catalog_id, { attributes: ["service_name"] });
+  await notifyRole(
+    "TECHNICIAN_LEADER",
+    {
+      title: "Công việc vừa hoàn thành",
+      content: `KTV ${technician?.fullName || "?"} vừa hoàn thành "${catalog?.service_name || "công việc"}" (SO-${serviceOrderId}).`,
+      notificationType: "SERVICE_ORDER",
+      referenceId: serviceOrderId,
+      priority: "HIGH",
+    },
+    "urgent_notification",
+    { type: "TASK_COMPLETED", serviceOrderId, taskId },
+  );
+
   const remainingAsg = await Task_Assignments.count({
     where: { task_id: taskId, status: { [Op.ne]: "COMPLETED" } },
   });
