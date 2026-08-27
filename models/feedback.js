@@ -39,7 +39,7 @@ module.exports = (sequelize, DataTypes) => {
     comment: {
       type: DataTypes.TEXT,
       allowNull: false,
-      comment: 'Bình luận/phản hồi của khách hàng'
+            comment: 'Bình luận/phản hồi của khách hàng'
     }
   }, {
     sequelize,

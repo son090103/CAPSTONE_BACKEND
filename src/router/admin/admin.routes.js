@@ -8,6 +8,8 @@ const staffController = require("../../controller/admin/manageStaff.controller")
 const controllerServiceBays = require("../../controller/admin/serviceBays.controller");
 const warrantyController = require("../../controller/admin/warrantyPolicies.controller");
 const warrantyUpload = require("../../util/warrantyUpload.util");
+const technicalDocumentController = require("../../controller/admin/technicalDocument.controller");
+const technicalDocumentUpload = require("../../util/technicalDocumentUpload.util");
 const excelUpload = require("../../util/excelUpload.util");
 const manageCustomer = require("./../../controller/admin/manageCustomer.controller");
 const shiftController = require('../../controller/admin/shift.controller');
@@ -55,6 +57,11 @@ router.delete("/service-bay/:id", controllerServiceBays.removeServiceBay);
 router.get("/warranty-policies", warrantyController.getWarrantyPolicies);
 router.post("/warranty-policy", warrantyUpload.fields([{ name: "image_cover", maxCount: 1 }, { name: "pdf_document", maxCount: 1 }]), warrantyController.createWarrantyPolicy);
 router.put("/warranty-policy/:id", warrantyUpload.fields([{ name: "image_cover", maxCount: 1 }, { name: "pdf_document", maxCount: 1 }]), warrantyController.updateWarrantyPolicy);
+
+router.get("/vehicle-makes", technicalDocumentController.listVehicleMakes);
+router.get("/technical-documents", technicalDocumentController.list);
+router.post("/technical-document", technicalDocumentUpload.fields([{ name: "pdf_document", maxCount: 1 }]), technicalDocumentController.create);
+router.delete("/technical-document/:id", technicalDocumentController.remove);
 
 router.get("/customer", manageCustomer.getCustomer);
 router.get("/customer/:id", manageCustomer.getCustomerDetail);

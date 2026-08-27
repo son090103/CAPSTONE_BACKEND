@@ -15,7 +15,6 @@ const Users = db.User;
 const Vehicles = db.Vehicles;
 const Vehicle_Models = db.Vehicle_Models;
 const Vehicle_Makes = db.Vehicle_Makes;
-const Diagnostic_Knowledge = db.Diagnostic_Knowledge;
 const Repair_Notes = db.Repair_Notes;
 const Service_Catalog = db.Service_Catalog;
 const { uploadToCloudinary } = require("../../helper/uploadToCloudinary.helper");
@@ -1050,91 +1049,6 @@ module.exports.getMyRescueHistory = async (technicianId) => {
   return rescues;
 };
 
-module.exports.getAllDiagnostics = async () => {
-  const rows = await Diagnostic_Knowledge.findAll({
-    attributes: ["id", "symptom", "possible_causes", "model_id", "make_id"],
-    include: [
-      { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
-      { model: Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
-    ],
-    order: [["symptom", "ASC"]],
-  });
-  return rows;
-};
-
-// Tách từ khóa thay vì ILIKE nguyên văn cả câu — vì keyword thường là triệu chứng gốc dài
-// (VD "Ngoại hình xe bình thường Tiếp nhận Xe có tiếng khi bóp phanh") tự động điền sẵn từ
-// symptoms của đơn, gần như không bao giờ khớp chính xác 1 bản ghi có sẵn trong hệ thống.
-module.exports.searchDiagnostics = async (keyword) => {
-  const where = {};
-  const keywords = keyword && keyword.trim() ? extractSymptomKeywords(keyword) : [];
-  if (keywords.length > 0) {
-    where[Op.or] = keywords.flatMap((kw) => [
-      { symptom: { [Op.iLike]: `%${kw}%` } },
-      { possible_causes: { [Op.iLike]: `%${kw}%` } },
-    ]);
-  }
-  const rows = await db.Diagnostic_Knowledge.findAll({
-    where,
-    attributes: ["id", "symptom", "possible_causes", "model_id", "make_id"],
-    include: [
-      {
-        model: db.Vehicle_Models,
-        as: "model",
-        attributes: ["id", "model_name"],
-      },
-      { model: db.Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
-    ],
-    order: [["symptom", "ASC"]],
-  });
-  if (keywords.length === 0) return rows;
-
-  // Nhiều từ khóa (VD "tiếng") match chung chung nhiều bản ghi không liên quan — ưu tiên bản
-  // ghi khớp CÀNG NHIỀU từ khóa CÀNG lên đầu, thay vì để lẫn lộn theo alphabet.
-  const countMatches = (row) => {
-    const text = `${row.symptom || ""} ${row.possible_causes || ""}`.toLowerCase();
-    return keywords.reduce((count, kw) => (text.includes(kw) ? count + 1 : count), 0);
-  };
-  return [...rows].sort((a, b) => countMatches(b) - countMatches(a));
-};
-
-module.exports.filterDiagnostics = async ({ makeId, modelId }) => {
-  let orClauses = null;
-  if (modelId) {
-    const model = await db.Vehicle_Models.findByPk(modelId, {
-      attributes: ["make_id"],
-    });
-    orClauses = [{ model_id: modelId }];
-    if (model?.make_id) {
-      orClauses.push({ make_id: model.make_id, model_id: null });
-    }
-  } else if (makeId) {
-    const models = await db.Vehicle_Models.findAll({
-      where: { make_id: makeId },
-      attributes: ["id"],
-    });
-    const modelIds = models.map((m) => m.id);
-    orClauses = [{ make_id: makeId }];
-    if (modelIds.length) {
-      orClauses.push({ model_id: { [Op.in]: modelIds } });
-    }
-  }
-  const rows = await db.Diagnostic_Knowledge.findAll({
-    where: orClauses ? { [Op.or]: orClauses } : {},
-    attributes: ["id", "symptom", "possible_causes", "model_id", "make_id"],
-    include: [
-      {
-        model: db.Vehicle_Models,
-        as: "model",
-        attributes: ["id", "model_name"],
-      },
-      { model: db.Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
-    ],
-    order: [["symptom", "ASC"]],
-  });
-  return rows;
-};
-
 module.exports.getMakes = async () => {
   return await db.Vehicle_Makes.findAll({
     attributes: ["id", "make_name"],
@@ -1288,6 +1202,7 @@ module.exports.aiSuggestCauses = async (taskAssignmentId, technicianId, followUp
   }
   const vehicle = assignment.task?.serviceOrder?.vehicle;
   const make = vehicle?.model?.make?.make_name;
+  const makeId = vehicle?.model?.make?.id;
   const modelName = vehicle?.model?.model_name;
   const vehicleLabel = [make, modelName, vehicle?.year].filter(Boolean).join(" ") || "không xác định";
   const serviceName = assignment.task?.catalog?.service_name;
@@ -1307,6 +1222,26 @@ module.exports.aiSuggestCauses = async (taskAssignmentId, technicianId, followUp
   if (!symptom || !symptom.trim()) {
     throw { status: 400, message: "Lệnh sửa chữa chưa ghi nhận triệu chứng." };
   }
+  const hasFollowUp = Boolean(followUpQuestion && followUpQuestion.trim());
+  const followUpLine = hasFollowUp ? `Kỹ thuật viên hỏi thêm: "${followUpQuestion.trim()}".` : "";
+
+  // Tài liệu kỹ thuật admin upload theo hãng xe (RAG) — dùng Pinecone RIÊNG BIỆT với chatbot
+  // khách hàng (technicalVectorStore.service.js, tài khoản/index khác), bổ trợ cho suy luận nền
+  // của Gemini, không chặn luồng chính nếu tra cứu lỗi (Pinecone tạm gián đoạn, chưa có tài liệu...).
+  let technicalReference = "";
+  if (makeId) {
+    try {
+      const technicalVectorStoreService = require("../ai/technicalVectorStore.service");
+      const ragQuery = hasFollowUp ? followUpQuestion : symptom;
+      const ragResult = await technicalVectorStoreService.searchKnowledge(ragQuery, makeId);
+      if (ragResult) {
+        technicalReference = ragResult;
+      }
+    } catch (error) {
+      console.error("Lỗi khi tra cứu tài liệu kỹ thuật RAG:", error);
+    }
+  }
+
   const contextLines = [
     `Xe: ${vehicleLabel}.`,
     isRepairTask
@@ -1314,17 +1249,17 @@ module.exports.aiSuggestCauses = async (taskAssignmentId, technicianId, followUp
       : null,
     `${isRepairTask ? "Lỗi cần sửa" : "Triệu chứng"}: "${symptom.trim()}".`,
     isRepairTask && uniquePartNames.length ? `Phụ tùng đang dùng: ${uniquePartNames.join(", ")}.` : null,
+    technicalReference ? `Trích đoạn tài liệu kỹ thuật hãng xe liên quan:\n${technicalReference}` : null,
   ].filter(Boolean).join("\n    ");
   const model = geminiClient.getGenerativeModel({ model: "gemini-2.5-flash" });
-  const hasFollowUp = Boolean(followUpQuestion && followUpQuestion.trim());
-  const followUpLine = hasFollowUp ? `Kỹ thuật viên hỏi thêm: "${followUpQuestion.trim()}".` : "";
 
   const prompt = isRepairTask
-    ? `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm.
+    ? `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm. Nếu có trích đoạn tài liệu kỹ thuật hãng xe trong thông tin dưới đây, hãy ưu tiên dựa vào đó để trả lời; nếu không đủ thông tin thì dùng kiến thức chuyên môn của bạn.
     ${contextLines}
     Lỗi và phụ tùng cần dùng đã được xác định rõ, kỹ thuật viên đang cần hướng dẫn CÁCH THỰC HIỆN SỬA CHỮA, không cần chẩn đoán nguyên nhân nữa.
     ${followUpLine}
     ${hasFollowUp ? "Trả lời ngắn gọn, đúng trọng tâm câu hỏi, dựa trên các thông tin trên." : "Hướng dẫn quy trình sửa chữa từng bước cụ thể, đúng trình tự thao tác thực tế, phù hợp với phụ tùng đã có."}
+    Với MỖI bước hoặc lưu ý lấy trực tiếp từ trích đoạn tài liệu kỹ thuật hãng xe ở trên, thêm vào cuối câu đó cụm — Trích từ tài liệu: Tên tài liệu (lấy đúng tên tài liệu ở trích đoạn, KHÔNG dùng dấu ngoặc kép quanh tên tài liệu vì sẽ làm hỏng cú pháp JSON). Ngoài các ý lấy từ tài liệu, LUÔN bổ sung thêm ít nhất 1 bước hoặc lưu ý khác dựa trên kiến thức chuyên môn của bạn (không có cụm trích dẫn) để KTV có thêm góc nhìn.
     Chỉ trả lời bằng MỘT khối JSON hợp lệ duy nhất, không kèm markdown hay giải thích thêm, theo đúng cấu trúc:
     {
       "steps": [ "Bước thực hiện cụ thể, ngắn gọn" ],
@@ -1332,19 +1267,21 @@ module.exports.aiSuggestCauses = async (taskAssignmentId, technicianId, followUp
     }
     Tất cả nội dung bằng tiếng Việt.`
     : hasFollowUp
-    ? `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm.
+    ? `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm. Nếu có trích đoạn tài liệu kỹ thuật hãng xe trong thông tin dưới đây, hãy ưu tiên dựa vào đó để trả lời; nếu không đủ thông tin thì dùng kiến thức chuyên môn của bạn.
     ${contextLines}
     ${followUpLine}
     Trả lời ngắn gọn, đúng trọng tâm câu hỏi, dựa trên các thông tin trên.
+    Với MỖI nguyên nhân hoặc khuyến nghị lấy trực tiếp từ trích đoạn tài liệu kỹ thuật hãng xe ở trên, thêm vào cuối câu đó cụm — Trích từ tài liệu: Tên tài liệu (lấy đúng tên tài liệu ở trích đoạn, KHÔNG dùng dấu ngoặc kép quanh tên tài liệu vì sẽ làm hỏng cú pháp JSON). Ngoài các ý lấy từ tài liệu, LUÔN bổ sung thêm ít nhất 1 nguyên nhân hoặc khuyến nghị khác dựa trên kiến thức chuyên môn của bạn (không có cụm trích dẫn) để KTV có thêm góc nhìn.
     Chỉ trả lời bằng MỘT khối JSON hợp lệ duy nhất, không kèm markdown hay giải thích thêm, theo đúng cấu trúc:
     {
       "causes": [ { "cause": "Tên nguyên nhân ngắn gọn", "part_to_check": "Bộ phận cần kiểm tra" } ],
       "recommendations": [ "Khuyến nghị kiểm tra ngắn gọn" ]
     }
     Tất cả nội dung bằng tiếng Việt.`
-    : `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm.
+    : `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm. Nếu có trích đoạn tài liệu kỹ thuật hãng xe trong thông tin dưới đây, hãy ưu tiên dựa vào đó để trả lời; nếu không đủ thông tin thì dùng kiến thức chuyên môn của bạn.
     ${contextLines}
     Liệt kê 3-5 nguyên nhân khả dĩ phổ biến nhất, sắp theo khả năng cao nhất trước, và các khuyến nghị kiểm tra đi kèm.
+    Với MỖI nguyên nhân hoặc khuyến nghị lấy trực tiếp từ trích đoạn tài liệu kỹ thuật hãng xe ở trên, thêm vào cuối câu đó cụm — Trích từ tài liệu: Tên tài liệu (lấy đúng tên tài liệu ở trích đoạn, KHÔNG dùng dấu ngoặc kép quanh tên tài liệu vì sẽ làm hỏng cú pháp JSON). Ngoài các ý lấy từ tài liệu, LUÔN bổ sung thêm ít nhất 1 nguyên nhân hoặc khuyến nghị khác dựa trên kiến thức chuyên môn của bạn (không có cụm trích dẫn) để KTV có thêm góc nhìn.
     Chỉ trả lời bằng MỘT khối JSON hợp lệ duy nhất, không kèm markdown hay giải thích thêm, theo đúng cấu trúc:
     {
       "causes": [ { "cause": "Tên nguyên nhân ngắn gọn", "part_to_check": "Bộ phận cần kiểm tra" } ],
@@ -2183,6 +2120,7 @@ module.exports.getMyRepairNotes = async (technicianId) => {
       createdAt: data.createdAt,
       taskId: data.task?.id,
       serviceOrderCode: `SO-${data.task?.serviceOrder?.id}`,
+      serviceName: data.task?.catalog?.service_name || "",
       vehiclePlate: vehicle?.license_plate || "—",
       vehicleBrand: vehicle?.model?.make?.make_name || "",
       vehicleModel: vehicle?.model?.model_name || "",
