@@ -145,14 +145,16 @@ module.exports.getCustomerById = async (id) => {
     }
 };
 
+const { normalizeVnPhone } = require("../../util/phone.util");
+
 module.exports.createCustomer = async (data) => {
     try {
-        const { fullName, phoneNumber, email, membership_tier, loyalty_points, status, type, password } = data;
+        const { fullName, phoneNumber, email, membership_tier, loyalty_points, status, type, password, avatar } = data;
         
-        // Validate phone number
-        const normalizedPhone = phoneNumber ? phoneNumber.trim() : "";
+        // Validate and normalize phone number
+        const normalizedPhone = normalizeVnPhone(phoneNumber);
         if (!normalizedPhone) {
-            throw new Error("Số điện thoại không được để trống");
+            throw new Error("Số điện thoại không hợp lệ");
         }
 
         // Check if phone number already exists in Customers
@@ -186,6 +188,7 @@ module.exports.createCustomer = async (data) => {
                 password: hashedPassword,
                 roleId: role.id,
                 status: status || "ACTIVE",
+                avatar: avatar || null,
             });
 
             // Create customer
@@ -222,6 +225,55 @@ module.exports.createCustomer = async (data) => {
                 data: customer
             };
         }
+    } catch (error) {
+        throw new Error(error.message);
+    }
+};
+
+module.exports.updateCustomer = async (id, data) => {
+    try {
+        const customer = await Customers.findByPk(id);
+        if (!customer) {
+            throw new Error("Khách hàng không tồn tại");
+        }
+
+        const { fullName, phoneNumber, membership_tier, loyalty_points, status, avatar } = data;
+
+        const customerUpdates = {};
+        if (fullName) customerUpdates.name = fullName.trim();
+        if (phoneNumber) {
+            const normalizedPhone = normalizeVnPhone(phoneNumber);
+            if (!normalizedPhone) {
+                throw new Error("Số điện thoại không hợp lệ");
+            }
+            customerUpdates.phone = normalizedPhone;
+        }
+        if (membership_tier) customerUpdates.membership_tier = membership_tier;
+        if (loyalty_points !== undefined) customerUpdates.loyalty_points = Number(loyalty_points);
+
+        await customer.update(customerUpdates);
+
+        if (customer.user_id) {
+            const user = await User.findByPk(customer.user_id);
+            if (user) {
+                const userUpdates = {};
+                if (fullName) userUpdates.fullName = fullName.trim();
+                if (phoneNumber) {
+                    const normalizedPhone = normalizeVnPhone(phoneNumber);
+                    userUpdates.phoneNumber = normalizedPhone;
+                }
+                if (status) userUpdates.status = status;
+                if (avatar !== undefined) userUpdates.avatar = avatar;
+
+                await user.update(userUpdates);
+            }
+        }
+
+        return {
+            success: true,
+            message: "Cập nhật khách hàng thành công",
+            data: customer
+        };
     } catch (error) {
         throw new Error(error.message);
     }
