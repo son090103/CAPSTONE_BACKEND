@@ -218,10 +218,14 @@ module.exports.createServiceCatalog = async (category_id, service_name, descript
   const t = await db.sequelize.transaction();
   try {
     if (normDefaultInspection) {
-      await Service_Catalog.update(
-        { is_default_inspection_service: false },
-        { where: { is_default_inspection_service: true }, transaction: t }
-      );
+      const existingDefaultInspection = await Service_Catalog.findOne({
+        where: { is_default_inspection_service: true },
+        transaction: t,
+        lock: t.LOCK?.UPDATE,
+      });
+      if (existingDefaultInspection) {
+        throw { status: 400, message: "Đã tồn tại dịch vụ kiểm tra mặc định" };
+      }
     }
 
     const serviceCatalog = await Service_Catalog.create({
