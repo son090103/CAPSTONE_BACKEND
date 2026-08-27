@@ -7,6 +7,7 @@ const searchController = require("../../controller/receptionist/search.controlle
 const quoteManagementController = require("./../../controller/receptionist/quoteManagement.controller");
 const technicianController = require("../../controller/receptionist/technician.controller");
 const chatController = require("../../controller/chat/chat.controller");
+const feedbackController = require("../../controller/receptionist/feedback.controller");
 
 router.get("/quote/service-order/:serviceOrderId/payment-summary",quoteManagementController.getPaymentSummary);
 router.get("/quote", quoteManagementController.getQuoteHistory);
@@ -44,6 +45,8 @@ router.get("/technicians/working-today", technicianController.getTechniciansWork
 router.post("/rescue/assign", technicianController.assignRescueTechnician);
 router.post("/rescue/create", technicianController.createRescueRequest);
 router.patch("/rescue/:rescueId/cancel", technicianController.cancelRescueRequest);
+
+router.get("/feedback", feedbackController.getAllFeedbacks);
 
 router.get("/chat/conversations", chatController.getConversationsForReception);
 router.get("/chat/conversations/:id", chatController.getConversationDetailForReception);

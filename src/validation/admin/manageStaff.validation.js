@@ -47,7 +47,7 @@ const updateStaffSchema = z
       .min(1, "Vai trò là bắt buộc")
       .optional(),
     status: z
-      .enum(["ACTIVE", "INACTIVE", "PENDING", "BANNED"], {
+      .enum(["ACTIVE", "INACTIVE", "BANNED"], {
         required_error: "Trạng thái tài khoản không hợp lệ",
       })
       .optional(),

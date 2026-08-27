@@ -64,6 +64,7 @@ router.post("/technical-document", technicalDocumentUpload.fields([{ name: "pdf_
 router.delete("/technical-document/:id", technicalDocumentController.remove);
 
 router.get("/customer", manageCustomer.getCustomer);
+router.post("/customer", manageCustomer.createCustomer);
 router.get("/customer/:id", manageCustomer.getCustomerDetail);
 
 // Lấy danh sách khung ca
