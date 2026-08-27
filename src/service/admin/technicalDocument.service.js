@@ -1,6 +1,7 @@
 const db = require("../../../models");
 const { PDFParse } = require("pdf-parse");
 const { uploadToCloudinary } = require("../../helper/uploadToCloudinary.helper");
+const cloudinary = require("../../config/cloudinary.config");
 const technicalVectorStoreService = require("../ai/technicalVectorStore.service");
 
 const Technical_Documents = db.Technical_Documents;
@@ -94,6 +95,25 @@ module.exports.deleteTechnicalDocument = async (id) => {
 
   await document.destroy();
   return { id };
+};
+
+// Delivery URL công khai của Cloudinary (res.cloudinary.com) bị tài khoản chặn ACL cho resource
+// type raw (trả 401 "deny or ACL failure"). URL ký qua api.cloudinary.com (dùng API key/secret,
+// giống mọi request quản trị khác) thì không bị chặn — dùng route này thay vì mở thẳng file_url.
+module.exports.getSignedViewUrl = async (id) => {
+  const document = await Technical_Documents.findByPk(id);
+  if (!document) {
+    throw { status: 404, message: "Không tìm thấy tài liệu" };
+  }
+  const match = document.file_url.match(/\/upload\/v\d+\/(.+)$/);
+  if (!match) {
+    throw { status: 500, message: "Không xác định được đường dẫn file trên Cloudinary" };
+  }
+  const publicId = match[1];
+  return cloudinary.utils.private_download_url(publicId, "pdf", {
+    resource_type: "raw",
+    type: "upload",
+  });
 };
 
 module.exports.listVehicleMakes = async () => {

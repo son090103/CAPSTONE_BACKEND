@@ -29,6 +29,16 @@ module.exports.create = async (req, res) => {
   }
 };
 
+module.exports.getViewUrl = async (req, res) => {
+  try {
+    const url = await technicalDocumentService.getSignedViewUrl(req.params.id);
+    return res.status(200).json({ success: true, data: { url } });
+  } catch (error) {
+    console.error("get technical document view url error:", error);
+    return res.status(error.status || 500).json({ success: false, message: error.message || "Lỗi máy chủ" });
+  }
+};
+
 module.exports.listVehicleMakes = async (req, res) => {
   try {
     const data = await technicalDocumentService.listVehicleMakes();

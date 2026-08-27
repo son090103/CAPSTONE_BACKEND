@@ -64,6 +64,7 @@ router.get("/vehicle-makes", technicalDocumentController.listVehicleMakes);
 router.get("/technical-documents", technicalDocumentController.list);
 router.post("/technical-document", technicalDocumentUpload.fields([{ name: "pdf_document", maxCount: 1 }]), technicalDocumentController.create);
 router.delete("/technical-document/:id", technicalDocumentController.remove);
+router.get("/technical-document/:id/view-url", technicalDocumentController.getViewUrl);
 
 router.get("/customer", manageCustomer.getCustomer);
 router.post("/customer", manageCustomer.createCustomer);
