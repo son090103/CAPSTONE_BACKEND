@@ -55,6 +55,13 @@ describe('serviceCatalog.service helpers', () => {
     expect(out.thoi_gian_phut).toBe(60);
     expect(out.gia).toBe('150000');
   });
+
+  test('validateLaborPrice applies the default-inspection pricing rule', () => {
+    expect(svc.validateLaborPrice(0, true)).toBe(0);
+    expect(() => svc.validateLaborPrice(1000, true)).toThrow();
+    expect(svc.validateLaborPrice(1000, false)).toBe(1000);
+    expect(() => svc.validateLaborPrice(0, false)).toThrow();
+  });
 });
 
 describe('importServiceCatalog integration (mocked DB)', () => {

@@ -1,5 +1,6 @@
 /** @type {import("sequelize").ModelStatic<import("sequelize").Model>} */
 const path = require('path');
+const xlsx = require('xlsx');
 const { Op } = require("sequelize");
 const { where } = require("sequelize");
 const db = require("../../../models");
@@ -99,6 +100,20 @@ const normalizeBoolean = (value) => {
   return undefined;
 };
 
+const validateLaborPrice = (laborPrice, isDefaultInspectionService) => {
+  const normalizedPrice = Number(laborPrice);
+  if (!Number.isFinite(normalizedPrice) || normalizedPrice < 0) {
+    throw { status: 400, message: "Giá dịch vụ không hợp lệ" };
+  }
+  if (isDefaultInspectionService && normalizedPrice !== 0) {
+    throw { status: 400, message: "Dịch vụ kiểm tra mặc định phải có giá bằng 0" };
+  }
+  if (!isDefaultInspectionService && normalizedPrice <= 0) {
+    throw { status: 400, message: "Giá dịch vụ thường phải lớn hơn 0" };
+  }
+  return normalizedPrice;
+};
+
 const normalizeRow = (row) => {
   const normalized = {};
   Object.keys(row).forEach((key) => {
@@ -146,6 +161,7 @@ const parseNumber = (value, fallback = undefined) => {
 module.exports.normalizeRow = normalizeRow;
 module.exports.parseNumber = parseNumber;
 module.exports.normalizeBoolean = normalizeBoolean;
+module.exports.validateLaborPrice = validateLaborPrice;
 
 const buildCatalogWhere = ({ q, category_id, is_active } = {}) => {
   const where = {};
@@ -193,6 +209,7 @@ module.exports.createServiceCatalog = async (category_id, service_name, descript
   const normDefaultInspection = is_default_inspection_service !== undefined && is_default_inspection_service !== null
     ? (normalizeBoolean(is_default_inspection_service) ?? false)
     : false;
+  const normalizedLaborPrice = validateLaborPrice(labor_price ?? 0, normDefaultInspection);
 
   const normRequiresBay = requires_bay !== undefined && requires_bay !== null
     ? (normalizeBoolean(requires_bay) ?? true)
@@ -213,7 +230,7 @@ module.exports.createServiceCatalog = async (category_id, service_name, descript
       description: description,
       estimated_duration: estimated_duration,
       is_active: is_active,
-      labor_price: labor_price || 0,
+      labor_price: normalizedLaborPrice,
       spare_part_id: spare_part_id || null,
       is_default_inspection_service: normDefaultInspection,
       requires_bay: normRequiresBay
@@ -266,6 +283,10 @@ module.exports.previewImportServiceCatalog = async (fileBuffer) => {
       row.estimated_duration || row.duration || row.estimated_duration_minutes || row.thoi_gian || row.thoi_gian_phut || row.thoigian || row.duration_minutes,
       30
     );
+
+    const is_active = normalizeBoolean(
+      row.is_active ?? row.status ?? row.trang_thai ?? row.trangthai ?? 'true'
+    ) ?? true;
 
     const is_default_inspection_service = normalizeBoolean(
       row.is_default_inspection_service ?? row.is_default ?? row.kiem_tra_mac_dinh ?? row.kiemtramacdinh ?? row.default ?? 'false'
@@ -382,7 +403,7 @@ module.exports.confirmImportServiceCatalog = async (servicesList) => {
   }
 
   if (results.successCount > 0) {
-    vectorStoreService.syncAllServicesToPinecone().catch(err => console.error("Lỗi Background Sync:", err));
+    syncVectorStoreInBackground();
   }
   return results;
 };
@@ -448,7 +469,7 @@ module.exports.getServiceCatalog = async (filters = {}) => {
   };
 };
 
-module.exports.updateServiceCatalog = async (service_catalog_id, category_id, service_name, description, estimated_duration, is_active, labor_price, spare_part_id, is_default_inspection_service = false, requires_bay = true) => {
+module.exports.updateServiceCatalog = async (service_catalog_id, category_id, service_name, description, estimated_duration, is_active, labor_price, spare_part_id, is_default_inspection_service, requires_bay) => {
   const category = await Service_Categories.findOne({
     where: { id: category_id },
   });
@@ -468,6 +489,7 @@ module.exports.updateServiceCatalog = async (service_catalog_id, category_id, se
   const normDefaultInspection = is_default_inspection_service !== undefined && is_default_inspection_service !== null
     ? (normalizeBoolean(is_default_inspection_service) ?? serviceCatalog.is_default_inspection_service)
     : serviceCatalog.is_default_inspection_service;
+  const normalizedLaborPrice = validateLaborPrice(labor_price, normDefaultInspection);
 
   const normRequiresBay = requires_bay !== undefined && requires_bay !== null
     ? (normalizeBoolean(requires_bay) ?? serviceCatalog.requires_bay)
@@ -488,7 +510,7 @@ module.exports.updateServiceCatalog = async (service_catalog_id, category_id, se
       description,
       estimated_duration,
       is_active,
-      labor_price,
+      labor_price: normalizedLaborPrice,
       spare_part_id: spare_part_id ?? null,
       is_default_inspection_service: normDefaultInspection,
       requires_bay: normRequiresBay

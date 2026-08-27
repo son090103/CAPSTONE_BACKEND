@@ -1,4 +1,4 @@
-const { createServiceCatalogSchema, viewServiceCatalogSchema } = require("../../validation/admin/serviceCatalog.validation")
+const { serviceCatalogPayloadSchema, viewServiceCatalogSchema } = require("../../validation/admin/serviceCatalog.validation")
 const serviceCatalog = require("../../service/admin/serviceCatalog.service");
 const manageSparePart = require("../../service/inventory/sparePartManagement.service");
 
@@ -17,9 +17,12 @@ module.exports.getServiceCategories = async (req, res) => {
 
 module.exports.createServiceCatalog = async (req, res) => {
     try {
-        const { category_id, service_name, description, estimated_duration, is_active, labor_price, spare_part_id, is_default_inspection_service, requires_bay } = req.body;
-        const validation = createServiceCatalogSchema.safeParse({ service_name });
-        const result = await serviceCatalog.createServiceCatalog(category_id, service_name, description, estimated_duration, is_active, labor_price, spare_part_id, is_default_inspection_service, requires_bay);
+        const validation = serviceCatalogPayloadSchema.safeParse(req.body);
+        if (!validation.success) {
+            return res.status(400).json({ message: validation.error.issues[0]?.message || "Dữ liệu dịch vụ không hợp lệ" });
+        }
+        const { category_id, service_name, estimated_duration, is_active, labor_price, spare_part_id, is_default_inspection_service, requires_bay } = validation.data;
+        const result = await serviceCatalog.createServiceCatalog(category_id, service_name, req.body.description, estimated_duration, is_active, labor_price, spare_part_id, is_default_inspection_service, requires_bay);
         return res.status(201).json({
             message: "Tạo mới dịch vụ thành công",
             data: result,
@@ -118,9 +121,12 @@ module.exports.searchServiceCatalog = async (req, res) => {
 module.exports.updateServiceCatalog = async (req, res) => {
     try {
         const { id } = req.params;
-        const { category_id, service_name, description, estimated_duration, is_active, labor_price, spare_part_id, is_default_inspection_service, requires_bay } = req.body;
-        const validation = createServiceCatalogSchema.safeParse({ service_name });
-        const result = await serviceCatalog.updateServiceCatalog(id, category_id, service_name, description, estimated_duration, is_active, labor_price, spare_part_id, is_default_inspection_service, requires_bay);
+        const validation = serviceCatalogPayloadSchema.safeParse(req.body);
+        if (!validation.success) {
+            return res.status(400).json({ message: validation.error.issues[0]?.message || "Dữ liệu dịch vụ không hợp lệ" });
+        }
+        const { category_id, service_name, estimated_duration, is_active, labor_price, spare_part_id } = validation.data;
+        const result = await serviceCatalog.updateServiceCatalog(id, category_id, service_name, req.body.description, estimated_duration, is_active, labor_price, spare_part_id, req.body.is_default_inspection_service, req.body.requires_bay);
         return res.status(201).json({
             message: "Cập nhật dịch vụ thành công",
             data: result,
