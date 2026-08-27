@@ -19,6 +19,8 @@ const garageConfigurationsController = require("../../controller/common/garageCo
 
 router.get("/role", staffController.getRoles);
 router.get("/staff", staffController.getStaffList);
+router.get("/staff/performance", staffController.getStaffPerformance);
+router.get("/staff/:userId/feedbacks", staffController.getStaffFeedbacks);
 router.post("/staff", staffController.createStaff);
 router.put("/staff/:userId", staffController.updateStaff);
 

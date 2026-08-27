@@ -79,3 +79,29 @@ module.exports.getRoles = async (req,res) =>{
     return res.status(error.status || 500).json({ message: error.message || "Internal server error" });
   }
 };
+
+module.exports.getStaffPerformance = async (req, res) => {
+  try {
+    const { timeframe } = req.query;
+    const result = await staffService.getStaffPerformanceList(timeframe);
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports.getStaffFeedbacks = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const result = await staffService.getStaffFeedbacks(userId);
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
