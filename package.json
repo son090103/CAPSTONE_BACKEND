@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "@google/genai": "^2.16.0",
     "@google/generative-ai": "^0.24.1",
     "@huggingface/inference": "^4.13.22",
     "@langchain/community": "^1.1.29",
@@ -27,6 +28,7 @@
     "nodemon": "^3.1.14",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
+    "pdf-parse": "^2.4.5",
     "pg": "^8.20.0",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.8",
@@ -39,7 +41,9 @@
   "scripts": {
     "start": "nodemon --inspect Server.js",
     "test": "jest",
-    "test:unit": "jest"
+    "test:unit": "jest",
+    "rag:check": "node scripts/syncPineconeKnowledge.js --dry-run",
+    "rag:sync": "node scripts/syncPineconeKnowledge.js"
   },
   "devDependencies": {
     "jest": "^30.4.2",

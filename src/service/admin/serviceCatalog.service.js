@@ -103,9 +103,7 @@ const normalizeRow = (row) => {
   const normalized = {};
   Object.keys(row).forEach((key) => {
     let rawKey = key.toString().trim();
-    // Remove BOM and common zero-width/invisible chars that Excel may add
     rawKey = rawKey.replace(/^[\uFEFF\u200B\u200C\u200D\u2060]+/, '');
-    // Only attempt latin1->utf8 re-decode when the string shows mojibake signatures
     let decoded = rawKey;
     try {
       if (/Ã|Â|ï»¿|�|á»|áº|á¼|Ä|Å|Æ|â/.test(rawKey)) {
@@ -113,7 +111,6 @@ const normalizeRow = (row) => {
         if (redecoded && redecoded !== rawKey) decoded = redecoded;
       }
     } catch (e) {
-      // ignore
     }
 
     let safeKey = decoded.toLowerCase().replace(/\s+/g, "_");
@@ -140,7 +137,6 @@ const normalizeRow = (row) => {
 
 const parseNumber = (value, fallback = undefined) => {
   if (value === null || value === undefined || value === "") return fallback;
-  // Remove common thousands separators (dot, comma, spaces) then parse
   const cleaned = value.toString().replace(/[.,\s]/g, "");
   const parsed = Number(cleaned);
   return Number.isNaN(parsed) ? fallback : parsed;
@@ -186,7 +182,7 @@ module.exports.getServiceCategories = async () => {
   return categories;
 };
 
-module.exports.createServiceCatalog = async (category_id, service_name, description, estimated_duration, is_active, labor_price, spare_part_id) => {
+module.exports.createServiceCatalog = async (category_id, service_name, description, estimated_duration, is_active, labor_price, spare_part_id, is_default_inspection_service = false, requires_bay = true) => {
   const category = await Service_Categories.findOne({
     where: { id: category_id }
   });
@@ -194,8 +190,23 @@ module.exports.createServiceCatalog = async (category_id, service_name, descript
     throw { status: 404, message: "Danh mục không tồn tại" }
   }
 
+  const normDefaultInspection = is_default_inspection_service !== undefined && is_default_inspection_service !== null
+    ? (normalizeBoolean(is_default_inspection_service) ?? false)
+    : false;
+
+  const normRequiresBay = requires_bay !== undefined && requires_bay !== null
+    ? (normalizeBoolean(requires_bay) ?? true)
+    : true;
+
   const t = await db.sequelize.transaction();
   try {
+    if (normDefaultInspection) {
+      await Service_Catalog.update(
+        { is_default_inspection_service: false },
+        { where: { is_default_inspection_service: true }, transaction: t }
+      );
+    }
+
     const serviceCatalog = await Service_Catalog.create({
       category_id: category_id,
       service_name: service_name,
@@ -203,7 +214,9 @@ module.exports.createServiceCatalog = async (category_id, service_name, descript
       estimated_duration: estimated_duration,
       is_active: is_active,
       labor_price: labor_price || 0,
-      spare_part_id: spare_part_id || null
+      spare_part_id: spare_part_id || null,
+      is_default_inspection_service: normDefaultInspection,
+      requires_bay: normRequiresBay
     }, { transaction: t });
 
     await applyCatalogTranslations(t, serviceCatalog.id, service_name, description);
@@ -254,8 +267,12 @@ module.exports.previewImportServiceCatalog = async (fileBuffer) => {
       30
     );
 
-    const is_active = normalizeBoolean(
-      row.is_active ?? row.active ?? row.trang_thai ?? row.trangthai ?? row.status ?? 'true'
+    const is_default_inspection_service = normalizeBoolean(
+      row.is_default_inspection_service ?? row.is_default ?? row.kiem_tra_mac_dinh ?? row.kiemtramacdinh ?? row.default ?? 'false'
+    ) || false;
+
+    const requires_bay = normalizeBoolean(
+      row.requires_bay ?? row.yeu_cau_cau_nang ?? row.yeucaucauhang ?? row.yeucaucaunang ?? row.requiresbay ?? row.requires_elevator ?? 'true'
     );
 
     const labor_price = parseNumber(
@@ -286,6 +303,8 @@ module.exports.previewImportServiceCatalog = async (fileBuffer) => {
       spare_part_id,
       category_id: categoryId,
       category_name: categoryName,
+      is_default_inspection_service,
+      requires_bay: requires_bay !== undefined ? requires_bay : true,
       isValid: true,
       errors: []
     };
@@ -349,7 +368,9 @@ module.exports.confirmImportServiceCatalog = async (servicesList) => {
         item.estimated_duration,
         item.is_active,
         item.labor_price,
-        item.spare_part_id
+        item.spare_part_id,
+        item.is_default_inspection_service,
+        item.requires_bay
       );
       results.successCount += 1;
     } catch (error) {
@@ -372,7 +393,7 @@ module.exports.getServiceCatalog = async (filters = {}) => {
 
   const queryOptions = {
     where: userWhere,
-    attributes: ["id", "category_id", "service_name", "description", "estimated_duration", "labor_price", "spare_part_id", "is_active", "createdAt", "updatedAt"],
+    attributes: ["id", "category_id", "service_name", "description", "estimated_duration", "labor_price", "spare_part_id", "is_active", "is_default_inspection_service", "requires_bay", "createdAt", "updatedAt"],
     include: [
       {
         model: Service_Categories,
@@ -427,7 +448,7 @@ module.exports.getServiceCatalog = async (filters = {}) => {
   };
 };
 
-module.exports.updateServiceCatalog = async (service_catalog_id, category_id, service_name, description, estimated_duration, is_active) => {
+module.exports.updateServiceCatalog = async (service_catalog_id, category_id, service_name, description, estimated_duration, is_active, labor_price, spare_part_id, is_default_inspection_service = false, requires_bay = true) => {
   const category = await Service_Categories.findOne({
     where: { id: category_id },
   });
@@ -444,17 +465,70 @@ module.exports.updateServiceCatalog = async (service_catalog_id, category_id, se
     throw { status: 404, message: "Dịch vụ không tồn tại" };
   }
 
-  await serviceCatalog.update({
-    category_id,
-    service_name,
-    description,
-    estimated_duration,
-    is_active,
-  });
+  const normDefaultInspection = is_default_inspection_service !== undefined && is_default_inspection_service !== null
+    ? (normalizeBoolean(is_default_inspection_service) ?? serviceCatalog.is_default_inspection_service)
+    : serviceCatalog.is_default_inspection_service;
+
+  const normRequiresBay = requires_bay !== undefined && requires_bay !== null
+    ? (normalizeBoolean(requires_bay) ?? serviceCatalog.requires_bay)
+    : serviceCatalog.requires_bay;
+
+  const t = await db.sequelize.transaction();
+  try {
+    if (normDefaultInspection && !serviceCatalog.is_default_inspection_service) {
+      await Service_Catalog.update(
+        { is_default_inspection_service: false },
+        { where: { is_default_inspection_service: true }, transaction: t }
+      );
+    }
+
+    await serviceCatalog.update({
+      category_id,
+      service_name,
+      description,
+      estimated_duration,
+      is_active,
+      labor_price,
+      spare_part_id: spare_part_id ?? null,
+      is_default_inspection_service: normDefaultInspection,
+      requires_bay: normRequiresBay
+    }, { transaction: t });
+
+    await t.commit();
+  } catch (error) {
+    await t.rollback();
+    throw error;
+  }
 
   // [Real-time AI Sync] Chạy ngầm đồng bộ lên Pinecone
   syncVectorStoreInBackground();
 
   return serviceCatalog;
+};
+
+// Đánh dấu 1 dịch vụ làm "dịch vụ kiểm tra mặc định" — được hệ thống tự động gắn khi khách đặt
+// lịch "Kiểm tra và sửa chữa lỗi" mà không chọn dịch vụ cụ thể nào. Chỉ được đúng 1 dịch vụ
+// mang cờ này tại 1 thời điểm, nên luôn tắt cờ ở dịch vụ khác trước khi bật ở dịch vụ mới.
+module.exports.setDefaultInspectionService = async (service_catalog_id) => {
+  const serviceCatalog = await Service_Catalog.findByPk(service_catalog_id);
+  if (!serviceCatalog) {
+    throw { status: 404, message: "Dịch vụ không tồn tại" };
+  }
+  if (!serviceCatalog.is_active) {
+    throw { status: 400, message: "Chỉ có thể đặt dịch vụ đang hoạt động làm dịch vụ kiểm tra mặc định" };
+  }
+
+  await db.sequelize.transaction(async (t) => {
+    await Service_Catalog.update(
+      { is_default_inspection_service: false },
+      { where: { is_default_inspection_service: true }, transaction: t },
+    );
+    await Service_Catalog.update(
+      { is_default_inspection_service: true },
+      { where: { id: service_catalog_id }, transaction: t },
+    );
+  });
+
+  return await Service_Catalog.findByPk(service_catalog_id);
 };
 

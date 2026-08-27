@@ -198,7 +198,7 @@ module.exports.getAppointmentByKey = async (key) => {
                     {
                         model: db.Service_Catalog,
                         as: 'catalog',
-                        attributes: ['id', 'service_name', 'estimated_duration', 'description']
+                        attributes: ['id', 'service_name', 'estimated_duration', 'description', 'is_default_inspection_service']
                     },
                     {
                         model: db.Service_Combo,
@@ -247,11 +247,11 @@ module.exports.createAppointmentForCustomer = async (data, receptionistId) => {
     }
 
     // Không chọn dịch vụ/combo cụ thể nào -> đặt lịch dạng "Kiểm tra và Sửa chữa" (khách chưa rõ
-    // bệnh, chỉ mô tả tình trạng lỗi). Tự động gán dịch vụ kiểm tra miễn phí (labor_price = 0)
+    // bệnh, chỉ mô tả tình trạng lỗi). Tự động gán dịch vụ kiểm tra mặc định
     // giống hệt luồng khách hàng tự đặt, để Appointment luôn có ít nhất 1 Appointment_Details.
     if (allDetails.length === 0) {
         const freeCheckupService = await db.Service_Catalog.findOne({
-            where: { labor_price: 0, is_active: true }
+            where: { is_default_inspection_service: true, is_active: true }
         });
         if (freeCheckupService) {
             allDetails.push({ catalog_id: freeCheckupService.id });
@@ -511,7 +511,7 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
 
     if (allDetails.length === 0) {
         const freeCheckupService = await db.Service_Catalog.findOne({
-            where: { labor_price: 0, is_active: true }
+            where: { is_default_inspection_service: true, is_active: true }
         });
         if (freeCheckupService) {
             allDetails.push({ catalog_id: freeCheckupService.id });
@@ -607,32 +607,43 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
                 throw { status: 400, message: "Xe đang ở trong gara, không thể đặt thêm lịch" };
             }
         } else if (data.walk_in) {
-            // Khách hàng mới hoặc xe mới
-            const phoneToUse = data.walk_in.customer_phone;
-            if (!phoneToUse) {
-                throw { status: 400, message: "Vui lòng nhập số điện thoại khách hàng" };
-            }
+            // Khách hàng đã được lễ tân xác định từ danh sách có sẵn (tab "Khách hàng cũ") nhưng
+            // thêm 1 xe mới chưa từng đăng ký — customer_id đã chắc chắn, không phải khách mới
+            // nên KHÔNG tạo Customer mới và KHÔNG chặn theo SĐT trùng (SĐT trùng vì đúng là
+            // cùng 1 khách với các xe khác trong hệ thống).
+            if (data.walk_in.customer_id) {
+                customer = await db.Customers.findByPk(data.walk_in.customer_id, { transaction });
+                if (!customer) {
+                    throw { status: 400, message: "Khách hàng không tồn tại" };
+                }
+            } else {
+                // Khách hàng hoàn toàn mới — nhập tay từ tab "Khách hàng mới"
+                const phoneToUse = data.walk_in.customer_phone;
+                if (!phoneToUse) {
+                    throw { status: 400, message: "Vui lòng nhập số điện thoại khách hàng" };
+                }
 
-            // SĐT đã có khách hàng trong hệ thống — không âm thầm dùng lại/ghi đè tên, bắt lễ tân
-            // chuyển qua chọn khách hàng có sẵn (tránh lưu nhầm tên khác cho cùng 1 khách).
-            const existingCustomer = await db.Customers.findOne({
-                where: { phone: phoneToUse },
-                transaction,
-            });
-            if (existingCustomer) {
-                throw {
-                    status: 409,
-                    message: `Số điện thoại này đã thuộc về khách hàng "${existingCustomer.name || 'chưa rõ tên'}" trong hệ thống. Vui lòng chọn khách hàng có sẵn thay vì tạo mới.`,
-                };
-            }
+                // SĐT đã có khách hàng trong hệ thống — không âm thầm dùng lại/ghi đè tên, bắt lễ
+                // tân chuyển qua chọn khách hàng có sẵn (tránh lưu nhầm tên khác cho cùng 1 khách).
+                const existingCustomer = await db.Customers.findOne({
+                    where: { phone: phoneToUse },
+                    transaction,
+                });
+                if (existingCustomer) {
+                    throw {
+                        status: 409,
+                        message: `Số điện thoại này đã thuộc về khách hàng "${existingCustomer.name || 'chưa rõ tên'}" trong hệ thống. Vui lòng chọn khách hàng có sẵn thay vì tạo mới.`,
+                    };
+                }
 
-            customer = await db.Customers.create({
-                phone: phoneToUse,
-                user_id: null,
-                name: data.walk_in.customer_name || null,
-                membership_tier: "BRONZE",
-                loyalty_points: 0,
-            }, { transaction });
+                customer = await db.Customers.create({
+                    phone: phoneToUse,
+                    user_id: null,
+                    name: data.walk_in.customer_name || null,
+                    membership_tier: "BRONZE",
+                    loyalty_points: 0,
+                }, { transaction });
+            }
 
             let [make] = await db.Vehicle_Makes.findOrCreate({
                 where: { make_name: data.walk_in.brand_name || 'Khác' },

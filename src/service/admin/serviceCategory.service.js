@@ -6,7 +6,6 @@ const { getHfInference } = require("../../util/huggingFace.util");
 
 
 
-// FLORES-200 mapping for facebook/nllb-200-distilled-1.3B
 const NLLB_LANG_MAP = {
   en: 'eng_Latn'
 };
@@ -14,22 +13,21 @@ const NLLB_LANG_MAP = {
 const ServiceCategory = db.Service_Categories || db.ServiceCategory;
 const ServiceCatalog = db.Service_Catalog || db.ServiceCatalog;
 
-// Helper: Handle Auto Translation for Service Category
 async function applyTranslations(t, categoryId, categoryName) {
   console.log("--- Bắt đầu applyTranslations ---");
   const hfToken = process.env.HUGGINGFACE_API_KEY;
   console.log("Có HuggingFace Token không?", !!hfToken);
-  
+
   if (!hfToken || !db.Languages || !db.Service_Category_Translations) {
     console.log("Thiếu cấu hình HF Token hoặc Model DB!");
     return;
   }
-  
+
   const hf = getHfInference(hfToken);
   if (!hf) return;
 
   const languages = await db.Languages.findAll({
-    where: { id: 'en' }, // Only translate to English for now
+    where: { id: 'en' },
     transaction: t
   });
   console.log("Số lượng ngôn ngữ tìm thấy trong DB (en):", languages.length);
@@ -58,14 +56,14 @@ async function applyTranslations(t, categoryId, categoryName) {
         wait_for_model: true
       });
       console.log(`Kết quả dịch (${lang.id}):`, translation);
-      
+
       let translatedText = categoryName;
       if (translation && translation.translation_text) {
         translatedText = translation.translation_text;
       } else if (Array.isArray(translation) && translation.length > 0 && translation[0].translation_text) {
         translatedText = translation[0].translation_text;
       }
-      
+
       translationsToInsert.push({
         serviceCategoryId: categoryId,
         languageId: lang.id,
@@ -153,7 +151,6 @@ module.exports.createCategories = async ({
       { transaction: t }
     );
     console.log("lưu vào thay đổi ngôn ngữ ")
-    // Auto-translation
     await applyTranslations(t, category.id, category_name);
 
     await t.commit();
@@ -199,7 +196,6 @@ module.exports.deleteCategories = async (id) => {
       throw new Error("Category not found");
     }
 
-    // If ServiceCatalog model exists, either nullify category_id or delete services
     if (ServiceCatalog) {
       if (categoryIdAllowsNull) {
         await ServiceCatalog.update(
@@ -214,7 +210,6 @@ module.exports.deleteCategories = async (id) => {
       }
     }
 
-    // Delete the category (combo)
     await ServiceCategory.destroy({ where: { id }, transaction: t });
 
     await t.commit();

@@ -13,6 +13,17 @@ module.exports.getAllTasks = async (req, res) => {
   }
 };
 
+module.exports.getIssuesReportHistoryForLeader = async (req, res) => {
+  try {
+    const result = await taskAssignmentService.getIssuesReportHistoryForLeader();
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Đã xảy ra lỗi khi lấy lịch sử báo cáo lỗi",
+    });
+  }
+};
+
 module.exports.assignTask = async (req, res) => {
   try {
     const validation = assignTaskSchema.safeParse(req.body);

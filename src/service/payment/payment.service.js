@@ -343,18 +343,6 @@ const handleSepayTransaction = async (paymentData) => {
             };
             if (!isDeposit) {
                 updateFields.payment_status = 'PAID';
-
-                // Update appointment status to CONFIRMED
-                const serviceOrder = await db.Service_Orders.findOne({
-                    where: { id: bookingPayment.order_id }
-                });
-                if (serviceOrder && serviceOrder.appointment_id) {
-                    await db.Appointments.update(
-                        { status: 'CONFIRMED' },
-                        { where: { id: serviceOrder.appointment_id } }
-                    );
-                    console.log(`✅ [Sepay] Đã cập nhật trạng thái Appointments thành CONFIRMED cho đơn hàng ${bookingPayment.order_id}`);
-                }
             }
             await bookingPayment.update(updateFields);
             console.log(`✅ [Sepay] Đã cập nhật Booking_Payments (ID: ${bookingPayment.id}) ${isDeposit ? 'cho đặt cọc (DEPOSITED)' : 'thành PAID'}`);
@@ -470,11 +458,11 @@ const confirmPayment = async (orderId, amount, paymentMethod = 'VIETQR', recepti
                 if (!maxPercentConfig) {
                     maxPercentConfig = await db.Garage_Configurations.create({
                         config_key: 'MAX_LOYALTY_DISCOUNT_PERCENT',
-                        config_value: '30',
+                        config_value: '10',
                         description: 'Phần trăm tối đa của hóa đơn được phép thanh toán bằng điểm'
                     });
                 }
-                const maxPercent = parseInt(maxPercentConfig.config_value) || 30;
+                const maxPercent = parseInt(maxPercentConfig.config_value) || 10;
 
                 // Calculate original amount (approximate based on amount + pointsRedeemed * 1000)
                 // Actually the best way is to fetch the full total from tasks/quotation, but for now we trust frontend validation
@@ -524,18 +512,6 @@ const confirmPayment = async (orderId, amount, paymentMethod = 'VIETQR', recepti
 
         // Add Loyalty Points (Earn points based on the actual cash amount paid)
         await loyaltyService.addPointsOnPayment(numericOrderId, amount);
-
-        // Update appointment status to CONFIRMED
-        const serviceOrder = await db.Service_Orders.findOne({
-            where: { id: numericOrderId }
-        });
-        if (serviceOrder && serviceOrder.appointment_id) {
-            await db.Appointments.update(
-                { status: 'CONFIRMED' },
-                { where: { id: serviceOrder.appointment_id } }
-            );
-            console.log(`✅ [Payment] Đã cập nhật trạng thái Appointments thành CONFIRMED cho đơn hàng ${numericOrderId}`);
-        }
 
         return { success: true, bookingPayment };
     } catch (error) {

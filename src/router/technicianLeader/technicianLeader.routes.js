@@ -9,6 +9,7 @@ const quoteManagementController = require("../../controller/technicianLeader/quo
 router.get("/components", quoteManagementController.getAllComponents);
 router.get("/issue-report/tasks", quoteManagementController.getActiveTasksForIssueReport);
 router.post("/issue-report", quoteManagementController.createIssuesReport);
+router.post("/issue-report/standalone", quoteManagementController.createStandaloneIssueReport);
 router.get("/issues", quoteManagementController.getIssueReports);
 router.post("/quote", quoteManagementController.createQuotation);
 router.patch("/quote/:id", quoteManagementController.updateQuotation);
@@ -25,6 +26,7 @@ router.get("/service-order/:id", serviceOrderController.getServiceOrderById);
 router.patch("/service-order/:id/close-early", serviceOrderController.closeServiceOrderEarly);
 router.get("/appointments", appointmentController.getReceivedAppointments);
 router.get("/tasks", taskAssignmentController.getAllTasks);
+router.get("/issues-report-history", taskAssignmentController.getIssuesReportHistoryForLeader);
 router.post("/assign", taskAssignmentController.assignTask);
 router.get("/assignments", taskAssignmentController.getAssignmentHistory);
 router.patch("/assignments/:assignmentId", taskAssignmentController.updateAssignment);

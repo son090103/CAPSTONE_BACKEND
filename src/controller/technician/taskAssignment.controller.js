@@ -303,44 +303,6 @@ module.exports.getIssuesReportHistory = async (req, res) => {
   }
 }
 
-module.exports.getAllDiagnostics = async (req, res) => {
-  try {
-    const result = await taskAssignmentService.getAllDiagnostics();
-    return res.status(200).json({ data: result });
-  } catch (error) {
-    return res.status(error.status || 500).json({
-      message: error.message || "Internal server error",
-    });
-  }
-};
-
-module.exports.searchDiagnostics = async (req, res) => {
-  try {
-    const { keyword } = req.query;
-    const result = await taskAssignmentService.searchDiagnostics(keyword);
-    return res.status(200).json({ data: result });
-  } catch (error) {
-    return res.status(error.status || 500).json({
-      message: error.message || "Internal server error",
-    });
-  }
-};
-
-module.exports.filterDiagnostics = async (req, res) => {
-  try {
-    const { makeId, modelId } = req.query;
-    const result = await taskAssignmentService.filterDiagnostics({
-      makeId: makeId ? Number(makeId) : null,
-      modelId: modelId ? Number(modelId) : null,
-    });
-    return res.status(200).json({ data: result });
-  } catch (error) {
-    return res.status(error.status || 500).json({
-      message: error.message || "Internal server error",
-    });
-  }
-};
-
 module.exports.getMakes = async (req, res) => {
   try {
     const result = await taskAssignmentService.getMakes();
@@ -492,6 +454,46 @@ module.exports.getMyCompletedTasks = async (req, res) => {
   try {
     const technicianId = res.locals.user.id;
     const result = await taskAssignmentService.getCompletedTasks(technicianId);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getMyWorkHistory = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const result = await taskAssignmentService.getMyWorkHistory(technicianId);
+    return res.status(200).json({ data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.addRepairNote = async (req, res) => {
+  try {
+    const { taskId, content } = req.body;
+    const technicianId = res.locals.user.id;
+    if (!taskId) {
+      return res.status(400).json({ message: "Vui lòng truyền taskId vào body." });
+    }
+    const result = await taskAssignmentService.addRepairNote(taskId, technicianId, content);
+    return res.status(201).json({ message: "Đã lưu kinh nghiệm sửa chữa.", data: result });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      message: error.message || "Internal server error",
+    });
+  }
+};
+
+module.exports.getMyRepairNotes = async (req, res) => {
+  try {
+    const technicianId = res.locals.user.id;
+    const result = await taskAssignmentService.getMyRepairNotes(technicianId);
     return res.status(200).json({ data: result });
   } catch (error) {
     return res.status(error.status || 500).json({

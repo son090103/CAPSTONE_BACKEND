@@ -14,16 +14,13 @@ const whitelist = [
   "https://agm-garage.id.vn",
   "https://www.agm-garage.id.vn",
   "192.168.0.191:8081",
-  "https://12bf-171-225-184-240.ngrok-free.app",
-  "https://bd50-171-225-184-240.ngrok-free.app",
   "http://localhost:5173/"
 ];
 const isOriginAllowed = (origin) => {
   if (!origin) return true;
   if (whitelist.includes(origin)) return true;
-  if (whitelist.includes(origin + "/")) return true; // check with trailing slash
+  if (whitelist.includes(origin + "/")) return true; 
 
-  // Allow localhost on any port (useful for development)
   if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
     return true;
   }
@@ -121,7 +118,9 @@ io.on('connection', (socket) => {
 
     const isTechnician = Number(rescue.technician_id) === Number(decoded.id);
     const isCustomer = Number(rescue.customer?.user_id) === Number(decoded.id);
-    if ((requireTechnician && !isTechnician) || (!requireTechnician && !isTechnician && !isCustomer)) {
+    const trackingRole = await db.Role.findByPk(decoded.roleId, { attributes: ['roleCode'] });
+    const isOperationsStaff = ['RECEPTIONIST', 'ADMIN'].includes(trackingRole?.roleCode);
+    if ((requireTechnician && !isTechnician) || (!requireTechnician && !isTechnician && !isCustomer && !isOperationsStaff)) {
       throw new Error('Bạn không có quyền theo dõi yêu cầu cứu hộ này');
     }
     return { rescue, userId: Number(decoded.id) };
@@ -174,6 +173,7 @@ io.on('connection', (socket) => {
 const ROUTES = require("./src/router/registry.routes");
 require("./src/jobs/pricingRule.job");
 require("./src/jobs/maintenanceReminder.job");
+require("./src/jobs/appointmentNoShow.job");
 app.use(
   cors({
     origin(origin, callback) {
@@ -187,7 +187,6 @@ app.use(
     credentials: true,
   }),
 );
-// cách router để có thể hoạt động được
 ROUTES.forEach((route) => {
   if (route.middlewares && route.middlewares.length > 0) {
     app.use(route.prefix, ...route.middlewares, route.router);

@@ -3,6 +3,7 @@ const { z } = require("zod");
 const createServiceOrderSchema = z.object({
     vehicle_id: z.number().positive("ID xe không hợp lệ").nullable().optional(),
     walk_in: z.object({
+        customer_id: z.number().positive("ID khách hàng không hợp lệ").optional(),
         customer_name: z.string().optional(),
         customer_phone: z.string().min(1, "SĐT không được để trống"),
         vehicle_plate: z.string().min(1, "Biển số không được để trống"),
@@ -17,6 +18,7 @@ const createServiceOrderSchema = z.object({
     estimated_finish_time: z.string().optional(),
     service_ids: z.array(z.number()).optional(),
     combo_ids: z.array(z.number()).optional(),
+    service_spare_parts: z.record(z.string(), z.number()).optional(),
     notes: z.string().optional(),
     symptoms: z.string({ required_error: "Vui lòng ghi mô tả tình trạng xe lúc tiếp nhận." }).trim().min(1, "Vui lòng ghi mô tả tình trạng xe lúc tiếp nhận."),
     rescue_id: z.number().positive("ID cứu hộ không hợp lệ").nullable().optional()

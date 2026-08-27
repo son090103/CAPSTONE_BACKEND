@@ -29,3 +29,13 @@ module.exports.createRescueRequest = async (req, res) => {
         res.status(error.status || 500).json({ success: false, message: error.message });
     }
 };
+module.exports.cancelRescueRequest = async (req, res) => {
+    try {
+        const { rescueId } = req.params;
+        const { cancel_reason } = req.body;
+        const rescue = await technicianService.cancelRescueRequest(rescueId, cancel_reason);
+        res.status(200).json({ success: true, data: rescue, message: "Đã hủy yêu cầu cứu hộ" });
+    } catch (error) {
+        res.status(error.status || 500).json({ success: false, message: error.message });
+    }
+};

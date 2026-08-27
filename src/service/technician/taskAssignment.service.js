@@ -1,7 +1,7 @@
 const { Op, where } = require("sequelize");
 const db = require("../../../models");
 const Issues = db.Vehicle_Issues;
-const { emitProgress } = require("../../util/socket.util");
+const { emitProgress, emitToRole } = require("../../util/socket.util");
 const { notifyRole, notifyUser } = require("../../util/notification.util");
 const assignQueuedOrders = require("../../util/assignQueuedOrders.util");
 const geminiClient = require("../../config/gemini.config");
@@ -15,7 +15,6 @@ const Users = db.User;
 const Vehicles = db.Vehicles;
 const Vehicle_Models = db.Vehicle_Models;
 const Vehicle_Makes = db.Vehicle_Makes;
-const Diagnostic_Knowledge = db.Diagnostic_Knowledge;
 const Repair_Notes = db.Repair_Notes;
 const Service_Catalog = db.Service_Catalog;
 const { uploadToCloudinary } = require("../../helper/uploadToCloudinary.helper");
@@ -322,9 +321,6 @@ const hasAllPartsReady = async (task) => {
 };
 module.exports.hasAllPartsReady = hasAllPartsReady;
 
-// KTV tự bấm "Yêu cầu xuất kho" 1 lần cho CẢ ĐƠN — gộp mọi Task của chính KTV đó trong Service
-// Order, gửi yêu cầu xuất kho cho toàn bộ phụ tùng còn PENDING (đủ tồn, chỉ chưa xuất). Tách
-// riêng khỏi startTask, gọi được bất cứ lúc nào, không phụ thuộc trạng thái Task.
 module.exports.requestPartsExport = async (serviceOrderId, technicianId) => {
   const assignments = await Task_Assignments.findAll({
     where: { technician_id: technicianId },
@@ -333,7 +329,7 @@ module.exports.requestPartsExport = async (serviceOrderId, technicianId) => {
         model: Tasks,
         as: "task",
         attributes: ["id", "service_order_id", "quotation_item_id"],
-        where: { service_order_id: serviceOrderId },
+        where: { service_order_id: serviceOrderId, status: { [Op.ne]: "PENDING" } },
         required: true,
       },
     ],
@@ -492,7 +488,7 @@ module.exports.completeTask = async (
       {
         model: Tasks,
         as: "task",
-        attributes: ["id", "service_order_id", "type", "quotation_item_id"],
+        attributes: ["id", "service_order_id", "type", "quotation_item_id", "service_catalog_id"],
       },
     ],
   });
@@ -513,6 +509,22 @@ module.exports.completeTask = async (
   });
   const taskId = task.id;
   const serviceOrderId = task.service_order_id;
+
+  const technician = await Users.findByPk(technicianId, { attributes: ["fullName"] });
+  const catalog = await Service_Catalog.findByPk(task.service_catalog_id, { attributes: ["service_name"] });
+  await notifyRole(
+    "TECHNICIAN_LEADER",
+    {
+      title: "Công việc vừa hoàn thành",
+      content: `KTV ${technician?.fullName || "?"} vừa hoàn thành "${catalog?.service_name || "công việc"}" (SO-${serviceOrderId}).`,
+      notificationType: "SERVICE_ORDER",
+      referenceId: serviceOrderId,
+      priority: "HIGH",
+    },
+    "urgent_notification",
+    { type: "TASK_COMPLETED", serviceOrderId, taskId },
+  );
+
   const remainingAsg = await Task_Assignments.count({
     where: { task_id: taskId, status: { [Op.ne]: "COMPLETED" } },
   });
@@ -523,7 +535,7 @@ module.exports.completeTask = async (
         where: {
           service_order_id: serviceOrderId,
           type: "REPAIR",
-          status: { [Op.ne]: "COMPLETED" },
+          status: { [Op.notIn]: ["COMPLETED", "CANCELLED"] },
         },
       });
       if (remainingRepair === 0) {
@@ -562,14 +574,15 @@ async function completeServiceOrder(serviceOrderId) {
     });
     if (!serviceOrder) return;
     customerUserId = serviceOrder.vehicle?.customer?.user_id ?? null;
+    const previousBayId = serviceOrder.bay_id;
     await serviceOrder.update(
-      { status: "COMPLETED", actual_finish_time: new Date() },
+      { status: "COMPLETED", actual_finish_time: new Date(), bay_id: null, bay_status: "NOT_NEEDED" },
       { transaction: t },
     );
-    if (serviceOrder.bay_id) {
+    if (previousBayId) {
       await db.Service_Bays.update(
         { status: "available", current_service_order_id: null },
-        { where: { id: serviceOrder.bay_id }, transaction: t },
+        { where: { id: previousBayId }, transaction: t },
       );
       await assignQueuedOrders(t);
     }
@@ -928,6 +941,33 @@ module.exports.startRescueTask = async (rescueId, technicianId, newStatus, techn
     });
   }
 
+  // Lễ tân cần biết ngay khi KTV bắt đầu để mở bản đồ theo dõi realtime.
+  if (rescue.status === 'EN_ROUTE') {
+    await notifyRole('RECEPTIONIST', {
+      title: 'Kỹ thuật viên đã bắt đầu cứu hộ',
+      content: `Kỹ thuật viên ${technician?.fullName || 'ẩn danh'} đã bắt đầu cứu hộ cho khách hàng ${rescue.customer?.name || 'ẩn danh'}.`,
+      notificationType: 'SYSTEM',
+      referenceId: rescue.id,
+      priority: 'HIGH',
+      link: '/reception/customers'
+    }, 'new_notification', {
+      type: 'RESCUE_STATUS_UPDATED',
+      rescueId: rescue.id,
+      status: rescue.status,
+      technicianName: technician?.fullName || '',
+      customerId: rescue.customer_id,
+      message: `Kỹ thuật viên ${technician?.fullName || ''} đã bắt đầu cứu hộ.`
+    });
+    // Trang quản lý khách hàng admin cũng hiển thị nút theo dõi theo yêu cầu, chỉ phát sự kiện
+    // làm mới dữ liệu (không tạo thêm notification DB cho admin).
+    emitToRole('ADMIN', 'new_notification', {
+      type: 'RESCUE_STATUS_UPDATED',
+      rescueId: rescue.id,
+      status: rescue.status,
+      customerId: rescue.customer_id,
+    });
+  }
+
   if (rescue.status === 'COMPLETED') {
     // Clear customer coordinates
     if (rescue.customer && rescue.customer.user_id) {
@@ -1009,91 +1049,6 @@ module.exports.getMyRescueHistory = async (technicianId) => {
   return rescues;
 };
 
-module.exports.getAllDiagnostics = async () => {
-  const rows = await Diagnostic_Knowledge.findAll({
-    attributes: ["id", "symptom", "possible_causes", "model_id", "make_id"],
-    include: [
-      { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
-      { model: Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
-    ],
-    order: [["symptom", "ASC"]],
-  });
-  return rows;
-};
-
-// Tách từ khóa thay vì ILIKE nguyên văn cả câu — vì keyword thường là triệu chứng gốc dài
-// (VD "Ngoại hình xe bình thường Tiếp nhận Xe có tiếng khi bóp phanh") tự động điền sẵn từ
-// symptoms của đơn, gần như không bao giờ khớp chính xác 1 bản ghi có sẵn trong hệ thống.
-module.exports.searchDiagnostics = async (keyword) => {
-  const where = {};
-  const keywords = keyword && keyword.trim() ? extractSymptomKeywords(keyword) : [];
-  if (keywords.length > 0) {
-    where[Op.or] = keywords.flatMap((kw) => [
-      { symptom: { [Op.iLike]: `%${kw}%` } },
-      { possible_causes: { [Op.iLike]: `%${kw}%` } },
-    ]);
-  }
-  const rows = await db.Diagnostic_Knowledge.findAll({
-    where,
-    attributes: ["id", "symptom", "possible_causes", "model_id", "make_id"],
-    include: [
-      {
-        model: db.Vehicle_Models,
-        as: "model",
-        attributes: ["id", "model_name"],
-      },
-      { model: db.Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
-    ],
-    order: [["symptom", "ASC"]],
-  });
-  if (keywords.length === 0) return rows;
-
-  // Nhiều từ khóa (VD "tiếng") match chung chung nhiều bản ghi không liên quan — ưu tiên bản
-  // ghi khớp CÀNG NHIỀU từ khóa CÀNG lên đầu, thay vì để lẫn lộn theo alphabet.
-  const countMatches = (row) => {
-    const text = `${row.symptom || ""} ${row.possible_causes || ""}`.toLowerCase();
-    return keywords.reduce((count, kw) => (text.includes(kw) ? count + 1 : count), 0);
-  };
-  return [...rows].sort((a, b) => countMatches(b) - countMatches(a));
-};
-
-module.exports.filterDiagnostics = async ({ makeId, modelId }) => {
-  let orClauses = null;
-  if (modelId) {
-    const model = await db.Vehicle_Models.findByPk(modelId, {
-      attributes: ["make_id"],
-    });
-    orClauses = [{ model_id: modelId }];
-    if (model?.make_id) {
-      orClauses.push({ make_id: model.make_id, model_id: null });
-    }
-  } else if (makeId) {
-    const models = await db.Vehicle_Models.findAll({
-      where: { make_id: makeId },
-      attributes: ["id"],
-    });
-    const modelIds = models.map((m) => m.id);
-    orClauses = [{ make_id: makeId }];
-    if (modelIds.length) {
-      orClauses.push({ model_id: { [Op.in]: modelIds } });
-    }
-  }
-  const rows = await db.Diagnostic_Knowledge.findAll({
-    where: orClauses ? { [Op.or]: orClauses } : {},
-    attributes: ["id", "symptom", "possible_causes", "model_id", "make_id"],
-    include: [
-      {
-        model: db.Vehicle_Models,
-        as: "model",
-        attributes: ["id", "model_name"],
-      },
-      { model: db.Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
-    ],
-    order: [["symptom", "ASC"]],
-  });
-  return rows;
-};
-
 module.exports.getMakes = async () => {
   return await db.Vehicle_Makes.findAll({
     attributes: ["id", "make_name"],
@@ -1143,6 +1098,35 @@ function formatAiCausesResponse(rawText) {
   };
 }
 
+function formatAiRepairStepsResponse(rawText) {
+  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    return { steps: [], notes: [], formattedText: rawText.trim() };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    return { steps: [], notes: [], formattedText: rawText.trim() };
+  }
+  const steps = Array.isArray(parsed.steps) ? parsed.steps : [];
+  const notes = Array.isArray(parsed.notes) ? parsed.notes : [];
+  const lines = [];
+  if (steps.length > 0) {
+    lines.push("Các bước thực hiện:");
+    steps.forEach((s, idx) => lines.push(`${idx + 1}. ${s}`));
+  }
+  if (notes.length > 0) {
+    lines.push("", "Lưu ý:");
+    notes.forEach((n) => lines.push(`- ${n}`));
+  }
+  return {
+    steps,
+    notes,
+    formattedText: lines.length > 0 ? lines.join("\n") : rawText.trim(),
+  };
+}
+
 // KTV không tự nhập triệu chứng ban đầu — AI tự lấy từ Service_Order.symptoms (do giám sát ghi
 // lúc tạo đơn dịch vụ) gắn với chính Task đang xem, tránh phải gõ tay trên tablet. Sau câu trả
 // lời đầu tiên, KTV vẫn có thể gõ followUpQuestion để hỏi thêm/làm rõ (vd "còn nguyên nhân nào
@@ -1163,9 +1147,48 @@ module.exports.aiSuggestCauses = async (taskAssignmentId, technicianId, followUp
               {
                 model: Vehicles,
                 as: "vehicle",
-                attributes: ["id"],
+                attributes: ["id", "year"],
                 include: [
-                  { model: Vehicle_Models, as: "model", attributes: ["id", "model_name"] },
+                  {
+                    model: Vehicle_Models,
+                    as: "model",
+                    attributes: ["id", "model_name"],
+                    include: [
+                      { model: db.Vehicle_Makes, as: "make", attributes: ["id", "make_name"] },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            model: Service_Catalog,
+            as: "catalog",
+            attributes: ["id", "service_name"],
+          },
+          {
+            model: db.Quotation_Details,
+            as: "quotationItem",
+            attributes: ["id"],
+            required: false,
+            include: [
+              { model: db.Spare_Parts, as: "sparePart", attributes: ["id", "name"], required: false },
+              {
+                model: db.Vehicle_Issues,
+                as: "issue",
+                attributes: ["id", "error_description"],
+                required: false,
+                include: [
+                  { model: db.Vehicle_Components, as: "component", attributes: ["id", "name"], required: false },
+                  {
+                    model: db.Quotation_Details,
+                    as: "quotationDetails",
+                    attributes: ["id"],
+                    required: false,
+                    include: [
+                      { model: db.Spare_Parts, as: "sparePart", attributes: ["id", "name"], required: false },
+                    ],
+                  },
                 ],
               },
             ],
@@ -1177,28 +1200,88 @@ module.exports.aiSuggestCauses = async (taskAssignmentId, technicianId, followUp
   if (!assignment) {
     throw { status: 404, message: "Không tìm thấy công việc được giao cho bạn." };
   }
-  const symptom = assignment.task?.serviceOrder?.symptoms;
-  const modelName = assignment.task?.serviceOrder?.vehicle?.model?.model_name;
+  const vehicle = assignment.task?.serviceOrder?.vehicle;
+  const make = vehicle?.model?.make?.make_name;
+  const makeId = vehicle?.model?.make?.id;
+  const modelName = vehicle?.model?.model_name;
+  const vehicleLabel = [make, modelName, vehicle?.year].filter(Boolean).join(" ") || "không xác định";
+  const serviceName = assignment.task?.catalog?.service_name;
+  const issue = assignment.task?.quotationItem?.issue;
+  const componentName = issue?.component?.name;
+  const errorDescription = issue?.error_description;
+  const partNames = [
+    assignment.task?.quotationItem?.sparePart?.name,
+    ...(issue?.quotationDetails ?? []).map((d) => d.sparePart?.name),
+  ].filter(Boolean);
+  const uniquePartNames = [...new Set(partNames)];
+
+  const isRepairTask = assignment.task?.type === "REPAIR";
+  const symptom = isRepairTask
+    ? [componentName, errorDescription].filter(Boolean).join(" - ")
+    : assignment.task?.serviceOrder?.symptoms;
   if (!symptom || !symptom.trim()) {
     throw { status: 400, message: "Lệnh sửa chữa chưa ghi nhận triệu chứng." };
   }
+  const hasFollowUp = Boolean(followUpQuestion && followUpQuestion.trim());
+  const followUpLine = hasFollowUp ? `Kỹ thuật viên hỏi thêm: "${followUpQuestion.trim()}".` : "";
+
+  // Tài liệu kỹ thuật admin upload theo hãng xe (RAG) — dùng Pinecone RIÊNG BIỆT với chatbot
+  // khách hàng (technicalVectorStore.service.js, tài khoản/index khác), bổ trợ cho suy luận nền
+  // của Gemini, không chặn luồng chính nếu tra cứu lỗi (Pinecone tạm gián đoạn, chưa có tài liệu...).
+  let technicalReference = "";
+  if (makeId) {
+    try {
+      const technicalVectorStoreService = require("../ai/technicalVectorStore.service");
+      const ragQuery = hasFollowUp ? followUpQuestion : symptom;
+      const ragResult = await technicalVectorStoreService.searchKnowledge(ragQuery, makeId);
+      if (ragResult) {
+        technicalReference = ragResult;
+      }
+    } catch (error) {
+      console.error("Lỗi khi tra cứu tài liệu kỹ thuật RAG:", error);
+    }
+  }
+
+  const contextLines = [
+    `Xe: ${vehicleLabel}.`,
+    isRepairTask
+      ? `Hạng mục đang sửa: ${serviceName || "chưa rõ"}.`
+      : null,
+    `${isRepairTask ? "Lỗi cần sửa" : "Triệu chứng"}: "${symptom.trim()}".`,
+    isRepairTask && uniquePartNames.length ? `Phụ tùng đang dùng: ${uniquePartNames.join(", ")}.` : null,
+    technicalReference ? `Trích đoạn tài liệu kỹ thuật hãng xe liên quan:\n${technicalReference}` : null,
+  ].filter(Boolean).join("\n    ");
   const model = geminiClient.getGenerativeModel({ model: "gemini-2.5-flash" });
-  const prompt = followUpQuestion && followUpQuestion.trim()
-    ? `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm.
-    Xe: ${modelName || "không xác định"}.
-    Triệu chứng ban đầu: "${symptom.trim()}".
-    Kỹ thuật viên hỏi thêm: "${followUpQuestion.trim()}".
-    Trả lời ngắn gọn, đúng trọng tâm câu hỏi, dựa trên triệu chứng ban đầu.
+
+  const prompt = isRepairTask
+    ? `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm. Nếu có trích đoạn tài liệu kỹ thuật hãng xe trong thông tin dưới đây, hãy ưu tiên dựa vào đó để trả lời; nếu không đủ thông tin thì dùng kiến thức chuyên môn của bạn.
+    ${contextLines}
+    Lỗi và phụ tùng cần dùng đã được xác định rõ, kỹ thuật viên đang cần hướng dẫn CÁCH THỰC HIỆN SỬA CHỮA, không cần chẩn đoán nguyên nhân nữa.
+    ${followUpLine}
+    ${hasFollowUp ? "Trả lời ngắn gọn, đúng trọng tâm câu hỏi, dựa trên các thông tin trên." : "Hướng dẫn quy trình sửa chữa từng bước cụ thể, đúng trình tự thao tác thực tế, phù hợp với phụ tùng đã có."}
+    Với MỖI bước hoặc lưu ý lấy trực tiếp từ trích đoạn tài liệu kỹ thuật hãng xe ở trên, thêm vào cuối câu đó cụm — Trích từ tài liệu: Tên tài liệu (lấy đúng tên tài liệu ở trích đoạn, KHÔNG dùng dấu ngoặc kép quanh tên tài liệu vì sẽ làm hỏng cú pháp JSON). Ngoài các ý lấy từ tài liệu, LUÔN bổ sung thêm ít nhất 1 bước hoặc lưu ý khác dựa trên kiến thức chuyên môn của bạn (không có cụm trích dẫn) để KTV có thêm góc nhìn.
+    Chỉ trả lời bằng MỘT khối JSON hợp lệ duy nhất, không kèm markdown hay giải thích thêm, theo đúng cấu trúc:
+    {
+      "steps": [ "Bước thực hiện cụ thể, ngắn gọn" ],
+      "notes": [ "Lưu ý kỹ thuật quan trọng khi thực hiện" ]
+    }
+    Tất cả nội dung bằng tiếng Việt.`
+    : hasFollowUp
+    ? `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm. Nếu có trích đoạn tài liệu kỹ thuật hãng xe trong thông tin dưới đây, hãy ưu tiên dựa vào đó để trả lời; nếu không đủ thông tin thì dùng kiến thức chuyên môn của bạn.
+    ${contextLines}
+    ${followUpLine}
+    Trả lời ngắn gọn, đúng trọng tâm câu hỏi, dựa trên các thông tin trên.
+    Với MỖI nguyên nhân hoặc khuyến nghị lấy trực tiếp từ trích đoạn tài liệu kỹ thuật hãng xe ở trên, thêm vào cuối câu đó cụm — Trích từ tài liệu: Tên tài liệu (lấy đúng tên tài liệu ở trích đoạn, KHÔNG dùng dấu ngoặc kép quanh tên tài liệu vì sẽ làm hỏng cú pháp JSON). Ngoài các ý lấy từ tài liệu, LUÔN bổ sung thêm ít nhất 1 nguyên nhân hoặc khuyến nghị khác dựa trên kiến thức chuyên môn của bạn (không có cụm trích dẫn) để KTV có thêm góc nhìn.
     Chỉ trả lời bằng MỘT khối JSON hợp lệ duy nhất, không kèm markdown hay giải thích thêm, theo đúng cấu trúc:
     {
       "causes": [ { "cause": "Tên nguyên nhân ngắn gọn", "part_to_check": "Bộ phận cần kiểm tra" } ],
       "recommendations": [ "Khuyến nghị kiểm tra ngắn gọn" ]
     }
     Tất cả nội dung bằng tiếng Việt.`
-    : `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm.
-    Xe: ${modelName || "không xác định"}.
-    Triệu chứng: "${symptom.trim()}".
+    : `Bạn là kỹ thuật viên ô tô giàu kinh nghiệm. Nếu có trích đoạn tài liệu kỹ thuật hãng xe trong thông tin dưới đây, hãy ưu tiên dựa vào đó để trả lời; nếu không đủ thông tin thì dùng kiến thức chuyên môn của bạn.
+    ${contextLines}
     Liệt kê 3-5 nguyên nhân khả dĩ phổ biến nhất, sắp theo khả năng cao nhất trước, và các khuyến nghị kiểm tra đi kèm.
+    Với MỖI nguyên nhân hoặc khuyến nghị lấy trực tiếp từ trích đoạn tài liệu kỹ thuật hãng xe ở trên, thêm vào cuối câu đó cụm — Trích từ tài liệu: Tên tài liệu (lấy đúng tên tài liệu ở trích đoạn, KHÔNG dùng dấu ngoặc kép quanh tên tài liệu vì sẽ làm hỏng cú pháp JSON). Ngoài các ý lấy từ tài liệu, LUÔN bổ sung thêm ít nhất 1 nguyên nhân hoặc khuyến nghị khác dựa trên kiến thức chuyên môn của bạn (không có cụm trích dẫn) để KTV có thêm góc nhìn.
     Chỉ trả lời bằng MỘT khối JSON hợp lệ duy nhất, không kèm markdown hay giải thích thêm, theo đúng cấu trúc:
     {
       "causes": [ { "cause": "Tên nguyên nhân ngắn gọn", "part_to_check": "Bộ phận cần kiểm tra" } ],
@@ -1208,9 +1291,17 @@ module.exports.aiSuggestCauses = async (taskAssignmentId, technicianId, followUp
   const result = await model.generateContent(prompt);
   const rawText = result.response.text();
 
-  // Bước 6: Format AI Response — parse và cấu trúc lại output thô từ AI
+  if (isRepairTask) {
+    const { steps, notes, formattedText } = formatAiRepairStepsResponse(rawText);
+    return {
+      symptom: symptom.trim(),
+      ai_suggestion: formattedText,
+      steps,
+      notes,
+      disclaimer: "Gợi ý từ AI, cần kỹ thuật viên kiểm chứng trước khi thực hiện.",
+    };
+  }
   const { causes, recommendations, formattedText } = formatAiCausesResponse(rawText);
-
   return {
     symptom: symptom.trim(),
     ai_suggestion: formattedText,
@@ -1458,6 +1549,12 @@ module.exports.getAllInspectionHistory = async () => {
                       },
                     ],
                   },
+                  {
+                    model: Customers,
+                    as: "customer",
+                    attributes: ["id", "name", "phone"],
+                    include: [{ model: Users, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+                  },
                 ],
               },
             ],
@@ -1522,6 +1619,12 @@ module.exports.searchInspectionHistory = async (keyword) => {
                         attributes: ["id", "make_name"],
                       },
                     ],
+                  },
+                  {
+                    model: Customers,
+                    as: "customer",
+                    attributes: ["id", "name", "phone"],
+                    include: [{ model: Users, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
                   },
                 ],
               },
@@ -1740,7 +1843,15 @@ module.exports.filterInspectionHistory = async ({ makeId, modelId }) => {
                 where: Object.keys(vehicleWhere).length
                   ? vehicleWhere
                   : undefined,
-                include: [modelInclude],
+                include: [
+                  modelInclude,
+                  {
+                    model: Customers,
+                    as: "customer",
+                    attributes: ["id", "name", "phone"],
+                    include: [{ model: Users, as: "user", attributes: ["id", "fullName", "phoneNumber"] }],
+                  },
+                ],
               },
             ],
           },
@@ -1752,9 +1863,13 @@ module.exports.filterInspectionHistory = async ({ makeId, modelId }) => {
   });
 };
 
-module.exports.getCompletedTasks = async (technicianId) => {
+const fetchCompletedAssignments = async (technicianId, extraWhere) => {
   const assignments = await Task_Assignments.findAll({
-    where: { technician_id: technicianId, status: "COMPLETED" },
+    where: {
+      technician_id: technicianId,
+      status: "COMPLETED",
+      ...extraWhere,
+    },
     attributes: ["id", "status", "actual_start_time", "actual_end_time", "role_in_task"],
     include: [
       {
@@ -1818,7 +1933,7 @@ module.exports.getCompletedTasks = async (technicianId) => {
               {
                 model: Vehicles,
                 as: "vehicle",
-                attributes: ["id", "license_plate", "color"],
+                attributes: ["id", "license_plate", "color", "year"],
                 include: [
                   {
                     model: Vehicle_Models,
@@ -1875,6 +1990,146 @@ module.exports.getCompletedTasks = async (technicianId) => {
   });
 };
 
+// Dùng cho tab "Ghi mới" của trang kinh nghiệm sửa chữa — chỉ những task CHƯA có
+// Repair_Notes, để KTV chọn ghi. Không dùng cho trang lịch sử công việc chung.
+module.exports.getCompletedTasks = async (technicianId) => {
+  const notedTaskIds = (
+    await Repair_Notes.findAll({ attributes: ["task_id"], raw: true })
+  )
+    .map((n) => n.task_id)
+    .filter((id) => id !== null);
+
+  return fetchCompletedAssignments(
+    technicianId,
+    notedTaskIds.length ? { task_id: { [Op.notIn]: notedTaskIds } } : {},
+  );
+};
+
+// Dùng cho trang "Lịch sử công việc" — lấy TOÀN BỘ công việc đã hoàn thành của KTV,
+// không loại trừ theo Repair_Notes (khác mục đích với getCompletedTasks ở trên).
+module.exports.getMyWorkHistory = async (technicianId) => {
+  return fetchCompletedAssignments(technicianId, {});
+};
+
+module.exports.addRepairNote = async (taskId, technicianId, content) => {
+  const trimmedContent = String(content || "").trim();
+  if (!trimmedContent) {
+    throw { status: 400, message: "Vui lòng nhập nội dung kinh nghiệm sửa chữa." };
+  }
+  const assignment = await Task_Assignments.findOne({
+    where: { technician_id: technicianId, status: "COMPLETED" },
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id", "type", "status"],
+        where: { id: taskId, type: "REPAIR", status: "COMPLETED" },
+        required: true,
+      },
+    ],
+  });
+  if (!assignment) {
+    throw { status: 404, message: "Không tìm thấy công việc sửa chữa đã hoàn thành phù hợp." };
+  }
+  return await Repair_Notes.create({ task_id: taskId, content: trimmedContent });
+};
+
+module.exports.getMyRepairNotes = async (technicianId) => {
+  const notes = await Repair_Notes.findAll({
+    include: [
+      {
+        model: Tasks,
+        as: "task",
+        attributes: ["id"],
+        required: true,
+        include: [
+          {
+            model: Task_Assignments,
+            as: "assignments",
+            attributes: ["id"],
+            where: { technician_id: technicianId },
+            required: true,
+          },
+          {
+            model: Service_Catalog,
+            as: "catalog",
+            attributes: ["id", "service_name"],
+          },
+          {
+            model: db.Quotation_Details,
+            as: "quotationItem",
+            attributes: ["id"],
+            required: false,
+            include: [
+              {
+                model: db.Vehicle_Issues,
+                as: "issue",
+                attributes: ["id", "error_description"],
+                required: false,
+                include: [{ model: db.Vehicle_Components, as: "component", attributes: ["id", "name"], required: false }],
+              },
+            ],
+          },
+          {
+            model: Service_Order,
+            as: "serviceOrder",
+            attributes: ["id"],
+            required: true,
+            include: [
+              {
+                model: Vehicles,
+                as: "vehicle",
+                attributes: ["id", "license_plate", "color", "year"],
+                include: [
+                  {
+                    model: db.Vehicle_Models,
+                    as: "model",
+                    attributes: ["id", "model_name"],
+                    include: [
+                      {
+                        model: db.Vehicle_Makes,
+                        as: "make",
+                        attributes: ["id", "make_name"],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+    subQuery: false,
+  });
+
+  return notes.map((note) => {
+    const data = note.toJSON();
+    const issue = data.task?.quotationItem?.issue;
+    const componentName = issue?.component?.name?.trim() || "";
+    const errorDescription = issue?.error_description?.trim() || "";
+    const issueText = componentName && errorDescription
+      ? `${componentName} - ${errorDescription}`
+      : componentName || errorDescription || data.task?.catalog?.service_name || `Công việc #${data.task?.id}`;
+    const vehicle = data.task?.serviceOrder?.vehicle;
+    return {
+      id: data.id,
+      content: data.content,
+      createdAt: data.createdAt,
+      taskId: data.task?.id,
+      serviceOrderCode: `SO-${data.task?.serviceOrder?.id}`,
+      serviceName: data.task?.catalog?.service_name || "",
+      vehiclePlate: vehicle?.license_plate || "—",
+      vehicleBrand: vehicle?.model?.make?.make_name || "",
+      vehicleModel: vehicle?.model?.model_name || "",
+      vehicleYear: vehicle?.year ?? null,
+      vehicleColor: vehicle?.color || "",
+      issueText,
+    };
+  });
+};
 
 // Danh sách phụ tùng (đã có trong báo giá đã duyệt, thuộc chính Task này) mà KTV có thể
 // yêu cầu xuất kho - chỉ lấy các dòng còn PENDING (chưa yêu cầu/xuất).

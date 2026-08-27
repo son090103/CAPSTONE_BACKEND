@@ -20,7 +20,6 @@ function getChartData(payments, timeframe, start, end) {
   const ordersMap = {};
 
   if (timeframe === 'today') {
-    // 2-hour slots: 08:00, 10:00, 12:00, 14:00, 16:00, 18:00
     const slots = ['08:00', '10:00', '12:00', '14:00', '16:00', '18:00'];
     slots.forEach(slot => {
       days.push(slot);
@@ -47,7 +46,7 @@ function getChartData(payments, timeframe, start, end) {
     for (let i = 6; i >= 0; i--) {
       const d = new Date(end.getTime() - i * 24 * 60 * 60 * 1000);
       const label = dayNames[d.getDay()];
-      const key = getVietnamDateKey(d); // YYYY-MM-DD in Vietnam time
+      const key = getVietnamDateKey(d);
       days.push(label);
       revenueMap[key] = 0;
       ordersMap[key] = 0;
@@ -61,7 +60,6 @@ function getChartData(payments, timeframe, start, end) {
       }
     });
 
-    // Map keys back to chronological order of days
     const revenueList = [];
     const ordersList = [];
     for (let i = 6; i >= 0; i--) {
@@ -294,6 +292,17 @@ module.exports.getAdminDashboardStats = async (query) => {
     raw: true
   });
 
+  const periodDurationMs = end.getTime() - start.getTime() + 1;
+  const previousEnd = new Date(start.getTime() - 1);
+  const previousStart = new Date(previousEnd.getTime() - periodDurationMs + 1);
+  const previousPayments = await db.Booking_Payments.findAll({
+    where: {
+      payment_status: 'PAID',
+      paid_at: { [Op.between]: [previousStart, previousEnd] }
+    },
+    raw: true
+  });
+
   // Calculate Chart data
   const chartData = getChartData(payments, computedTimeframe, start, end);
 
@@ -302,11 +311,257 @@ module.exports.getAdminDashboardStats = async (query) => {
   const totalOrders = payments.length;
   const avgRevPerOrder = totalOrders > 0 ? Math.round(totalRevenue / totalOrders) : 0;
 
+  const periodOrders = await db.Service_Orders.findAll({
+    attributes: ['id', 'status'],
+    where: { entry_time: { [Op.between]: [start, end] } },
+    raw: true
+  });
+  const completionRate = periodOrders.length > 0
+    ? Number(((periodOrders.filter(o => ['COMPLETED', 'DELIVERED'].includes(o.status)).length / periodOrders.length) * 100).toFixed(1))
+    : 0;
+  const previousRevenue = previousPayments.reduce((sum, payment) => sum + parseFloat(payment.amount || 0), 0);
+  const previousOrders = previousPayments.length;
+  const previousAvgRevPerOrder = previousOrders > 0 ? Math.round(previousRevenue / previousOrders) : 0;
+  const percentageChange = (current, previous) => previous > 0
+    ? Number((((current - previous) / previous) * 100).toFixed(1))
+    : null;
+
+  // Allocate actual paid revenue back to approved quotation lines. This keeps the
+  // source breakdown reconciled to cash collected instead of presenting quotation
+  // value as if it were paid revenue.
+  const [revenueSourceRow] = await db.sequelize.query(`
+    WITH paid_orders AS (
+      SELECT order_id, amount::numeric AS paid_amount
+      FROM "Booking_Payments"
+      WHERE payment_status = 'PAID' AND paid_at BETWEEN :start AND :end
+    ), order_lines AS (
+      SELECT
+        t.service_order_id,
+        COALESCE(SUM(qd.amount) FILTER (WHERE qd.status <> 'CANCELLED'), 0) AS quoted_total,
+        COALESCE(SUM(qd.amount) FILTER (WHERE qd.service_id IS NOT NULL AND qd.spare_part_id IS NULL AND qd.custom_item_name IS NULL AND qd.status <> 'CANCELLED'), 0) AS service_amount,
+        COALESCE(SUM(qd.amount) FILTER (WHERE (qd.spare_part_id IS NOT NULL OR qd.custom_item_name IS NOT NULL) AND qd.status <> 'CANCELLED'), 0) AS parts_amount
+      FROM "Tasks" t
+      INNER JOIN "Quotations" q ON q.task_id = t.id AND q.status = 'APPROVED'
+      INNER JOIN "Quotation_Details" qd ON qd.quotation_id = q.id
+      GROUP BY t.service_order_id
+    )
+    SELECT
+      COALESCE(SUM(po.paid_amount * ol.service_amount / NULLIF(ol.quoted_total, 0)), 0) AS service_revenue,
+      COALESCE(SUM(po.paid_amount * ol.parts_amount / NULLIF(ol.quoted_total, 0)), 0) AS parts_revenue,
+      COALESCE(SUM(CASE WHEN ol.quoted_total IS NULL OR ol.quoted_total = 0 THEN po.paid_amount ELSE 0 END), 0) AS unallocated_revenue
+    FROM paid_orders po
+    LEFT JOIN order_lines ol ON ol.service_order_id = po.order_id
+  `, {
+    replacements: { start, end },
+    type: db.Sequelize.QueryTypes.SELECT
+  });
+
+  const allocatedServiceRevenue = Number(revenueSourceRow?.service_revenue || 0);
+  const allocatedPartsRevenue = Number(revenueSourceRow?.parts_revenue || 0);
+  const explicitUnallocatedRevenue = Number(revenueSourceRow?.unallocated_revenue || 0);
+  const roundingOrOtherRevenue = Math.max(0, totalRevenue - allocatedServiceRevenue - allocatedPartsRevenue - explicitUnallocatedRevenue);
+  const unallocatedRevenue = explicitUnallocatedRevenue + roundingOrOtherRevenue;
+
+  const topPaidServices = await db.sequelize.query(`
+    WITH paid_orders AS (
+      SELECT order_id, amount::numeric AS paid_amount
+      FROM "Booking_Payments"
+      WHERE payment_status = 'PAID' AND paid_at BETWEEN :start AND :end
+    ), order_totals AS (
+      SELECT t.service_order_id, SUM(qd.amount)::numeric AS quoted_total
+      FROM "Tasks" t
+      INNER JOIN "Quotations" q ON q.task_id = t.id AND q.status = 'APPROVED'
+      INNER JOIN "Quotation_Details" qd ON qd.quotation_id = q.id AND qd.status <> 'CANCELLED'
+      GROUP BY t.service_order_id
+    )
+    SELECT
+      sc.service_name AS name,
+      COALESCE(cat.category_name, 'Chưa phân loại') AS category,
+      COUNT(DISTINCT t.service_order_id)::int AS "orderCount",
+      COALESCE(SUM(qd.quantity), 0)::int AS quantity,
+      COALESCE(SUM(po.paid_amount * qd.amount / NULLIF(ot.quoted_total, 0)), 0) AS revenue,
+      COALESCE(AVG(sc.estimated_duration), 0) AS "durationAvg"
+    FROM paid_orders po
+    INNER JOIN "Tasks" t ON t.service_order_id = po.order_id
+    INNER JOIN "Quotations" q ON q.task_id = t.id AND q.status = 'APPROVED'
+    INNER JOIN "Quotation_Details" qd ON qd.quotation_id = q.id AND qd.service_id IS NOT NULL AND qd.spare_part_id IS NULL AND qd.custom_item_name IS NULL AND qd.status <> 'CANCELLED'
+    INNER JOIN "Service_Catalogs" sc ON sc.id = qd.service_id
+    LEFT JOIN "Service_Categories" cat ON cat.id = sc.category_id
+    INNER JOIN order_totals ot ON ot.service_order_id = po.order_id
+    GROUP BY sc.id, sc.service_name, cat.category_name
+    ORDER BY revenue DESC
+    LIMIT 10
+  `, { replacements: { start, end }, type: db.Sequelize.QueryTypes.SELECT });
+
+  const topPaidParts = await db.sequelize.query(`
+    WITH paid_orders AS (
+      SELECT order_id, amount::numeric AS paid_amount
+      FROM "Booking_Payments"
+      WHERE payment_status = 'PAID' AND paid_at BETWEEN :start AND :end
+    ), order_totals AS (
+      SELECT t.service_order_id, SUM(qd.amount)::numeric AS quoted_total
+      FROM "Tasks" t
+      INNER JOIN "Quotations" q ON q.task_id = t.id AND q.status = 'APPROVED'
+      INNER JOIN "Quotation_Details" qd ON qd.quotation_id = q.id AND qd.status <> 'CANCELLED'
+      GROUP BY t.service_order_id
+    ), average_cost AS (
+      SELECT il.part_id, SUM(ib.unit_cost * il.quantity) / NULLIF(SUM(il.quantity), 0) AS unit_cost
+      FROM "Inventory_Batches" ib
+      INNER JOIN "Inventory_Logs" il ON il.id = ib.inventory_log_id AND il.type = 'IN'
+      GROUP BY il.part_id
+    )
+    SELECT
+      COALESCE(sp.name, qd.custom_item_name, 'Phụ tùng khác') AS name,
+      COALESCE(SUM(qd.quantity), 0)::int AS quantity,
+      COUNT(DISTINCT t.service_order_id)::int AS "orderCount",
+      COALESCE(SUM(po.paid_amount * qd.amount / NULLIF(ot.quoted_total, 0)), 0) AS revenue,
+      COALESCE(MAX(ac.unit_cost), 0) AS "averageInputPrice",
+      COALESCE(SUM(qd.quantity * ac.unit_cost), 0) AS cost
+    FROM paid_orders po
+    INNER JOIN "Tasks" t ON t.service_order_id = po.order_id
+    INNER JOIN "Quotations" q ON q.task_id = t.id AND q.status = 'APPROVED'
+    INNER JOIN "Quotation_Details" qd ON qd.quotation_id = q.id
+      AND (qd.spare_part_id IS NOT NULL OR qd.custom_item_name IS NOT NULL)
+      AND qd.status <> 'CANCELLED'
+    LEFT JOIN "Spare_Parts" sp ON sp.id = qd.spare_part_id
+    LEFT JOIN average_cost ac ON ac.part_id = qd.spare_part_id
+    INNER JOIN order_totals ot ON ot.service_order_id = po.order_id
+    GROUP BY COALESCE(sp.name, qd.custom_item_name, 'Phụ tùng khác')
+    ORDER BY revenue DESC
+    LIMIT 10
+  `, { replacements: { start, end }, type: db.Sequelize.QueryTypes.SELECT });
+
+  const importLogs = await db.Inventory_Logs.findAll({
+    where: { type: 'IN', createdAt: { [Op.between]: [start, end] } },
+    attributes: ['quantity', 'unit_price'],
+    raw: true
+  });
+  const inventoryImportValue = importLogs.reduce(
+    (sum, log) => sum + Number(log.quantity || 0) * Number(log.unit_price || 0),
+    0
+  );
+
+  const [workflowRow] = await db.sequelize.query(`
+    SELECT
+      COUNT(*) FILTER (WHERE status IN ('PENDING', 'INSPECTING', 'PENDING_QUOTATION'))::int AS received,
+      COUNT(*) FILTER (WHERE status IN ('IN_PROGRESS', 'WAITING_FOR_PARTS'))::int AS repairing,
+      COUNT(*) FILTER (WHERE status IN ('COMPLETED', 'DELIVERED'))::int AS completed
+    FROM "Service_Orders"
+  `, { type: db.Sequelize.QueryTypes.SELECT });
+
+  const paymentStatusRows = await db.Booking_Payments.findAll({
+    attributes: [
+      'payment_status',
+      [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count']
+    ],
+    group: ['payment_status'],
+    raw: true
+  });
+
+  const [taskSummary] = await db.sequelize.query(`
+    SELECT
+      COUNT(*) FILTER (WHERE t.status IN ('PENDING', 'ASSIGNED'))::int AS pending,
+      COUNT(*) FILTER (WHERE t.status = 'IN_PROGRESS')::int AS in_progress,
+      COUNT(*) FILTER (WHERE t.status IN ('WAITING_STOCK', 'WAITING_FOR_PARTS'))::int AS waiting_parts,
+      COUNT(*) FILTER (
+        WHERE t.status IN ('PENDING', 'ASSIGNED', 'IN_PROGRESS', 'WAITING_STOCK', 'WAITING_FOR_PARTS')
+          AND NOT EXISTS (
+            SELECT 1 FROM "Task_Assignments" ta
+            WHERE ta.task_id = t.id AND ta.status IN ('ASSIGNED', 'IN_PROGRESS')
+          )
+      )::int AS unassigned
+    FROM "Tasks" t
+  `, { type: db.Sequelize.QueryTypes.SELECT });
+
+  const technicianWorkload = await db.sequelize.query(`
+    SELECT
+      u.id AS "technicianId",
+      COALESCE(NULLIF(u."fullName", ''), u.email, 'Kỹ thuật viên') AS name,
+      COUNT(ta.id)::int AS "activeTasks"
+    FROM "Users" u
+    LEFT JOIN "Task_Assignments" ta ON ta.technician_id = u.id AND ta.status IN ('ASSIGNED', 'IN_PROGRESS')
+    WHERE u."roleId" = 4
+    GROUP BY u.id, u."fullName", u.email
+    ORDER BY "activeTasks" DESC, name ASC
+  `, { type: db.Sequelize.QueryTypes.SELECT });
+  const totalActiveAssignments = technicianWorkload.reduce((sum, row) => sum + Number(row.activeTasks || 0), 0);
+  const averageActiveTasks = technicianWorkload.length > 0 ? totalActiveAssignments / technicianWorkload.length : 0;
+
+  // start is 00:00 and end is 23:59:59; rounding their distance gives the
+  // correct inclusive calendar-day count (14/07 -> 12/08 = 30 days).
+  const consumptionDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000));
+  const inventoryForecast = await db.sequelize.query(`
+    SELECT
+      sp.id AS "partId", sp.name, sp.stock_quantity AS stock, sp.min_threshold AS "minimumStock",
+      COALESCE(SUM(il.quantity), 0)::numeric AS "consumedQuantity"
+    FROM "Spare_Parts" sp
+    LEFT JOIN "Inventory_Logs" il ON il.part_id = sp.id AND il.type = 'OUT' AND il."createdAt" BETWEEN :start AND :end
+    GROUP BY sp.id, sp.name, sp.stock_quantity, sp.min_threshold
+    HAVING COALESCE(SUM(il.quantity), 0) > 0 OR sp.stock_quantity <= sp.min_threshold
+    ORDER BY "consumedQuantity" DESC, sp.stock_quantity ASC
+    LIMIT 10
+  `, { replacements: { start, end }, type: db.Sequelize.QueryTypes.SELECT });
+
+  const paidServiceOrders = await db.sequelize.query(`
+    SELECT
+      so.id AS "orderId",
+      bp.paid_at AS "paidAt",
+      bp.amount AS "paidAmount",
+      COALESCE(SUM(qd.amount) FILTER (WHERE qd.service_id IS NOT NULL AND qd.spare_part_id IS NULL AND qd.status <> 'CANCELLED'), 0) AS "laborAmount",
+      COALESCE(SUM(qd.amount) FILTER (WHERE qd.spare_part_id IS NOT NULL AND qd.status <> 'CANCELLED'), 0) AS "partsAmount"
+    FROM "Booking_Payments" bp
+    INNER JOIN "Service_Orders" so ON so.id = bp.order_id
+    LEFT JOIN "Tasks" t ON t.service_order_id = so.id
+    LEFT JOIN "Quotations" q ON q.task_id = t.id AND q.status = 'APPROVED'
+    LEFT JOIN "Quotation_Details" qd ON qd.quotation_id = q.id
+    WHERE bp.payment_status = 'PAID' AND bp.paid_at BETWEEN :start AND :end
+    GROUP BY so.id, bp.id, bp.paid_at, bp.amount
+    ORDER BY bp.paid_at DESC
+  `, { replacements: { start, end }, type: db.Sequelize.QueryTypes.SELECT });
+
+  // Existing schema does not link an OUT log to a specific inventory batch. Use
+  // the weighted-average purchase cost recorded for that part and expose the
+  // coverage ratio so the UI never presents this as exact FIFO/LIFO costing.
+  const [partsCostRow] = await db.sequelize.query(`
+    WITH paid_orders AS (
+      SELECT order_id
+      FROM "Booking_Payments"
+      WHERE payment_status = 'PAID' AND paid_at BETWEEN :start AND :end
+    ), average_cost AS (
+      SELECT
+        il.part_id,
+        SUM(ib.unit_cost * il.quantity) / NULLIF(SUM(il.quantity), 0) AS unit_cost
+      FROM "Inventory_Batches" ib
+      INNER JOIN "Inventory_Logs" il ON il.id = ib.inventory_log_id AND il.type = 'IN'
+      GROUP BY il.part_id
+    ), parts_out AS (
+      SELECT il.service_order_id, il.part_id, SUM(il.quantity)::numeric AS quantity
+      FROM "Inventory_Logs" il
+      INNER JOIN paid_orders po ON po.order_id = il.service_order_id
+      WHERE il.type = 'OUT'
+      GROUP BY il.service_order_id, il.part_id
+    )
+    SELECT
+      COALESCE(SUM(po.quantity * ac.unit_cost), 0) AS parts_cost,
+      COALESCE(SUM(po.quantity), 0) AS total_quantity,
+      COALESCE(SUM(po.quantity) FILTER (WHERE ac.unit_cost IS NOT NULL), 0) AS costed_quantity
+    FROM parts_out po
+    LEFT JOIN average_cost ac ON ac.part_id = po.part_id
+  `, { replacements: { start, end }, type: db.Sequelize.QueryTypes.SELECT });
+
+  const partsCost = Number(partsCostRow?.parts_cost || 0);
+  const totalPartsOut = Number(partsCostRow?.total_quantity || 0);
+  const costedPartsOut = Number(partsCostRow?.costed_quantity || 0);
+  const costCoveragePct = totalPartsOut > 0
+    ? Number(((costedPartsOut / totalPartsOut) * 100).toFixed(1))
+    : 0;
+  const contributionAfterPartsCost = totalRevenue - partsCost;
+
   // Active Customers: Unique customer_id from Vehicles of Completed Service Orders in time range
   const activeCustomerRows = await db.Service_Orders.findAll({
     attributes: ['vehicle_id'],
     where: {
-      status: 'COMPLETED',
+      status: { [Op.in]: ['COMPLETED', 'DELIVERED'] },
       actual_finish_time: {
         [Op.between]: [start, end]
       }
@@ -462,10 +717,109 @@ module.exports.getAdminDashboardStats = async (query) => {
     revenueChart: chartData,
     kpis: {
       totalRevenue,
+      completionRate,
       totalOrders,
       avgRevenuePerOrder: avgRevPerOrder,
       activeCustomers: activeCustomersCount,
       completedAppointments: completedAppointmentsCount
+    },
+    businessOverview: {
+      period: { startDate: getVietnamDateKey(start), endDate: getVietnamDateKey(end) },
+      previousPeriod: { startDate: getVietnamDateKey(previousStart), endDate: getVietnamDateKey(previousEnd) },
+      comparisons: {
+        revenue: { current: totalRevenue, previous: previousRevenue, changePct: percentageChange(totalRevenue, previousRevenue) },
+        paidOrders: { current: totalOrders, previous: previousOrders, changePct: percentageChange(totalOrders, previousOrders) },
+        averagePaidPerOrder: { current: avgRevPerOrder, previous: previousAvgRevPerOrder, changePct: percentageChange(avgRevPerOrder, previousAvgRevPerOrder) }
+      },
+      workflow: {
+        received: Number(workflowRow?.received || 0),
+        repairing: Number(workflowRow?.repairing || 0),
+        completed: Number(workflowRow?.completed || 0),
+        note: 'Đếm toàn bộ phiếu sửa chữa theo trạng thái hiện tại; không phụ thuộc bộ lọc ngày của doanh thu'
+      },
+      paymentStatuses: paymentStatusRows.map(row => ({
+        status: row.payment_status || 'PENDING',
+        count: Number(row.count || 0)
+      })),
+      operationalRisks: {
+        tasks: {
+          pending: Number(taskSummary?.pending || 0),
+          inProgress: Number(taskSummary?.in_progress || 0),
+          waitingParts: Number(taskSummary?.waiting_parts || 0),
+          unassigned: Number(taskSummary?.unassigned || 0)
+        },
+        workload: {
+          teamAverage: Number(averageActiveTasks.toFixed(1)),
+          technicians: technicianWorkload.map(row => ({
+            technicianId: Number(row.technicianId), name: row.name,
+            activeTasks: Number(row.activeTasks || 0),
+            aboveTeamAverage: Number(row.activeTasks || 0) > averageActiveTasks && Number(row.activeTasks || 0) >= 2
+          }))
+        },
+        inventoryForecast: inventoryForecast.map(row => {
+          const consumed = Number(row.consumedQuantity || 0);
+          const stock = Number(row.stock || 0);
+          const dailyUsage = consumed / consumptionDays;
+          const projected30Days = Math.ceil(dailyUsage * 30);
+          return {
+            partId: Number(row.partId), name: row.name, stock,
+            minimumStock: Number(row.minimumStock || 0), consumedQuantity: consumed,
+            analysisDays: consumptionDays,
+            dailyUsage: Number(dailyUsage.toFixed(2)), projected30Days,
+            requiredWithSafetyStock: projected30Days + Number(row.minimumStock || 0),
+            projectedShortage: Math.max(0, projected30Days + Number(row.minimumStock || 0) - stock),
+            coverageDays: dailyUsage > 0 ? Number((stock / dailyUsage).toFixed(1)) : null
+          };
+        })
+      },
+      revenueSources: {
+        serviceRevenue: allocatedServiceRevenue,
+        partsRevenue: allocatedPartsRevenue,
+        unallocatedRevenue,
+        totalPaidRevenue: totalRevenue,
+        method: 'Phân bổ tiền đã thanh toán theo tỷ trọng từng dòng trong báo giá được duyệt'
+      },
+      paidServiceOrders: paidServiceOrders.map(row => ({
+        orderId: Number(row.orderId),
+        paidAt: row.paidAt,
+        paidAmount: Number(row.paidAmount || 0),
+        laborAmount: Number(row.laborAmount || 0),
+        partsAmount: Number(row.partsAmount || 0)
+      })),
+      inventory: {
+        importValue: inventoryImportValue,
+        importLineCount: importLogs.length,
+        note: 'Giá trị hàng nhập kho, không đồng nghĩa tiền đã trả nhà cung cấp và không phải giá vốn hàng đã bán'
+      },
+      profitability: {
+        partsCost,
+        contributionAfterPartsCost,
+        costCoveragePct,
+        totalPartsOut,
+        costedPartsOut,
+        costingMethod: 'Giá nhập bình quân gia quyền từ các lô nhập hiện có của từng phụ tùng',
+        grossProfit: null,
+        netProfit: null,
+        status: 'PARTIAL_COST_DATA',
+        missingData: ['Liên kết lần xuất với lô nhập cụ thể', 'Lương nhân viên', 'Thuê mặt bằng', 'Điện nước', 'Marketing và chi phí vận hành khác']
+      },
+      topPaidServices: topPaidServices.map(row => ({
+        ...row,
+        orderCount: Number(row.orderCount || 0),
+        quantity: Number(row.quantity || 0),
+        revenue: Number(row.revenue || 0),
+        durationAvg: Math.round(Number(row.durationAvg || 0))
+      })),
+      topPaidParts: topPaidParts.map(row => ({
+        ...row,
+        quantity: Number(row.quantity || 0),
+        orderCount: Number(row.orderCount || 0),
+        revenue: Number(row.revenue || 0),
+        averageInputPrice: Number(row.averageInputPrice || 0),
+        averageOutputPrice: Number(row.quantity || 0) > 0 ? Number(row.revenue || 0) / Number(row.quantity) : 0,
+        cost: Number(row.cost || 0),
+        marginAfterPartCost: Number(row.revenue || 0) - Number(row.cost || 0)
+      }))
     },
     customersBreakdown: {
       newCustomers: newCustomersCount,
@@ -477,7 +831,7 @@ module.exports.getAdminDashboardStats = async (query) => {
   };
 };
 
-module.exports.getAdvancedAnalysisStats = async ({ generateAi, timeframe = 'custom', startDate, endDate } = {}) => {
+module.exports.getAdvancedAnalysisStats = async ({ generateAi, timeframe = 'custom', startDate, endDate, planHorizon = '1_month' } = {}) => {
   try {
     const pythonServiceUrl = process.env.PYTHON_MICROSERVICE_URL || 'http://127.0.0.1:5000';
     console.log("bắt đầu phân tích ");
@@ -614,33 +968,83 @@ module.exports.getAdvancedAnalysisStats = async ({ generateAi, timeframe = 'cust
           try {
             console.log("Đang gửi yêu cầu phân tích tới Gemini API từ Node.js...");
             const summary = reportData.summary || {};
+            const normalizedPlanHorizon = planHorizon === '3_months' ? '3_months' : '1_month';
+            const planHorizonLabel = normalizedPlanHorizon === '3_months' ? '3 tháng tới' : '1 tháng tới';
             const filteredKpis = reportData.dashboard_stats?.kpis || {};
             const previousKpis = reportData.comparison_stats?.previousPeriod?.kpis || {};
             const lastYearKpis = reportData.comparison_stats?.samePeriodLastYear?.kpis || {};
             const appliedFilters = reportData.filters || {};
-            const growingSvcs = (reportData.yoy_service_drivers?.growing || []).map(s => `- ${s.service_name}: Kỳ đã chọn đạt ${(s.this_year_rev / 1e6).toFixed(1)} Tr.đ (tăng ${(s.growth_amount / 1e6).toFixed(1)} Tr.đ so với cùng kỳ năm trước)`).join('\n');
-            const decliningSvcs = (reportData.yoy_service_drivers?.declining || []).map(s => `- ${s.service_name}: Kỳ đã chọn đạt ${(s.this_year_rev / 1e6).toFixed(1)} Tr.đ (giảm ${Math.abs(s.growth_amount / 1e6).toFixed(1)} Tr.đ so với cùng kỳ năm trước)`).join('\n');
+            const growingSvcs = (reportData.yoy_service_drivers?.growing || []).map(s => `- ${s.service_name}: Khoảng đang xem đạt ${(s.this_year_rev / 1e6).toFixed(1)} Tr.đ (tăng ${(s.growth_amount / 1e6).toFixed(1)} Tr.đ so với cùng khoảng thời gian năm trước)`).join('\n');
+            const decliningSvcs = (reportData.yoy_service_drivers?.declining || []).map(s => `- ${s.service_name}: Khoảng đang xem đạt ${(s.this_year_rev / 1e6).toFixed(1)} Tr.đ (giảm ${Math.abs(s.growth_amount / 1e6).toFixed(1)} Tr.đ so với cùng khoảng thời gian năm trước)`).join('\n');
             const growingParts = (reportData.yoy_part_drivers?.growing || []).map(p => `- ${p.name}: Tiêu thụ ${p.this_year_qty} cái (tăng +${p.growth_qty} cái vs năm ngoái)`).join('\n');
             const decliningParts = (reportData.yoy_part_drivers?.declining || []).map(p => `- ${p.name}: Tiêu thụ ${p.this_year_qty} cái (giảm ${p.growth_qty} cái vs năm ngoái)`).join('\n');
             const lowSvcs = (reportData.ai_planner?.low_demand_plans || []).map(p => `- ${p.service_name}: Cả năm ngoái làm ${p.annual_count} lượt (chiếm tỷ trọng ${p.share_pct}%)`).join('\n');
             const combos = (reportData.ai_planner?.top_combos || []).map(c => `- ${c.combo_name}: ${c.service_name} + ${c.part_name} (Có ${c.co_occurrence} lượt xe làm chung năm ngoái)`).join('\n');
+            const operationalRisks = dashboardStats.businessOverview?.operationalRisks || {};
+            const taskRisks = operationalRisks.tasks || {};
+            const workloadEvidence = (operationalRisks.workload?.technicians || []).map(tech =>
+              `- ${tech.name}: ${tech.activeTasks} công việc đang hoạt động${tech.aboveTeamAverage ? `, cao hơn trung bình đội ${operationalRisks.workload.teamAverage}` : ''}`
+            ).join('\n');
+            const inventoryEvidence = (operationalRisks.inventoryForecast || []).filter(part => part.consumedQuantity > 0).map(part =>
+              `- ${part.name}: đã xuất ${part.consumedQuantity} trong ${part.analysisDays} ngày; tồn ${part.stock}; tồn tối thiểu ${part.minimumStock}; nhu cầu 30 ngày ${part.projected30Days}; cần có cả tồn an toàn ${part.requiredWithSafetyStock}; ${part.projectedShortage > 0 ? `thiếu dự kiến ${part.projectedShortage}` : `không thiếu, đủ khoảng ${part.coverageDays} ngày`}`
+            ).join('\n');
+
+            // Weather is supporting context only. It must never be presented as a proven
+            // cause of historical revenue changes.
+            let weatherContext = 'Không lấy được dự báo thời tiết; không sử dụng thời tiết trong khuyến nghị.';
+            try {
+              const weatherUrl = 'https://api.open-meteo.com/v1/forecast?latitude=16.0544&longitude=108.2022&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max&timezone=Asia%2FHo_Chi_Minh&forecast_days=14';
+              const weatherResponse = await fetch(weatherUrl);
+              if (weatherResponse.ok) {
+                const weather = await weatherResponse.json();
+                const daily = weather.daily || {};
+                const dates = daily.time || [];
+                const maxTemperatures = daily.temperature_2m_max || [];
+                const minTemperatures = daily.temperature_2m_min || [];
+                const precipitation = daily.precipitation_sum || [];
+                const rainProbabilities = daily.precipitation_probability_max || [];
+                const rainyDays = dates.filter((_, index) => Number(precipitation[index] || 0) >= 1 || Number(rainProbabilities[index] || 0) >= 50).length;
+                const totalRain = precipitation.reduce((sum, value) => sum + Number(value || 0), 0);
+                const highestTemperature = maxTemperatures.length ? Math.max(...maxTemperatures.map(Number)) : null;
+                const lowestTemperature = minTemperatures.length ? Math.min(...minTemperatures.map(Number)) : null;
+                weatherContext = [
+                  `Dự báo Đà Nẵng từ ${dates[0] || 'không xác định'} đến ${dates[dates.length - 1] || 'không xác định'}`,
+                  `${rainyDays}/${dates.length || 14} ngày có mưa hoặc xác suất mưa từ 50%`,
+                  `tổng lượng mưa dự báo ${totalRain.toFixed(1)} mm`,
+                  highestTemperature === null ? null : `nhiệt độ cao nhất ${highestTemperature.toFixed(1)}°C`,
+                  lowestTemperature === null ? null : `thấp nhất ${lowestTemperature.toFixed(1)}°C`,
+                ].filter(Boolean).join('; ');
+                reportData.weather_context = {
+                  location: 'Đà Nẵng',
+                  startDate: dates[0] || null,
+                  endDate: dates[dates.length - 1] || null,
+                  rainyDays,
+                  totalDays: dates.length,
+                  totalRainMm: Number(totalRain.toFixed(1)),
+                  maxTemperatureC: highestTemperature,
+                  minTemperatureC: lowestTemperature,
+                  source: 'Open-Meteo',
+                };
+              }
+            } catch (weatherError) {
+              console.warn('Không lấy được dự báo thời tiết Đà Nẵng:', weatherError.message);
+            }
 
             const prompt = `
-Bạn là chuyên gia vận hành và tăng trưởng Gara ô tô.
-Dựa trên dữ liệu đã được hệ thống tính sẵn dưới đây, hãy chọn lọc một kế hoạch NGẮN, DỄ HIỂU và CÓ THỂ ĐO LƯỜNG. Không tự tạo thêm số liệu.
+Bạn là quản lý vận hành Gara ô tô. Hãy lập kế hoạch xử lý trực tiếp các vấn đề hệ thống vừa phát hiện cho ${planHorizonLabel}. Không tự tạo số liệu, không đưa lời khuyên chung chung và không đề xuất việc không có căn cứ bên dưới.
 
 DỮ LIỆU HOẠT ĐỘNG:
-- Kỳ đang được quản trị viên chọn: ${appliedFilters.startDate || 'không xác định'} đến ${appliedFilters.endDate || 'không xác định'}
-- Doanh thu trong kỳ đã chọn: ${Number(filteredKpis.totalRevenue || 0).toLocaleString('vi-VN')} đ
-- Số lượt dịch vụ trong kỳ đã chọn: ${Number(filteredKpis.totalOrders || 0).toLocaleString('vi-VN')} lượt
-- Hóa đơn trung bình trong kỳ đã chọn: ${Number(filteredKpis.avgRevenuePerOrder || 0).toLocaleString('vi-VN')} đ
-- Khách hàng hoạt động trong kỳ đã chọn: ${Number(filteredKpis.activeCustomers || 0).toLocaleString('vi-VN')} khách
-- Kỳ liền trước: ${Number(previousKpis.totalRevenue || 0).toLocaleString('vi-VN')} đ / ${Number(previousKpis.totalOrders || 0)} lượt
-- Cùng kỳ năm trước: ${Number(lastYearKpis.totalRevenue || 0).toLocaleString('vi-VN')} đ / ${Number(lastYearKpis.totalOrders || 0)} lượt
-- Tăng trưởng so với kỳ liền trước: ${summary.previous_period_growth_pct}%
-- Tăng trưởng so với cùng kỳ năm trước: ${summary.yoy_growth_pct}%
-- Đóng góp từ lượng xe (Volume Effect): ${summary.volume_effect?.toLocaleString('vi-VN')} đ
-- Đóng góp từ hóa đơn (Ticket Effect): ${summary.ticket_effect?.toLocaleString('vi-VN')} đ
+- Khoảng ngày đang xem: ${appliedFilters.startDate || 'không xác định'} đến ${appliedFilters.endDate || 'không xác định'}
+- Doanh thu trong khoảng đang xem: ${Number(filteredKpis.totalRevenue || 0).toLocaleString('vi-VN')} đ
+- Số lượt dịch vụ trong khoảng đang xem: ${Number(filteredKpis.totalOrders || 0).toLocaleString('vi-VN')} lượt
+- Hóa đơn trung bình trong khoảng đang xem: ${Number(filteredKpis.avgRevenuePerOrder || 0).toLocaleString('vi-VN')} đ
+- Khách hàng hoạt động trong khoảng đang xem: ${Number(filteredKpis.activeCustomers || 0).toLocaleString('vi-VN')} khách
+- Khoảng thời gian dài tương đương ngay trước đó: ${Number(previousKpis.totalRevenue || 0).toLocaleString('vi-VN')} đ / ${Number(previousKpis.totalOrders || 0)} lượt
+- Cùng khoảng ngày của năm trước: ${Number(lastYearKpis.totalRevenue || 0).toLocaleString('vi-VN')} đ / ${Number(lastYearKpis.totalOrders || 0)} lượt
+- Tăng trưởng so với khoảng trước đó: ${summary.previous_period_growth_pct}%
+- Tăng trưởng so với cùng khoảng thời gian năm trước: ${summary.yoy_growth_pct}%
+- Doanh thu thay đổi do số lượng đơn: ${summary.volume_effect?.toLocaleString('vi-VN')} đ
+- Doanh thu thay đổi do giá trị trung bình mỗi đơn: ${summary.ticket_effect?.toLocaleString('vi-VN')} đ
 
 DỊCH VỤ SỬA CHỮA TĂNG TRƯỞNG MẠNH NHẤT:
 ${growingSvcs || "Chưa ghi nhận dịch vụ tăng trưởng đáng kể."}
@@ -657,47 +1061,113 @@ ${decliningParts || "Không có linh kiện nào giảm nhiều."}
 DỊCH VỤ ÍT KHÁCH LÀM NHẤT (CẦN GIẢI CỨU):
 ${lowSvcs}
 
-CÁC COMBO THƯỜNG XUYÊN ĐƯỢC THANH TOÁN CÙNG NHAU:
+CÁC GÓI DỊCH VỤ THƯỜNG XUYÊN ĐƯỢC THANH TOÁN CÙNG NHAU:
 ${combos}
 
-CHỈ trả về đúng 3 mục Markdown sau:
-### 1. Kết luận chính
-- Tối đa 2 gạch đầu dòng, nêu biến động quan trọng nhất và số liệu làm căn cứ.
-### 2. Ba hành động ưu tiên
-- Đúng 3 gạch đầu dòng. Mỗi dòng theo mẫu: **Hành động** — Căn cứ số liệu — KPI cần đạt — Thời hạn.
-### 3. Cảnh báo cần theo dõi
-- Tối đa 1 gạch đầu dòng về rủi ro lớn nhất.
+VẤN ĐỀ CÔNG VIỆC ĐÃ PHÁT HIỆN:
+- ${Number(taskRisks.pending || 0)} công việc đang chờ thực hiện
+- ${Number(taskRisks.inProgress || 0)} công việc đang thực hiện
+- ${Number(taskRisks.waitingParts || 0)} công việc chờ linh kiện
+- ${Number(taskRisks.unassigned || 0)} công việc chưa phân công
 
-Tổng cộng không quá 180 từ. Không chào hỏi, không mở bài, không bảng biểu, không khuyến nghị chung chung và không nhắc lại toàn bộ dữ liệu đầu vào.
+PHÂN BỔ CÔNG VIỆC THEO KỸ THUẬT VIÊN:
+${workloadEvidence || '- Chưa có dữ liệu phân công'}
+
+TỐC ĐỘ TIÊU THỤ VÀ SỨC ĐỦ TỒN KHO:
+${inventoryEvidence || '- Chưa có dữ liệu xuất kho để dự báo'}
+
+DỰ BÁO THỜI TIẾT ĐÀ NẴNG 14 NGÀY TỚI:
+${weatherContext}
+
+QUY TẮC BẮT BUỘC:
+- Ưu tiên 1: công việc chưa phân công, công việc chờ linh kiện và mất cân bằng kỹ thuật viên nếu các số này lớn hơn 0.
+- Ưu tiên 2: phụ tùng có số lượng thiếu dự kiến lớn hơn 0. Số đề xuất nhập không được thấp hơn lượng thiếu dự kiến; phải nói rõ đây là mức đề xuất từ tốc độ sử dụng, cần xác nhận đơn đang chờ và đơn đặt nhà cung cấp trước khi nhập.
+- Ưu tiên 3: dịch vụ tăng/giảm chỉ sau khi đã xử lý hai nhóm trên.
+- Không đề xuất tiếp thị, gói dịch vụ, tuyển thêm người hoặc khuyến mãi nếu dữ liệu trên không chứng minh nhu cầu.
+- Không dùng thời tiết trong kế hoạch trừ khi nó trực tiếp hỗ trợ một dịch vụ/phụ tùng đã có xu hướng trong dữ liệu; nếu dùng phải ghi là ngữ cảnh tham khảo, không phải nguyên nhân.
+- Mỗi hành động phải chứa ít nhất một số liệu đúng từ dữ liệu đầu vào. Không dùng các câu “tối ưu”, “nâng cao”, “tăng cường”, “duy trì” nếu không nói thao tác cụ thể.
+
+Trả về JSON đúng schema được yêu cầu, không Markdown, không chào hỏi.
+Toàn bộ giá trị văn bản phải viết bằng tiếng Việt dễ hiểu. Không dùng từ “khẩn cấp”. Tuyệt đối không dùng các thuật ngữ Volume Effect, Ticket Effect, task, workload, projectedShortage, KPI, marketing hoặc các từ tiếng Anh tương tự; hãy diễn đạt bằng tiếng Việt theo tên gọi trong dữ liệu phía trên.
+- executive_summary: tối đa 3 kết luận, xếp theo mức độ cần xử lý; mỗi kết luận phải có số liệu.
+- assessment: nhận định ngắn về tín hiệu doanh thu, vấn đề ảnh hưởng chính và giới hạn dữ liệu. Nếu thiếu dữ liệu đối chiếu thì phải nói rõ giới hạn, không được kết luận chắc chắn.
+- actions: 3–5 hành động, thứ tự ưu tiên không trùng nhau. Phần căn cứ phải trích đúng số liệu đầu vào; phần thực hiện phải là thao tác cụ thể; người phụ trách phải là vai trò có trong gara; chỉ số kiểm tra phải đo được từ dữ liệu hệ thống.
+- adjustment_conditions: tối đa 3 điều kiện định lượng buộc phải điều chỉnh kế hoạch.
 `;
+
+            const responseSchema = {
+              type: 'OBJECT',
+              required: ['executive_summary', 'assessment', 'actions', 'adjustment_conditions'],
+              properties: {
+                executive_summary: { type: 'ARRAY', minItems: 1, maxItems: 3, items: { type: 'STRING' } },
+                assessment: {
+                  type: 'OBJECT',
+                  required: ['revenue_signal', 'primary_bottleneck', 'reasoning', 'data_limitations'],
+                  properties: {
+                    revenue_signal: { type: 'STRING' },
+                    primary_bottleneck: { type: 'STRING' },
+                    reasoning: { type: 'STRING' },
+                    data_limitations: { type: 'ARRAY', maxItems: 3, items: { type: 'STRING' } }
+                  }
+                },
+                actions: {
+                  type: 'ARRAY', minItems: 3, maxItems: 5,
+                  items: {
+                    type: 'OBJECT',
+                    required: ['priority', 'title', 'evidence', 'execution', 'owner', 'kpi'],
+                    properties: {
+                      priority: { type: 'INTEGER' },
+                      title: { type: 'STRING' },
+                      evidence: { type: 'STRING' },
+                      execution: { type: 'STRING' },
+                      owner: { type: 'STRING' },
+                      kpi: { type: 'STRING' }
+                    }
+                  }
+                },
+                adjustment_conditions: { type: 'ARRAY', maxItems: 3, items: { type: 'STRING' } }
+              }
+            };
 
             const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
             const geminiRes = await fetch(geminiUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }]
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                  responseMimeType: 'application/json',
+                  responseSchema,
+                  temperature: 0.2
+                }
               })
             });
 
             if (geminiRes.ok) {
               const geminiJson = await geminiRes.json();
-              reportData.gemini_insights = geminiJson.candidates?.[0]?.content?.parts?.[0]?.text || "";
+              const rawPlan = geminiJson.candidates?.[0]?.content?.parts?.[0]?.text || '';
+              reportData.gemini_plan = JSON.parse(rawPlan);
+              reportData.gemini_insights = null;
+              reportData.plan_horizon = normalizedPlanHorizon;
               console.log("Gemini phân tích chiến lược thành công!");
             } else {
               const errText = await geminiRes.text();
               console.error("Lỗi khi gọi Gemini API:", errText);
+              reportData.gemini_plan = null;
               reportData.gemini_insights = `*(Không thể tải khuyến nghị tự động từ AI: Mã lỗi ${geminiRes.status})*`;
             }
           } catch (geminiError) {
             console.error("Lỗi kết nối Gemini API:", geminiError.message);
+            reportData.gemini_plan = null;
             reportData.gemini_insights = `*(Lỗi kết nối API AI: ${geminiError.message})*`;
           }
         } else {
-          reportData.gemini_insights = "*(Vui lòng thiết lập GEMINI_API_KEY trong file .env để kích hoạt AI)*";
+          reportData.gemini_plan = null;
+          reportData.gemini_insights = "*(Vui lòng thiết lập GEMINI_API_KEY_STATIC trong file .env để kích hoạt AI)*";
         }
       } else {
         // Trả về null nếu chưa bấm nút Phân tích kế hoạch
+        reportData.gemini_plan = null;
         reportData.gemini_insights = null;
       }
 

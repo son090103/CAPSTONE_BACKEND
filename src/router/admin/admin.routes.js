@@ -8,10 +8,13 @@ const staffController = require("../../controller/admin/manageStaff.controller")
 const controllerServiceBays = require("../../controller/admin/serviceBays.controller");
 const warrantyController = require("../../controller/admin/warrantyPolicies.controller");
 const warrantyUpload = require("../../util/warrantyUpload.util");
+const technicalDocumentController = require("../../controller/admin/technicalDocument.controller");
+const technicalDocumentUpload = require("../../util/technicalDocumentUpload.util");
 const excelUpload = require("../../util/excelUpload.util");
 const manageCustomer = require("./../../controller/admin/manageCustomer.controller");
 const shiftController = require('../../controller/admin/shift.controller');
 const statisticsController = require("../../controller/admin/statistics.controller");
+const aiAnalysisHistoryController = require("../../controller/admin/aiAnalysisHistory.controller");
 const garageConfigurationsController = require("../../controller/common/garageConfigurations.controller");
 
 router.get("/role", staffController.getRoles);
@@ -26,6 +29,7 @@ router.post("/service-catalog/import/confirm", serviceCatalogController.confirmI
 router.get("/service-catalog", serviceCatalogController.getServiceCatalog);
 router.get("/service-catalog/search", serviceCatalogController.searchServiceCatalog);
 router.patch("/service-catalog/:id", serviceCatalogController.updateServiceCatalog);
+router.patch("/service-catalog/:id/set-default-inspection", serviceCatalogController.setDefaultInspectionService);
 router.get("/spare-parts", serviceCatalogController.getSparePartsForAdmin);
 
 router.get("/service-combos", serviceCombosController.getServiceCombos);
@@ -54,6 +58,11 @@ router.get("/warranty-policies", warrantyController.getWarrantyPolicies);
 router.post("/warranty-policy", warrantyUpload.fields([{ name: "image_cover", maxCount: 1 }, { name: "pdf_document", maxCount: 1 }]), warrantyController.createWarrantyPolicy);
 router.put("/warranty-policy/:id", warrantyUpload.fields([{ name: "image_cover", maxCount: 1 }, { name: "pdf_document", maxCount: 1 }]), warrantyController.updateWarrantyPolicy);
 
+router.get("/vehicle-makes", technicalDocumentController.listVehicleMakes);
+router.get("/technical-documents", technicalDocumentController.list);
+router.post("/technical-document", technicalDocumentUpload.fields([{ name: "pdf_document", maxCount: 1 }]), technicalDocumentController.create);
+router.delete("/technical-document/:id", technicalDocumentController.remove);
+
 router.get("/customer", manageCustomer.getCustomer);
 router.get("/customer/:id", manageCustomer.getCustomerDetail);
 
@@ -71,6 +80,9 @@ router.post("/shift/templates/confirm", shiftController.confirmSchedule);
 // Thống kê báo cáo doanh thu
 router.get("/statistics/advanced", statisticsController.getAdvancedStats);
 router.get("/statistics", statisticsController.getDashboardStats);
+router.get("/ai-analysis/history", aiAnalysisHistoryController.getHistories);
+router.get("/ai-analysis/history/:id", aiAnalysisHistoryController.getHistoryById);
+router.delete("/ai-analysis/history/:id", aiAnalysisHistoryController.deleteHistory);
 
 // Cấu hình chung của garage (vd RESTOCK_DAYS dùng cho đề xuất nhập hàng thông minh)
 router.put("/garage-configurations/:key", garageConfigurationsController.updateConfiguration);

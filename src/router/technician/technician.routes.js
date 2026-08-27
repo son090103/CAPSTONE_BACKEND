@@ -16,9 +16,6 @@ router.put("/task-assignments/start", taskAssignment.startTask);
 router.put("/task-assignments/request-parts-export", taskAssignment.requestPartsExport);
 router.patch("/task-assignments/complete", taskAssignment.completeTask);
 
-router.get("/diagnostics", taskAssignment.getAllDiagnostics);
-router.get("/diagnostics/search", taskAssignment.searchDiagnostics);
-router.get("/diagnostics/filter", taskAssignment.filterDiagnostics);
 router.post("/diagnostics/ai-suggest", taskAssignment.aiSuggestCauses);
 
 router.get("/repair-history", taskAssignment.getRepairHistory);
@@ -31,6 +28,9 @@ router.get("/inspection-history/search", taskAssignment.searchInspectionHistory)
 router.get("/inspection-history/filter", taskAssignment.filterInspectionHistory);
 
 router.get("/completed-tasks", taskAssignment.getMyCompletedTasks);
+router.get("/work-history", taskAssignment.getMyWorkHistory);
+router.post("/repair-notes", taskAssignment.addRepairNote);
+router.get("/repair-notes", taskAssignment.getMyRepairNotes);
 router.get("/issues", taskAssignment.getIssuesReportHistory);
 
 router.get("/notifications", notificationController.getNotifications);

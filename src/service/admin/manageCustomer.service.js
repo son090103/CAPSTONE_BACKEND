@@ -1,4 +1,4 @@
-const { Customers, User, Vehicles, Appointments, Service_Orders, Appointment_Details, Service_Catalog, Service_Combo, Vehicle_Models, Vehicle_Makes } = require("../../../models");
+const { Customers, User, Vehicles, Appointments, Service_Orders, Appointment_Details, Service_Catalog, Service_Combo, Vehicle_Models, Vehicle_Makes, Rescue_Requests } = require("../../../models");
 const { Op } = require("sequelize");
 
 module.exports.getCustomers = async (searchParams = "") => {
@@ -21,12 +21,25 @@ module.exports.getCustomers = async (searchParams = "") => {
                     as: 'user',
                     attributes: ['id', 'fullName', 'phoneNumber', 'avatar', 'status', 'latitude', 'longitude'],
                     required: false
+                },
+                {
+                    model: Rescue_Requests,
+                    as: 'rescueRequests',
+                    required: false,
+                    separate: true,
+                    limit: 1,
+                    order: [['createdAt', 'DESC']],
+                    include: [{
+                        model: User,
+                        as: 'technician',
+                        attributes: ['id', 'fullName', 'latitude', 'longitude'],
+                        required: false
+                    }]
                 }
             ],
             order: [['createdAt', 'DESC']]
         });
 
-        // Phân loại khách hàng: đã đăng ký hệ thống (có user_id) và vãng lai (không có user_id)
         const registeredCustomers = customers.filter(c => c.user_id !== null);
         const guestCustomers = customers.filter(c => c.user_id === null);
 

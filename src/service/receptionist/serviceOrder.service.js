@@ -168,16 +168,10 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       }
     }
 
-    // Khách vãng lai vẫn được tiếp nhận khi công suất đã được lịch hẹn đặt trước giữ chỗ,
-    // nhưng lệnh dịch vụ phải vào hàng chờ và tuyệt đối chưa được chiếm cầu nâng.
-    // Lịch đặt trước không đi qua nhánh WALK nên vẫn được phân cầu bình thường khi tạo lệnh.
-    let mustWaitForReservedBay = false;
     let calculatedWalkInFinishTime = null;
 
-    // Kiểm tra công suất đối với khách vãng lai (Walk-in)
     const isWalkIn = !hasReservedAppointment || (currentBookingType && currentBookingType.includes("WALK"));
     if (isWalkIn) {
-      // Calculate estimated duration
       let totalDurationMinutes = 0;
       if (data.service_ids && data.service_ids.length > 0) {
         const catalogs = await db.Service_Catalog.findAll({
@@ -209,148 +203,11 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       }
 
       const entryTime = new Date();
-      const estimatedFinishTime = new Date(entryTime.getTime() + totalDurationMinutes * 60 * 1000);
-      calculatedWalkInFinishTime = estimatedFinishTime;
-
-      const getGarageCapacity = require("../../util/getGarageCapacity.util");
-      const capacityData = await getGarageCapacity();
-      const capacity = capacityData.maxCapacity;
-
-      const startOfDay = new Date(entryTime);
-      startOfDay.setUTCHours(0,0,0,0);
-      const endOfDay = new Date(entryTime);
-      endOfDay.setUTCHours(23,59,59,999);
-
-      const appointments = await db.Appointments.findAll({
-        where: {
-          scheduled_time: { [Op.between]: [startOfDay, endOfDay] },
-          booking_type: { [Op.notLike]: '%WALK%' },
-          status: { [Op.in]: ['PENDING', 'CONFIRMED', 'INFORMATION_RECEIVED'] },
-          id: { [Op.ne]: actualAppointmentId || 0 }
-        },
-        include: [{ model: db.Appointment_Details, as: 'appointmentDetails' }],
-        transaction
-      });
-
-      const activeOrders = await db.Service_Orders.findAll({
-        where: {
-          status: { [Op.in]: ['INSPECTING', 'IN_PROGRESS', 'WAITING_FOR_PARTS'] },
-          bay_status: 'ASSIGNED',
-          bay_id: { [Op.ne]: null },
-          estimated_finish_time: { [Op.ne]: null, [Op.gt]: startOfDay },
-          entry_time: { [Op.lt]: endOfDay }
-        },
-        transaction
-      });
-
-      const { calculateAppointmentTime } = require("../../util/calculateAppointmentTime.util");
-
-      const bookedCounts = {};
-      const getOccupiedHours = (startTime, endTime) => {
-        if (endTime <= startOfDay || startTime >= endOfDay) return [];
-        const effectiveStart = startTime < startOfDay ? startOfDay : startTime;
-        const effectiveEnd = endTime > endOfDay ? endOfDay : endTime;
-        const startHour = effectiveStart.getUTCHours();
-        let endHour = effectiveEnd.getUTCHours();
-        if (effectiveEnd.getMinutes() === 0 && effectiveEnd.getSeconds() === 0 && endHour > startHour) {
-          endHour -= 1;
-        }
-        const hours = [];
-        for (let h = startHour; h <= endHour; h++) {
-          hours.push(h);
-        }
-        return hours;
-      };
-
-      await Promise.all(appointments.map(async (app) => {
-        const timeStart = app.scheduled_time;
-        const { endTime } = await calculateAppointmentTime(app.appointmentDetails, timeStart);
-        const occupiedHours = getOccupiedHours(timeStart, endTime);
-        occupiedHours.forEach(h => {
-          bookedCounts[h] = (bookedCounts[h] || 0) + 1;
-        });
-      }));
-
-      activeOrders.forEach(order => {
-        const occupiedHours = getOccupiedHours(order.entry_time, order.estimated_finish_time);
-        occupiedHours.forEach(h => {
-          bookedCounts[h] = (bookedCounts[h] || 0) + 1;
-        });
-      });
-
-      // Luôn bảo vệ tối thiểu 60 phút lịch sắp tới. Ví dụ xe vãng lai đến 09:45
-      // thì các lịch 10:00 vẫn phải được giữ cầu, kể cả dịch vụ walk-in rất ngắn.
-      const minimumReservationHorizon = new Date(entryTime.getTime() + 60 * 60 * 1000);
-      const reservationCheckEndTime = estimatedFinishTime > minimumReservationHorizon
-        ? estimatedFinishTime
-        : minimumReservationHorizon;
-      const protectedWalkInHours = getOccupiedHours(entryTime, reservationCheckEndTime);
-      for (const h of protectedWalkInHours) {
-        const currentCount = bookedCounts[h] || 0;
-        if (currentCount >= capacity) {
-          mustWaitForReservedBay = true;
-          break;
-        }
-      }
+      calculatedWalkInFinishTime = new Date(entryTime.getTime() + totalDurationMinutes * 60 * 1000);
     }
 
-    // 2. Xác định Service_Order này có cần cầu nâng hay không, dựa trên các dịch vụ đã chọn
-    // (kể cả dịch vụ nằm trong combo). Không có dịch vụ cụ thể nào (vd REPAIR chưa rõ hạng mục)
-    // thì mặc định coi là cần cầu nâng để an toàn.
-    const catalogIdsToCheck = new Set(data.service_ids || []);
-    if (data.combo_ids && data.combo_ids.length > 0) {
-      const comboCatalogs = await db.Service_Combo_Catalogs.findAll({
-        where: { combo_id: { [Op.in]: data.combo_ids } },
-        transaction,
-      });
-      comboCatalogs.forEach((cc) => catalogIdsToCheck.add(cc.catalog_id));
-    }
-
-    let needsBay = true;
-    if (catalogIdsToCheck.size > 0) {
-      const catalogs = await db.Service_Catalog.findAll({
-        where: { id: { [Op.in]: Array.from(catalogIdsToCheck) } },
-        attributes: ["id", "requires_bay"],
-        transaction,
-      });
-      needsBay = catalogs.some((c) => c.requires_bay !== false);
-    }
-
-    // 3. Kiểm tra cầu nâng tồn tại (nếu có chọn), hoặc tự phân bổ nếu không.
-    // Nguồn sự thật duy nhất về cầu nâng đang bận/rảnh là Service_Bays.status/current_service_order_id
-    // (không tự đếm lại qua Service_Orders nữa).
-    // Khi công suất đã được lịch đặt trước giữ chỗ, bỏ qua cả cầu do client gửi lên.
-    // Xe được tạo lệnh với bay_status=WAITING và sẽ được assignQueuedOrders xử lý sau.
-    let bayIdToUse = needsBay && !mustWaitForReservedBay ? data.bay_id : null;
-    let forceAutoAssign = false;
-
-    if (needsBay && bayIdToUse) {
-      const bay = await db.Service_Bays.findByPk(bayIdToUse, {
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-      });
-      if (!bay) {
-        throw { status: 404, message: "Cầu nâng không tồn tại" };
-      }
-
-      // Nếu cầu này đang bận, tự động phân bổ sang cầu khác rảnh
-      if (bay.status !== "available") {
-        forceAutoAssign = true;
-      }
-    }
-
-    if (needsBay && !mustWaitForReservedBay && (!bayIdToUse || forceAutoAssign)) {
-      const freeBay = await db.Service_Bays.findOne({
-        where: { is_active: true, status: "available" },
-        order: [["id", "ASC"]],
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-        skipLocked: true,
-      });
-      bayIdToUse = freeBay ? freeBay.id : null;
-    }
-
-    const bayStatus = !needsBay ? "NOT_NEEDED" : (bayIdToUse ? "ASSIGNED" : "WAITING");
+    const bayIdToUse = null;
+    const bayStatus = "NOT_NEEDED";
 
     // 3. Xử lý lịch hẹn (nếu được truyền vào từ trước)
     if (data.appointment_id && !data.walk_in) {
@@ -407,7 +264,7 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         appointment_id: actualAppointmentId || null,
         vehicle_id: actualVehicleId,
         receptionist_id: receptionistId,
-        bay_id: bayIdToUse || null,
+        bay_id: null,
         bay_status: bayStatus,
         current_odo: data.current_odo,
         status: "INSPECTING",
@@ -417,13 +274,6 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       },
       { transaction },
     );
-
-    if (bayIdToUse) {
-      await db.Service_Bays.update(
-        { status: "in_use", current_service_order_id: serviceOrder.id },
-        { where: { id: bayIdToUse }, transaction },
-      );
-    }
 
     // Rescue chỉ hoàn tất quy trình khi kỹ thuật trưởng tạo Service Order từ phiếu tiếp nhận.
     const rescueRequest = data.rescue_id
@@ -493,17 +343,22 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
 
     // 6. Tạo Tasks cho các dịch vụ được chọn và gán thợ
     const taskCatalogs = [];
+    const catalogDiscountPercent = new Map();
     if (data.service_ids && data.service_ids.length > 0) {
       taskCatalogs.push(...data.service_ids);
     }
     if (data.combo_ids && data.combo_ids.length > 0) {
       for (const comboId of data.combo_ids) {
+        const combo = await db.Service_Combo.findByPk(comboId, { transaction });
         const comboCatalogs = await db.Service_Combo_Catalogs.findAll({
           where: { combo_id: comboId },
           transaction,
         });
         for (const cc of comboCatalogs) {
           taskCatalogs.push(cc.catalog_id);
+          if (!catalogDiscountPercent.has(cc.catalog_id)) {
+            catalogDiscountPercent.set(cc.catalog_id, Number(combo?.discount_percentage || 0));
+          }
         }
       }
     }
@@ -512,9 +367,9 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
 
     if (uniqueTaskCatalogs.length === 0) {
       // Khách sửa chữa chưa rõ bệnh -> Tạo một Task kiểm tra xe chung,
-      // gắn vào dịch vụ đặc biệt "Kiểm tra hoặc sửa chữa" (labor_price = 0)
+      // gắn vào dịch vụ kiểm tra mặc định
       const inspectionCatalog = await db.Service_Catalog.findOne({
-        where: { labor_price: 0 },
+        where: { is_default_inspection_service: true },
         transaction,
       });
       const task = await db.Task.create(
@@ -527,12 +382,12 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
         { transaction },
       );
 
-      if (technicianId && bayStatus !== "WAITING") {
+      if (technicianId) {
         await db.Task_Assignment.create(
           {
             task_id: task.id,
             technician_id: technicianId,
-            bay_id: bayIdToUse || null,
+            bay_id: null,
             role_in_task: "LEAD",
             contribution_percent: 100,
             status: "ASSIGNED",
@@ -542,9 +397,20 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
       }
     } else {
       const freeCheckupCatalog = await db.Service_Catalog.findOne({
-        where: { labor_price: 0 },
+        where: { is_default_inspection_service: true },
         transaction,
       });
+
+      const manualSparePartMap = new Map(
+        Object.entries(data.service_spare_parts || {})
+          .map(([catalogId, sparePartId]) => [Number(catalogId), Number(sparePartId)])
+          .filter(([catalogId, sparePartId]) => Number.isInteger(catalogId) && Number.isInteger(sparePartId)),
+      );
+      const manualSparePartIds = [...new Set(manualSparePartMap.values())];
+      const manualSpareParts = manualSparePartIds.length
+        ? await db.Spare_Parts.findAll({ where: { id: { [Op.in]: manualSparePartIds } }, transaction })
+        : [];
+      const manualSparePartById = new Map(manualSpareParts.map((p) => [p.id, p]));
 
       // Báo giá tự động (APPROVED) cho các dịch vụ lẻ/combo lễ tân chọn thẳng khi tạo hóa đơn —
       // cần có Quotation_Details để KTV yêu cầu xuất kho phụ tùng đi kèm dịch vụ (nếu có).
@@ -572,12 +438,12 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
           { transaction },
         );
 
-        if (technicianId && bayStatus !== "WAITING") {
+        if (technicianId && uniqueTaskCatalogs.length <= 1) {
           await db.Task_Assignment.create(
             {
               task_id: task.id,
               technician_id: technicianId,
-              bay_id: bayIdToUse || null,
+              bay_id: null,
               role_in_task: "LEAD",
               contribution_percent: 100,
               status: "ASSIGNED",
@@ -610,6 +476,10 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
           { transaction },
         );
 
+        const discountPercent = catalogDiscountPercent.get(catalogId) || 0;
+        const discountFactor = 1 - discountPercent / 100;
+
+        const laborPrice = Number(catalog.labor_price || 0) * discountFactor;
         const serviceDetail = await db.Quotation_Details.create(
           {
             quotation_id: quotation.id,
@@ -617,17 +487,20 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
             service_id: catalogId,
             quantity: 1,
             unit_price: 0,
-            repair_price: catalog.labor_price || 0,
-            amount: catalog.labor_price || 0,
+            repair_price: laborPrice,
+            amount: laborPrice,
             status: "PENDING",
           },
           { transaction },
         );
         await task.update({ quotation_item_id: serviceDetail.id }, { transaction });
 
+        const manualSparePartId = manualSparePartMap.get(catalogId);
+        const manualSparePart = manualSparePartId ? manualSparePartById.get(manualSparePartId) : null;
+
         let partAmount = 0;
         if (catalog.spare_part_id && catalog.sparePart) {
-          partAmount = Number(catalog.sparePart.retail_price || 0);
+          partAmount = Number(catalog.sparePart.retail_price || 0) * discountFactor;
           await db.Quotation_Details.create(
             {
               quotation_id: quotation.id,
@@ -641,8 +514,23 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
             },
             { transaction },
           );
+        } else if (manualSparePart) {
+          partAmount = Number(manualSparePart.retail_price || 0) * discountFactor;
+          await db.Quotation_Details.create(
+            {
+              quotation_id: quotation.id,
+              issue_id: issue.id,
+              spare_part_id: manualSparePart.id,
+              quantity: 1,
+              unit_price: partAmount,
+              repair_price: 0,
+              amount: partAmount,
+              status: "PENDING",
+            },
+            { transaction },
+          );
         }
-        totalQuotationAmount += Number(catalog.labor_price || 0) + partAmount;
+        totalQuotationAmount += laborPrice + partAmount;
       }
 
       if (quotation) {
@@ -651,8 +539,8 @@ module.exports.createServiceOrder = async (data, receptionistId) => {
     }
 
     await transaction.commit();
-    console.log("[createServiceOrder] transaction commit xong, serviceOrder.id:", serviceOrder.id, "technicianId:", technicianId, "bayStatus:", bayStatus);
-    if (technicianId && bayStatus !== "WAITING") {
+    console.log("[createServiceOrder] transaction commit xong, serviceOrder.id:", serviceOrder.id, "technicianId:", technicianId);
+    if (technicianId) {
       await notifyUser(
         technicianId,
         {
@@ -765,17 +653,24 @@ module.exports.getServiceOrdersAwaitingPayment = async () => {
       {
         model: db.Vehicles,
         as: "vehicle",
-        attributes: ["id", "license_plate", "vin_number"],
+        attributes: ["id", "license_plate", "vin_number", "color", "year"],
         include: [
           {
             model: db.Vehicle_Models,
             as: "model",
             attributes: ["id", "model_name"],
+            include: [
+              {
+                model: db.Vehicle_Makes,
+                as: "make",
+                attributes: ["id", "make_name"],
+              },
+            ],
           },
           {
             model: db.Customers,
             as: "customer",
-            attributes: ["id", "name", "phone"],
+            attributes: ["id", "name", "phone", "loyalty_points"],
           },
         ],
       },
@@ -800,6 +695,7 @@ module.exports.getServiceOrdersAwaitingPayment = async () => {
           model: Quotation_Details,
           as: "items",
           attributes: ["id", "amount", "status"],
+          include: [{ model: db.Custom_Part_Orders, as: "customPartOrder", attributes: ["id"], required: false }],
         },
       ],
     });
@@ -815,19 +711,32 @@ module.exports.getServiceOrdersAwaitingPayment = async () => {
       (sum, q) => sum + q.items.filter((i) => i.status !== "CANCELLED").reduce((s, i) => s + Number(i.amount), 0),
       0,
     ) + rescuePrice;
-    const totalDeposit = quotations.reduce(
-      (sum, q) => sum + Number(q.deposit_amount || 0),
-      0,
-    );
+    // Cọc đã thu cho phụ tùng đặt riêng KHÔNG hoàn khi hạng mục đó bị hủy (đóng sớm) — nhưng
+    // cũng KHÔNG được trừ vào tiền phải trả của các hạng mục khác còn giữ. deposit_amount gốc
+    // là 30% gộp của MỌI dòng đặt riêng lúc duyệt — tính lại theo đúng công thức đó nhưng chỉ
+    // trên các dòng đặt riêng CÒN GIỮ (chưa CANCELLED). Nhận diện "dòng đặt riêng" bằng việc CÓ
+    // Custom_Part_Orders liên kết (không dùng status: nó đổi liên tục theo tiến trình xuất kho —
+    // PENDING/CUSTOM_ORDERED lúc tạo, EXPORTED sau khi xuất — nên không đáng tin để lọc).
+    const totalDeposit = quotations.reduce((sum, q) => {
+      const customItemsTotal = q.items
+        .filter((i) => i.status !== "CANCELLED" && i.customPartOrder)
+        .reduce((s, i) => s + Number(i.amount), 0);
+      return sum + Math.round(customItemsTotal * 0.3);
+    }, 0);
     const remainingAmount = grandTotal - totalDeposit;
-    if (remainingAmount > 0) {
-      result.push({
-        serviceOrder: order,
-        grandTotal,
-        totalDeposit,
-        remainingAmount,
-      });
-    }
+    if (remainingAmount <= 0) continue;
+
+    const bookingPayment = await db.Booking_Payments.findOne({
+      where: { order_id: order.id, payment_status: "PAID" },
+    });
+    if (bookingPayment) continue;
+
+    result.push({
+      serviceOrder: order,
+      grandTotal,
+      totalDeposit,
+      remainingAmount,
+    });
   }
 
   return result;
@@ -982,12 +891,14 @@ module.exports.getServiceOrderById = async (id) => {
 
   const rawServiceOrder = serviceOrder.toJSON();
 
-  // Fetch associated Quotation with items (both services and spare parts)
+  // Đơn có thể phát sinh nhiều Quotation theo thời gian (báo giá gốc lúc tạo đơn + báo giá
+  // phát sinh mỗi lần duyệt sửa chữa thêm), mỗi lần là 1 record Quotations riêng gắn với Task
+  // REPAIR mới — cần gộp items của TẤT CẢ Quotation lại, không chỉ lấy 1 bản ghi đầu tiên.
   const taskIds = rawServiceOrder.tasks ? rawServiceOrder.tasks.map(t => t.id) : [];
-  let quotation = null;
+  let quotations = [];
   if (taskIds.length > 0) {
-    quotation = await db.Quotations.findOne({
-      where: { 
+    quotations = await db.Quotations.findAll({
+      where: {
         task_id: { [db.Sequelize.Op.in]: taskIds }
       },
       include: [{
@@ -1010,10 +921,18 @@ module.exports.getServiceOrderById = async (id) => {
             attributes: ["id", "item_name", "quantity", "unit_price", "status"],
           }
         ]
-      }]
+      }],
+      order: [["id", "ASC"]],
     });
   }
-  rawServiceOrder.quotation = quotation ? quotation.toJSON() : null;
+  const quotationsJson = quotations.map((q) => q.toJSON());
+  rawServiceOrder.quotation = quotationsJson.length > 0
+    ? {
+        ...quotationsJson[0],
+        items: quotationsJson.flatMap((q) => q.items || []),
+        total_amount: quotationsJson.reduce((sum, q) => sum + Number(q.total_amount || 0), 0),
+      }
+    : null;
 
   if (rawServiceOrder.tasks) {
     rawServiceOrder.tasks = rawServiceOrder.tasks.map(task => {
@@ -1178,12 +1097,24 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
     if (!serviceOrder) {
       throw { status: 404, message: "Không tìm thấy lệnh sửa chữa" };
     }
+
+    const comboDetail = serviceOrder.appointment_id
+      ? await db.Appointment_Details.findOne({
+          where: { appointment_id: serviceOrder.appointment_id, combo_id: { [Op.not]: null } },
+          transaction,
+        })
+      : null;
+    if (comboDetail) {
+      throw {
+        status: 400,
+        message: "Lệnh sửa chữa thuộc gói combo, không thể đóng sớm. Vui lòng hoàn thành đầy đủ các hạng mục của combo.",
+      };
+    }
+
     if (serviceOrder.status === "COMPLETED") {
       throw { status: 400, message: "Lệnh sửa chữa đã hoàn thành, không thể đóng sớm" };
     }
 
-    // Lấy toàn bộ item (Quotation_Details) thuộc các Quotation APPROVED của service order này,
-    // kèm Task tương ứng (mỗi service item luôn sinh 1 Task REPAIR riêng khi được duyệt).
     const approvedQuotations = await Quotation.findAll({
       where: { status: "APPROVED" },
       include: [
@@ -1194,18 +1125,9 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
       transaction,
     });
 
-    if (approvedQuotations.length === 0) {
-      throw { status: 400, message: "Lệnh sửa chữa chưa có báo giá nào được duyệt để đóng sớm" };
-    }
-
-    // completedQuotationItemIds giờ mang nghĩa "chắc chắn giữ lại, không hủy" (lễ tân xác nhận
-    // cùng kỹ thuật viên là hạng mục này không thể/không nên hủy — ví dụ đã lắp vào xe), KHÔNG
-    // còn nghĩa "đã hoàn thành". Task tương ứng các item được giữ lại GIỮ NGUYÊN status hiện tại,
-    // để kỹ thuật viên tự cập nhật qua đúng luồng làm việc bình thường của họ — hệ thống không
-    // tự ý gán COMPLETED thay họ.
     const keepIdSet = new Set((completedQuotationItemIds || []).map((id) => Number(id)));
     const itemsToCancel = [];
-    const quotationsAffected = new Map(); // quotation_id -> Quotation instance
+    const quotationsAffected = new Map();
 
     for (const quotation of approvedQuotations) {
       for (const item of quotation.items) {
@@ -1218,10 +1140,6 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
       }
     }
 
-    // Không chặn khi itemsToCancel rỗng — trường hợp lễ tân tick TẤT CẢ hạng mục (mọi thứ đều
-    // giữ lại) vẫn là một lượt đóng sớm hợp lệ, chỉ là không có gì bị hủy cả.
-
-    // 1. Đánh dấu CANCELLED cho từng dòng báo giá không được giữ lại
     const itemIds = itemsToCancel.map((i) => i.id);
     let affectedTechnicianIds = [];
     if (itemIds.length > 0) {
@@ -1230,7 +1148,6 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
         { where: { id: itemIds }, transaction },
       );
 
-      // 2. Hủy các Task REPAIR tương ứng (mỗi item service tương ứng 1 Task qua quotation_item_id)
       const cancelledTaskIds = (
         await Tasks.findAll({
           where: { quotation_item_id: itemIds, status: ["PENDING", "IN_PROGRESS", "PAUSED", "WAITING_STOCK"] },
@@ -1245,9 +1162,6 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
           { where: { id: cancelledTaskIds }, transaction },
         );
 
-        // 2b. Hủy theo các Task_Assignment con của những Task vừa bị hủy — không để KTV vẫn
-        //     thấy việc này "đang active" trong danh sách công việc dù Task cha đã CANCELLED.
-        //     Lấy technician_id TRƯỚC khi update để còn báo cho họ biết dừng việc.
         const cancelledAssignments = await Task_Assignment.findAll({
           where: {
             task_id: cancelledTaskIds,
@@ -1271,16 +1185,6 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
       }
     }
 
-    // 3. KHÔNG đổi total_amount của Quotation — đây là con số khách đã duyệt (approved_at),
-    //    phải giữ nguyên làm bằng chứng lịch sử. Số tiền thực phải trả sau khi đóng sớm được
-    //    tính động ở nơi hiển thị/thanh toán (SUM các Quotation_Details chưa CANCELLED),
-    //    không ghi đè lên báo giá gốc.
-
-    // 4. Service_Order chỉ thật sự COMPLETED khi MỌI Task của nó đã ở trạng thái cuối
-    //    (COMPLETED hoặc CANCELLED) — không tự gán COMPLETED vô điều kiện chỉ vì lễ tân bấm nút.
-    //    "Đóng sớm" là hành động chủ động ghi nhận ý định dừng (lưu ở early_closure_reason),
-    //    còn status thật của đơn phải phản ánh đúng tình trạng Task, tránh nói dối là đã xong
-    //    trong khi vẫn còn công việc treo lại.
     const remainingTasks = await Tasks.findAll({
       where: { service_order_id: serviceOrderId },
       attributes: ["id", "status"],
@@ -1290,15 +1194,29 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
       ["COMPLETED", "CANCELLED"].includes(t.status?.toUpperCase()),
     );
 
+    const hasNoApprovedQuotation = approvedQuotations.length === 0;
+    const survivingItemCount = approvedQuotations.reduce(
+      (sum, quotation) =>
+        sum + quotation.items.filter((item) => item.status !== "CANCELLED" && !itemIds.includes(item.id)).length,
+      0,
+    );
+    const hasFullyCancelled = !hasNoApprovedQuotation && survivingItemCount === 0;
+    const isOrderFinished = hasNoApprovedQuotation || hasFullyCancelled || allTasksFinished;
+
     const updatePayload = { early_closure_reason: reason };
-    if (allTasksFinished) {
+    if (hasNoApprovedQuotation || hasFullyCancelled) {
+      updatePayload.status = "CANCELLED";
+      updatePayload.exit_time = serviceOrder.exit_time || new Date();
+    } else if (allTasksFinished) {
       updatePayload.status = "COMPLETED";
       updatePayload.actual_finish_time = new Date();
       updatePayload.exit_time = serviceOrder.exit_time || new Date();
+    } else {
+      updatePayload.status = "CLOSED_PARTIAL";
     }
     await serviceOrder.update(updatePayload, { transaction });
 
-    if (allTasksFinished && serviceOrder.bay_id) {
+    if (isOrderFinished && serviceOrder.bay_id) {
       await db.Service_Bays.update(
         { status: "available", current_service_order_id: null },
         { where: { id: serviceOrder.bay_id }, transaction },
@@ -1308,21 +1226,42 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
 
     await transaction.commit();
 
-    // Gửi thông báo SAU khi commit thành công, không giữ transaction chờ I/O thông báo.
     const customerUserId = serviceOrder.vehicle?.customer?.user_id;
     if (customerUserId) {
-      await notifyUser(
-        customerUserId,
-        {
+      const notificationByStatus = {
+        CANCELLED: {
+          title: "Lệnh sửa chữa đã bị hủy",
+          content: reason
+            ? `Xưởng đã hủy lệnh sửa chữa #${serviceOrderId}. Lý do: ${reason}`
+            : `Xưởng đã hủy lệnh sửa chữa #${serviceOrderId}.`,
+        },
+        COMPLETED: {
           title: "Lệnh sửa chữa đã đóng sớm",
           content: reason
             ? `Xưởng đã đóng sớm lệnh sửa chữa #${serviceOrderId} theo yêu cầu. Lý do: ${reason}`
             : `Xưởng đã đóng sớm lệnh sửa chữa #${serviceOrderId} theo yêu cầu của bạn.`,
+        },
+        CLOSED_PARTIAL: {
+          title: "Lệnh sửa chữa đã đóng một phần",
+          content: reason
+            ? `Xưởng đã hủy một phần hạng mục của lệnh sửa chữa #${serviceOrderId}, phần còn lại vẫn đang tiếp tục thực hiện. Lý do: ${reason}`
+            : `Xưởng đã hủy một phần hạng mục của lệnh sửa chữa #${serviceOrderId}, phần còn lại vẫn đang tiếp tục thực hiện.`,
+        },
+      };
+      const notificationTypeByStatus = {
+        CANCELLED: "SERVICE_ORDER_CANCELLED",
+        COMPLETED: "SERVICE_ORDER_CLOSED_EARLY",
+        CLOSED_PARTIAL: "SERVICE_ORDER_CLOSED_PARTIAL",
+      };
+      await notifyUser(
+        customerUserId,
+        {
+          ...notificationByStatus[updatePayload.status],
           notificationType: "SERVICE_ORDER",
           referenceId: serviceOrderId,
         },
         "new_notification",
-        { type: "SERVICE_ORDER_CLOSED_EARLY", serviceOrderId },
+        { type: notificationTypeByStatus[updatePayload.status], serviceOrderId },
       );
     }
     for (const technicianId of affectedTechnicianIds) {
@@ -1352,4 +1291,5 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
     throw error;
   }
 };
+
 
