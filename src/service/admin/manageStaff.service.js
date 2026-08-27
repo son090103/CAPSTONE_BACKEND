@@ -48,7 +48,7 @@ module.exports.getStaffList = async ({ page = 1, limit = 20, search, roleCode })
         attributes: ["id", "roleCode", "roleName"],
       },
     ],
-    attributes: ["id", "fullName", "phoneNumber", "status", "createdAt"],
+    attributes: ["id", "fullName", "phoneNumber", "status", "avatar", "createdAt"],
     order: [
       [
         db.sequelize.literal(`CASE 
@@ -76,7 +76,7 @@ module.exports.getStaffList = async ({ page = 1, limit = 20, search, roleCode })
   };
 };
 
-module.exports.createStaff = async ({ fullName, phoneNumber, roleCode, password }) => {
+module.exports.createStaff = async ({ fullName, phoneNumber, roleCode, password, avatar }) => {
   const normalizedPhone = await normalizeVnPhone(phoneNumber);
   if (!normalizedPhone) {
     throw { status: 400, message: "Số điện thoại không hợp lệ" };
@@ -101,11 +101,12 @@ module.exports.createStaff = async ({ fullName, phoneNumber, roleCode, password 
     password: hashedPassword,
     roleId: role.id,
     status: "ACTIVE",
+    avatar: avatar || null,
   });
 
   const createdUser = await User.findOne({
     where: { id: user.id },
-    attributes: ["id", "fullName", "phoneNumber", "status", "createdAt"],
+    attributes: ["id", "fullName", "phoneNumber", "status", "avatar", "createdAt"],
     include: [
       {
         model: Role,
@@ -161,6 +162,10 @@ module.exports.updateStaff = async (userId, payload) => {
     updates.status = payload.status.trim().toUpperCase();
   }
 
+  if (payload.avatar !== undefined) {
+    updates.avatar = payload.avatar;
+  }
+
   if (Object.keys(updates).length === 0) {
     throw { status: 400, message: "Vui lòng cung cấp ít nhất một trường để cập nhật" };
   }
@@ -169,7 +174,7 @@ module.exports.updateStaff = async (userId, payload) => {
 
   const updatedUser = await User.findOne({
     where: { id: user.id },
-    attributes: ["id", "fullName", "phoneNumber", "status", "createdAt"],
+    attributes: ["id", "fullName", "phoneNumber", "status", "avatar", "createdAt"],
     include: [
       {
         model: Role,
@@ -193,12 +198,15 @@ module.exports.getRoles = async (req, res) => {
 module.exports.getStaffPerformanceList = async (timeframe) => {
   try {
     const staffMembers = await User.findAll({
-      attributes: ["id", "fullName", "phoneNumber", "status", "createdAt"],
+      attributes: ["id", "fullName", "phoneNumber", "status", "avatar", "createdAt"],
       include: [
         {
           model: Role,
           as: "role",
           attributes: ["id", "roleCode", "roleName"],
+          where: {
+            roleCode: ["RECEPTIONIST", "TECHNICIAN", "TECHNICIAN_LEADER"]
+          }
         },
       ],
       where: {
@@ -258,7 +266,7 @@ module.exports.getStaffPerformanceList = async (timeframe) => {
       }
 
       // 3. Average Rating
-      let rating = 5.0;
+      let rating = 0;
       let feedbackCount = 0;
       if (roleCode === 'TECHNICIAN_LEADER') {
         const ratingRes = await db.Feedback.findOne({
@@ -269,7 +277,7 @@ module.exports.getStaffPerformanceList = async (timeframe) => {
           where: { head_technician_id: memberId }
         });
         const avg = ratingRes?.getDataValue('avgRating');
-        rating = avg !== null && avg !== undefined ? Number(avg) : 5.0;
+        rating = avg !== null && avg !== undefined ? Number(avg) : 0;
         feedbackCount = Number(ratingRes?.getDataValue('count') || 0);
       } else if (roleCode === 'RECEPTIONIST') {
         const ratingRes = await db.Feedback.findOne({
@@ -280,11 +288,11 @@ module.exports.getStaffPerformanceList = async (timeframe) => {
           where: { receptionist_id: memberId }
         });
         const avg = ratingRes?.getDataValue('avgRating');
-        rating = avg !== null && avg !== undefined ? Number(avg) : 5.0;
+        rating = avg !== null && avg !== undefined ? Number(avg) : 0;
         feedbackCount = Number(ratingRes?.getDataValue('count') || 0);
       } else {
         const ratingRes = await db.sequelize.query(`
-          SELECT COALESCE(AVG(f.service_rating), 5.0) AS "avgRating", COUNT(f.id) AS count
+          SELECT AVG(f.service_rating) AS "avgRating", COUNT(f.id) AS count
           FROM "Feedbacks" f
           JOIN "Tasks" t ON t.service_order_id = f.service_order_id
           JOIN "Task_Assignments" ta ON ta.task_id = t.id
@@ -293,7 +301,8 @@ module.exports.getStaffPerformanceList = async (timeframe) => {
           replacements: { memberId },
           type: db.sequelize.QueryTypes.SELECT
         });
-        rating = Number(ratingRes[0]?.avgRating || 5.0);
+        const avg = ratingRes[0]?.avgRating;
+        rating = avg !== null && avg !== undefined ? Number(avg) : 0;
         feedbackCount = Number(ratingRes[0]?.count || 0);
       }
 
@@ -304,6 +313,7 @@ module.exports.getStaffPerformanceList = async (timeframe) => {
         fullName: member.fullName,
         phoneNumber: member.phoneNumber,
         status: member.status,
+        avatar: member.avatar || null,
         createdAt: member.createdAt,
         roleName: member.role?.roleName || "Nhân viên",
         roleCode: member.role?.roleCode,
@@ -383,22 +393,23 @@ module.exports.getStaffFeedbacks = async (userId) => {
       let commentValue = fb.comment;
 
       if (roleCode === 'TECHNICIAN_LEADER') {
-        ratingValue = fb.head_technician_rating || fb.rating;
-        commentValue = fb.head_technician_comment || fb.comment;
+        ratingValue = fb.head_technician_rating !== null && fb.head_technician_rating !== undefined ? fb.head_technician_rating : 0;
+        commentValue = fb.head_technician_comment || 'Không có bình luận.';
       } else if (roleCode === 'RECEPTIONIST') {
-        ratingValue = fb.receptionist_rating || fb.rating;
-        commentValue = fb.receptionist_comment || fb.comment;
+        ratingValue = fb.receptionist_rating !== null && fb.receptionist_rating !== undefined ? fb.receptionist_rating : 0;
+        commentValue = fb.receptionist_comment || 'Không có bình luận.';
       } else {
-        ratingValue = fb.service_rating || fb.rating;
-        commentValue = fb.service_comment || fb.comment;
+        ratingValue = fb.service_rating !== null && fb.service_rating !== undefined ? fb.service_rating : 0;
+        commentValue = fb.service_comment || 'Không có bình luận.';
       }
 
       return {
         id: fb.id,
         customerName: fb.customer?.name || 'Khách hàng',
         customerPhone: fb.customer?.phone || '',
-        rating: ratingValue || 5,
-        comment: commentValue || 'Không có bình luận.',
+        rating: ratingValue,
+        comment: commentValue,
+        serviceOrderId: fb.serviceOrder?.id || fb.service_order_id,
         createdAt: fb.createdAt
       };
     });

@@ -11,6 +11,7 @@ const warrantyUpload = require("../../util/warrantyUpload.util");
 const technicalDocumentController = require("../../controller/admin/technicalDocument.controller");
 const technicalDocumentUpload = require("../../util/technicalDocumentUpload.util");
 const excelUpload = require("../../util/excelUpload.util");
+const upload = require("../../util/upload.util");
 const manageCustomer = require("./../../controller/admin/manageCustomer.controller");
 const shiftController = require('../../controller/admin/shift.controller');
 const statisticsController = require("../../controller/admin/statistics.controller");
@@ -21,6 +22,7 @@ router.get("/role", staffController.getRoles);
 router.get("/staff", staffController.getStaffList);
 router.get("/staff/performance", staffController.getStaffPerformance);
 router.get("/staff/:userId/feedbacks", staffController.getStaffFeedbacks);
+router.post("/staff/upload-avatar", upload.single("avatar"), staffController.uploadAvatar);
 router.post("/staff", staffController.createStaff);
 router.put("/staff/:userId", staffController.updateStaff);
 
@@ -67,7 +69,9 @@ router.delete("/technical-document/:id", technicalDocumentController.remove);
 router.get("/technical-document/:id/view-url", technicalDocumentController.getViewUrl);
 
 router.get("/customer", manageCustomer.getCustomer);
+router.post("/customer/upload-avatar", upload.single("avatar"), manageCustomer.uploadAvatar);
 router.post("/customer", manageCustomer.createCustomer);
+router.put("/customer/:id", manageCustomer.updateCustomer);
 router.get("/customer/:id", manageCustomer.getCustomerDetail);
 
 // Lấy danh sách khung ca
