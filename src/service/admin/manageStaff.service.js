@@ -49,7 +49,18 @@ module.exports.getStaffList = async ({ page = 1, limit = 20, search, roleCode })
       },
     ],
     attributes: ["id", "fullName", "phoneNumber", "status", "createdAt"],
-    order: [["createdAt", "DESC"]],
+    order: [
+      [
+        db.sequelize.literal(`CASE 
+          WHEN "role"."roleCode" = 'TECHNICIAN_LEADER' THEN 1 
+          WHEN "role"."roleCode" = 'TECHNICIAN' THEN 2 
+          WHEN "role"."roleCode" = 'RECEPTIONIST' THEN 3 
+          ELSE 4 
+        END`),
+        'ASC'
+      ],
+      ['createdAt', 'DESC']
+    ],
     limit: pageSize,
     offset,
   });

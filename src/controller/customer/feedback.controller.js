@@ -9,7 +9,15 @@ module.exports.submitFeedback = async (req, res) => {
     }
 
     const accountId = requestUser.id;
-    const { service_order_id, rating, comment } = req.body;
+    const {
+      service_order_id,
+      service_rating,
+      service_comment,
+      receptionist_rating,
+      receptionist_comment,
+      head_technician_rating,
+      head_technician_comment
+    } = req.body;
 
 
     const customer = await db.Customers.findOne({ where: { user_id: accountId } });
@@ -20,8 +28,12 @@ module.exports.submitFeedback = async (req, res) => {
 
     const validation = submitFeedbackSchema.safeParse({
       service_order_id,
-      rating,
-      comment
+      service_rating,
+      service_comment,
+      receptionist_rating,
+      receptionist_comment,
+      head_technician_rating,
+      head_technician_comment
     });
 
     if (!validation.success) {
@@ -30,9 +42,7 @@ module.exports.submitFeedback = async (req, res) => {
 
     const result = await feedbackService.submitFeedback(
       customerId,
-      validation.data.service_order_id,
-      validation.data.rating,
-      validation.data.comment
+      validation.data
     );
 
     return res.status(201).json({ message: "Gửi phản hồi thành công", data: result });

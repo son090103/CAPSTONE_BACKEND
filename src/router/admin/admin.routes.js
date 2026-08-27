@@ -57,6 +57,7 @@ router.post("/warranty-policy", warrantyUpload.fields([{ name: "image_cover", ma
 router.put("/warranty-policy/:id", warrantyUpload.fields([{ name: "image_cover", maxCount: 1 }, { name: "pdf_document", maxCount: 1 }]), warrantyController.updateWarrantyPolicy);
 
 router.get("/customer", manageCustomer.getCustomer);
+router.post("/customer", manageCustomer.createCustomer);
 router.get("/customer/:id", manageCustomer.getCustomerDetail);
 
 // Lấy danh sách khung ca

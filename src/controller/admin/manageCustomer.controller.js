@@ -22,3 +22,12 @@ module.exports.getCustomerDetail = async (req, res) => {
         return res.status(500).json({ success: false, message: "Lỗi Server", error: error.message });
     }
 };
+
+module.exports.createCustomer = async (req, res) => {
+    try {
+        const result = await manageCustomerService.createCustomer(req.body);
+        return res.status(201).json(result);
+    } catch (error) {
+        return res.status(400).json({ success: false, message: error.message });
+    }
+};
