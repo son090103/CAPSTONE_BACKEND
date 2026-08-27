@@ -15,6 +15,16 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'service_order_id',
         as: 'serviceOrder'
       });
+
+      this.belongsTo(models.User, {
+        foreignKey: 'receptionist_id',
+        as: 'receptionist'
+      });
+
+      this.belongsTo(models.User, {
+        foreignKey: 'head_technician_id',
+        as: 'headTechnician'
+      });
     }
   }
 
@@ -39,7 +49,51 @@ module.exports = (sequelize, DataTypes) => {
     comment: {
       type: DataTypes.TEXT,
       allowNull: false,
-            comment: 'Bình luận/phản hồi của khách hàng'
+      comment: 'Bình luận/phản hồi của khách hàng'
+    },
+    service_rating: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      validate: {
+        min: 1,
+        max: 5
+      }
+    },
+    service_comment: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
+    receptionist_rating: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      validate: {
+        min: 1,
+        max: 5
+      }
+    },
+    receptionist_comment: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
+    receptionist_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
+    },
+    head_technician_rating: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      validate: {
+        min: 1,
+        max: 5
+      }
+    },
+    head_technician_comment: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
+    head_technician_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true
     }
   }, {
     sequelize,

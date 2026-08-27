@@ -19,6 +19,8 @@ const garageConfigurationsController = require("../../controller/common/garageCo
 
 router.get("/role", staffController.getRoles);
 router.get("/staff", staffController.getStaffList);
+router.get("/staff/performance", staffController.getStaffPerformance);
+router.get("/staff/:userId/feedbacks", staffController.getStaffFeedbacks);
 router.post("/staff", staffController.createStaff);
 router.put("/staff/:userId", staffController.updateStaff);
 
@@ -64,6 +66,7 @@ router.post("/technical-document", technicalDocumentUpload.fields([{ name: "pdf_
 router.delete("/technical-document/:id", technicalDocumentController.remove);
 
 router.get("/customer", manageCustomer.getCustomer);
+router.post("/customer", manageCustomer.createCustomer);
 router.get("/customer/:id", manageCustomer.getCustomerDetail);
 
 // Lấy danh sách khung ca
