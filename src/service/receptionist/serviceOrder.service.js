@@ -1119,7 +1119,14 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
       where: { status: "APPROVED" },
       include: [
         { model: Tasks, as: "task", attributes: ["id"], where: { service_order_id: serviceOrderId }, required: true },
-        { model: QuotationDetail, as: "items" },
+        {
+          model: QuotationDetail,
+          as: "items",
+          // customPartOrder để nhận diện dòng nào là phụ tùng đặt riêng khi tính lại tiền cọc.
+          include: [
+            { model: db.Custom_Part_Orders, as: "customPartOrder", attributes: ["id"], required: false },
+          ],
+        },
       ],
       order: [["createdAt", "ASC"]],
       transaction,
@@ -1128,6 +1135,9 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
     const keepIdSet = new Set((completedQuotationItemIds || []).map((id) => Number(id)));
     const itemsToCancel = [];
     const quotationsAffected = new Map();
+    const customPartDetailIdSet = new Set(
+      approvedQuotations.flatMap((q) => q.items.filter((i) => i.customPartOrder).map((i) => i.id)),
+    );
 
     for (const quotation of approvedQuotations) {
       for (const item of quotation.items) {
@@ -1147,6 +1157,42 @@ module.exports.closeServiceOrderEarly = async (serviceOrderId, completedQuotatio
         { status: "CANCELLED" },
         { where: { id: itemIds }, transaction },
       );
+
+      // Hủy luôn đơn đặt hàng phụ tùng đặt riêng gắn với các dòng vừa hủy — nếu bỏ sót, đơn
+      // vẫn nằm WAITING_DEPOSIT/WAITING_ARRIVAL vĩnh viễn dù hạng mục đã bị loại khỏi hóa đơn.
+      await db.Custom_Part_Orders.update(
+        { status: "CANCELLED" },
+        {
+          where: {
+            quotation_detail_id: itemIds,
+            status: { [Op.notIn]: ["EXPORTED", "CANCELLED"] },
+          },
+          transaction,
+        },
+      );
+
+      // Tính lại tiền cọc của từng báo giá bị ảnh hưởng: cọc = 30% tổng tiền các dòng phụ tùng
+      // đặt riêng CÒN LẠI (giống công thức lúc lập báo giá). Nếu không cập nhật, báo giá vẫn ghi
+      // deposit_amount cũ và tiếp tục hiện "Chờ đặt cọc" dù món cần cọc đã bị hủy.
+      for (const quotation of quotationsAffected.values()) {
+        if (quotation.deposit_paid_at) continue;
+        const survivingCustomTotal = quotation.items
+          .filter(
+            (item) =>
+              item.status !== "CANCELLED" &&
+              !itemIds.includes(item.id) &&
+              !item.service_id &&
+              customPartDetailIdSet.has(item.id),
+          )
+          .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+        const newDeposit = Math.round(survivingCustomTotal * 0.3);
+        if (Number(quotation.deposit_amount || 0) !== newDeposit) {
+          await Quotation.update(
+            { deposit_amount: newDeposit },
+            { where: { id: quotation.id }, transaction },
+          );
+        }
+      }
 
       const cancelledTaskIds = (
         await Tasks.findAll({

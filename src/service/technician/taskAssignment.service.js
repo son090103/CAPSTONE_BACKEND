@@ -503,20 +503,31 @@ module.exports.completeTask = async (
       message: "Còn phụ tùng chưa nhận đủ, chưa thể hoàn thành công việc.",
     };
   }
-  await taskAssignment.update({
-    status: "COMPLETED",
-    actual_end_time: new Date(),
-  });
   const taskId = task.id;
   const serviceOrderId = task.service_order_id;
+  // Task REPAIR: KTV chỉ báo "đã làm xong", phải chờ KTV trưởng nghiệm thu (completeTaskByLeader)
+  // mới thực sự COMPLETED — nên dừng ở PENDING_QC, không đóng task/đơn ở đây.
+  // Task INSPECTION giữ nguyên hành vi cũ (xong thẳng), vì sau đó đã có bước tạo báo cáo lỗi.
+  const isRepairTask = task.type === "REPAIR";
+  await taskAssignment.update({
+    status: isRepairTask ? "PENDING_QC" : "COMPLETED",
+    actual_end_time: new Date(),
+  });
+
+  // Ghi chú sửa chữa KTV nhập lúc báo xong — lưu ngay, không đợi tới lúc nghiệm thu.
+  if (isRepairTask && content && content.trim()) {
+    await Repair_Notes.create({ task_id: taskId, content: content.trim() });
+  }
 
   const technician = await Users.findByPk(technicianId, { attributes: ["fullName"] });
   const catalog = await Service_Catalog.findByPk(task.service_catalog_id, { attributes: ["service_name"] });
-  const completedContent = `KTV ${technician?.fullName || "?"} vừa hoàn thành "${catalog?.service_name || "công việc"}" (SO-${serviceOrderId}).`;
+  const completedContent = isRepairTask
+    ? `KTV ${technician?.fullName || "?"} báo đã xong "${catalog?.service_name || "công việc"}" (SO-${serviceOrderId}), chờ bạn nghiệm thu.`
+    : `KTV ${technician?.fullName || "?"} vừa hoàn thành "${catalog?.service_name || "công việc"}" (SO-${serviceOrderId}).`;
   await notifyRole(
     "TECHNICIAN_LEADER",
     {
-      title: "Công việc vừa hoàn thành",
+      title: isRepairTask ? "Công việc chờ nghiệm thu" : "Công việc vừa hoàn thành",
       content: completedContent,
       notificationType: "SERVICE_ORDER",
       referenceId: serviceOrderId,
@@ -528,28 +539,13 @@ module.exports.completeTask = async (
     { type: "TASK_COMPLETED", serviceOrderId, taskId, message: completedContent },
   );
 
-  const remainingAsg = await Task_Assignments.count({
-    where: { task_id: taskId, status: { [Op.ne]: "COMPLETED" } },
-  });
-  if (remainingAsg === 0) {
-    await Tasks.update({ status: "COMPLETED" }, { where: { id: taskId } });
-    if (task.type === "REPAIR") {
-      const remainingRepair = await Tasks.count({
-        where: {
-          service_order_id: serviceOrderId,
-          type: "REPAIR",
-          status: { [Op.notIn]: ["COMPLETED", "CANCELLED"] },
-        },
-      });
-      if (remainingRepair === 0) {
-        await completeServiceOrder(serviceOrderId);
-      }
-      if (content && content.trim()) {
-        await Repair_Notes.create({
-          task_id: taskId,
-          content: content.trim(),
-        });
-      }
+  // Chỉ INSPECTION mới tự đóng task khi hết assignment — REPAIR đợi KTV trưởng nghiệm thu.
+  if (!isRepairTask) {
+    const remainingAsg = await Task_Assignments.count({
+      where: { task_id: taskId, status: { [Op.ne]: "COMPLETED" } },
+    });
+    if (remainingAsg === 0) {
+      await Tasks.update({ status: "COMPLETED" }, { where: { id: taskId } });
     }
   }
   emitProgress(serviceOrderId, { type: "PROGRESS_UPDATED", taskId });

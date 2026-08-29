@@ -507,20 +507,20 @@ module.exports.getServiceOrdersWithTasks = async () => {
   return serviceOrders;
 };
 
-// Kỹ thuật viên trưởng tới hiện trường xem trực tiếp sau khi thợ báo xong bằng miệng, tự tay
-// đánh dấu hoàn thành thay vì bắt thợ tự bấm — chỉ áp dụng cho assignment đang IN_PROGRESS.
-// Không còn bước "nghiệm thu tổng thể" chờ duyệt: hết task REPAIR của Service Order thì đơn
-// tự động chuyển thẳng COMPLETED (dùng chung completeServiceOrder bên technician).
+// Kỹ thuật viên trưởng nghiệm thu công việc: áp dụng cho assignment đang IN_PROGRESS (thợ báo
+// xong bằng miệng, trưởng tới xem rồi tự tay bấm) HOẶC đang PENDING_QC (thợ đã tự bấm "hoàn tất"
+// trên máy, task REPAIR dừng chờ nghiệm thu). Chỉ khi trưởng xác nhận thì task mới COMPLETED và
+// đơn mới được đóng nếu đã hết task REPAIR (dùng chung completeServiceOrder bên technician).
 module.exports.completeTaskByLeader = async (taskAssignmentId) => {
   const { completeServiceOrder, hasAllPartsReady } = require("../technician/taskAssignment.service");
   const taskAssignment = await Task_Assignment.findOne({
-    where: { id: taskAssignmentId, status: "IN_PROGRESS" },
+    where: { id: taskAssignmentId, status: { [Op.in]: ["IN_PROGRESS", "PENDING_QC"] } },
     include: [
       { model: Task, as: "task", attributes: ["id", "service_order_id", "type", "quotation_item_id"] },
     ],
   });
   if (!taskAssignment) {
-    throw { status: 404, message: "Không tìm thấy công việc đang thực hiện." };
+    throw { status: 404, message: "Không tìm thấy công việc đang thực hiện hoặc chờ nghiệm thu." };
   }
   const task = taskAssignment.task;
   const allReady = await hasAllPartsReady(task);
