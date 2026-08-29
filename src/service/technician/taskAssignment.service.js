@@ -512,17 +512,20 @@ module.exports.completeTask = async (
 
   const technician = await Users.findByPk(technicianId, { attributes: ["fullName"] });
   const catalog = await Service_Catalog.findByPk(task.service_catalog_id, { attributes: ["service_name"] });
+  const completedContent = `KTV ${technician?.fullName || "?"} vừa hoàn thành "${catalog?.service_name || "công việc"}" (SO-${serviceOrderId}).`;
   await notifyRole(
     "TECHNICIAN_LEADER",
     {
       title: "Công việc vừa hoàn thành",
-      content: `KTV ${technician?.fullName || "?"} vừa hoàn thành "${catalog?.service_name || "công việc"}" (SO-${serviceOrderId}).`,
+      content: completedContent,
       notificationType: "SERVICE_ORDER",
       referenceId: serviceOrderId,
       priority: "HIGH",
     },
     "urgent_notification",
-    { type: "TASK_COMPLETED", serviceOrderId, taskId },
+    // message: FE dùng để hiện card cảnh báo nổi (giống cảnh báo tồn kho thấp bên thủ kho) —
+    // trước đây chỉ gửi type/id, FE phải tự hiện câu chung chung, không có nội dung chi tiết.
+    { type: "TASK_COMPLETED", serviceOrderId, taskId, message: completedContent },
   );
 
   const remainingAsg = await Task_Assignments.count({

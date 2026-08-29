@@ -1,9 +1,37 @@
 const db = require("../../../models");
 
+// Giá trị mặc định dùng khi chưa seed config trong Garage_Configurations (vd môi trường mới,
+// hoặc admin lỡ xóa key) — để addPointsOnPayment không bao giờ throw ra ngoài luồng thanh toán.
+const DEFAULT_LOYALTY_CONFIG = {
+    LOYALTY_TIER_SILVER_THRESHOLD: 10000000,
+    LOYALTY_TIER_GOLD_THRESHOLD: 30000000,
+    LOYALTY_TIER_PLATINUM_THRESHOLD: 50000000,
+    LOYALTY_MULTIPLIER_BRONZE: 1,
+    LOYALTY_MULTIPLIER_SILVER: 1.5,
+    LOYALTY_MULTIPLIER_GOLD: 2,
+    LOYALTY_MULTIPLIER_PLATINUM: 2.5,
+};
+
+// Đọc toàn bộ config hạng thành viên trong 1 query duy nhất (thay vì 5 query riêng lẻ) — admin
+// có thể sửa các giá trị này qua trang cấu hình chung (Garage_Configurations).
+const getLoyaltyConfig = async () => {
+    const keys = Object.keys(DEFAULT_LOYALTY_CONFIG);
+    const rows = await db.Garage_Configurations.findAll({
+        where: { config_key: keys },
+        attributes: ['config_key', 'config_value']
+    });
+    const config = { ...DEFAULT_LOYALTY_CONFIG };
+    rows.forEach(row => {
+        const parsed = Number(row.config_value);
+        if (Number.isFinite(parsed)) config[row.config_key] = parsed;
+    });
+    return config;
+};
+
 /**
  * Handle adding points when a service order is paid
- * @param {number} serviceOrderId 
- * @param {number} paidAmount 
+ * @param {number} serviceOrderId
+ * @param {number} paidAmount
  */
 const addPointsOnPayment = async (serviceOrderId, paidAmount) => {
     try {
@@ -23,21 +51,30 @@ const addPointsOnPayment = async (serviceOrderId, paidAmount) => {
         }
 
         const customer = serviceOrder.vehicle.customer;
-        
+        const loyaltyConfig = await getLoyaltyConfig();
+
         const oldTotalSpent = parseFloat(customer.total_spent) || 0;
         const newTotalSpent = oldTotalSpent + parseFloat(paidAmount);
 
-        let newTier = customer.membership_tier;
-        if (newTotalSpent >= 30000000) {
-            newTier = 'GOLD';
-        } else if (newTotalSpent >= 10000000) {
-            if (newTier !== 'GOLD') newTier = 'SILVER';
-        }
+        // Hạng chỉ tăng, không bao giờ hạ (dù total_spent chỉ tăng dần nên về lý thuyết không xảy
+        // ra, giữ TIER_RANK để so sánh an toàn nếu sau này có logic hoàn tiền/trừ total_spent).
+        const TIER_RANK = { BRONZE: 0, SILVER: 1, GOLD: 2, PLATINUM: 3 };
+        let computedTier = 'BRONZE';
+        if (newTotalSpent >= loyaltyConfig.LOYALTY_TIER_PLATINUM_THRESHOLD) computedTier = 'PLATINUM';
+        else if (newTotalSpent >= loyaltyConfig.LOYALTY_TIER_GOLD_THRESHOLD) computedTier = 'GOLD';
+        else if (newTotalSpent >= loyaltyConfig.LOYALTY_TIER_SILVER_THRESHOLD) computedTier = 'SILVER';
 
-        let multiplier = 1;
+        const currentRank = TIER_RANK[customer.membership_tier] ?? 0;
+        const newTier = TIER_RANK[computedTier] > currentRank ? computedTier : customer.membership_tier;
+
+        const MULTIPLIER_BY_TIER = {
+            BRONZE: loyaltyConfig.LOYALTY_MULTIPLIER_BRONZE,
+            SILVER: loyaltyConfig.LOYALTY_MULTIPLIER_SILVER,
+            GOLD: loyaltyConfig.LOYALTY_MULTIPLIER_GOLD,
+            PLATINUM: loyaltyConfig.LOYALTY_MULTIPLIER_PLATINUM,
+        };
         // Dùng hạng thành viên hiện tại để tính điểm cho lần thanh toán này
-        if (newTier === 'SILVER') multiplier = 1.5;
-        if (newTier === 'GOLD') multiplier = 2.0;
+        const multiplier = MULTIPLIER_BY_TIER[newTier] ?? loyaltyConfig.LOYALTY_MULTIPLIER_BRONZE;
 
         const oldBasePoints = Math.floor(oldTotalSpent / 100000);
         const newBasePoints = Math.floor(newTotalSpent / 100000);

@@ -490,6 +490,15 @@ module.exports.getServiceOrdersWithTasks = async () => {
               { model: User, as: "technician", attributes: ["id", "fullName"] },
             ],
           },
+          // Dùng để FE biết task INSPECTION đã COMPLETED (do KTV tự bấm hoàn thành, không
+          // phải Leader xác nhận) đã được ghi báo cáo lỗi chưa — nếu chưa thì hiện nút
+          // "Tạo báo cáo lỗi" riêng, vì luồng Leader tự xác nhận đã tự hỏi lỗi sẵn rồi.
+          {
+            model: Vehicle_Issues,
+            as: "issues",
+            attributes: ["id"],
+            required: false,
+          },
         ],
       },
     ],
