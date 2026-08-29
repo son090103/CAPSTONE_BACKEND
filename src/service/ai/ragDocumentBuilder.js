@@ -1,5 +1,6 @@
 const db = require('../../../models');
 const { workflows } = require('./customerUiKnowledge');
+const { RecursiveCharacterTextSplitter } = require('@langchain/textsplitters');
 
 const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
 const doc = (id, type, sourceId, text, metadata = {}) => ({
@@ -42,23 +43,6 @@ async function comboDocuments() {
       { service_ids: services.map(item => String(item.id)) }
     );
   });
-}
-
-async function diagnosticDocuments() {
-  if (!db.Diagnostic_Knowledge) return [];
-  const rows = await db.Diagnostic_Knowledge.findAll({
-    include: [
-      { model: db.Vehicle_Makes, as: 'make', attributes: ['make_name'], required: false },
-      { model: db.Vehicle_Models, as: 'model', attributes: ['model_name'], required: false }
-    ]
-  });
-  return rows.filter(row => clean(row.symptom).length >= 8 && clean(row.possible_causes).length >= 8).map(row => doc(
-    row.id, 'diagnostic', row.id,
-    `Triệu chứng: ${row.symptom}. Nguyên nhân có thể: ${row.possible_causes}. ` +
-    `Áp dụng: ${row.make?.make_name || 'mọi hãng'} ${row.model?.model_name || ''}. ` +
-    `Đây là đánh giá sơ bộ; phải kiểm tra xe thực tế trước khi kết luận. Nếu có dấu hiệu mất an toàn, ưu tiên dừng xe và gọi cứu hộ.`,
-    { ...(row.make_id ? { make_id: row.make_id } : {}), ...(row.model_id ? { model_id: row.model_id } : {}) }
-  ));
 }
 
 async function componentDocuments() {
@@ -162,10 +146,28 @@ async function repairCaseDocuments() {
   });
 }
 
+// Tài liệu kỹ thuật (PDF admin upload theo hãng xe) — khác các builder khác vì 1 record DB
+// có thể sinh ra NHIỀU document (chunk), do nội dung PDF thường dài hàng chục trang, không thể
+// nhét nguyên văn vào 1 vector. Chunk trước rồi mới clean() từng đoạn, để giữ ranh giới đoạn/câu
+// tự nhiên (RecursiveCharacterTextSplitter ưu tiên cắt tại \n\n, \n rồi mới đến khoảng trắng).
+//
+// Tách riêng thành hàm dùng chung cho 1 record — để service upload có thể chunk & upsert NGAY
+// tài liệu vừa tạo lên Pinecone (không cần đợi admin chạy tay script rag:sync), đồng thời vẫn
+// tái dùng được cho lần đồng bộ toàn bộ (technicalDocumentDocuments bên dưới).
+async function buildTechnicalDocumentChunks(row) {
+  if (!row.extracted_text || row.extracted_text.trim().length < 20) return [];
+  const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 800, chunkOverlap: 100 });
+  const chunks = await splitter.splitText(row.extracted_text);
+  return chunks.map((chunkText, index) => doc(
+    `${row.id}-${index}`, 'technical_document', row.id,
+    `Tài liệu kỹ thuật "${row.title}" (hãng ${row.make?.make_name || 'không xác định'}), phần ${index + 1}/${chunks.length}: ${chunkText}`,
+    { make_id: row.make_id }
+  ));
+}
+
 const builders = {
   service: serviceDocuments,
   service_combo: comboDocuments,
-  diagnostic: diagnosticDocuments,
   vehicle_component: componentDocuments,
   spare_part: sparePartDocuments,
   warranty_policy: warrantyDocuments,
@@ -181,4 +183,4 @@ async function buildRagDocuments(selectedTypes = Object.keys(builders)) {
   return { groups, documents: groups.flatMap(group => group.documents) };
 }
 
-module.exports = { buildRagDocuments, RAG_TYPES: Object.keys(builders) };
+module.exports = { buildRagDocuments, buildTechnicalDocumentChunks, RAG_TYPES: Object.keys(builders) };

@@ -8,7 +8,7 @@ const mockViewImportDetail = jest.fn();
 const mockViewExportHistory = jest.fn();
 const mockViewExportDetail = jest.fn();
 const mockGetWaitingStockItems = jest.fn();
-const mockImportSparePartForOrderItem = jest.fn();
+const mockGetRestockSuggestions = jest.fn();
 
 jest.mock("../../../service/inventory/importAndExportManagement.service", () => ({
   importSparePart: mockImportSparePart,
@@ -21,7 +21,7 @@ jest.mock("../../../service/inventory/importAndExportManagement.service", () => 
   viewExportHistory: mockViewExportHistory,
   viewExportDetail: mockViewExportDetail,
   getWaitingStockItems: mockGetWaitingStockItems,
-  importSparePartForOrderItem: mockImportSparePartForOrderItem,
+  getRestockSuggestions: mockGetRestockSuggestions,
 }));
 
 jest.mock("jsonwebtoken");
@@ -487,37 +487,32 @@ describe("ImportAndExportManagement Controller", () => {
     });
   });
 
-  // ==================== importSparePartForOrderItem ====================
-  describe("importSparePartForOrderItem", () => {
-    it("should return 400 when validation fails", async () => {
-      const req = { body: { supplier_id: 1, items: [] } };
+  // ==================== getRestockSuggestions ====================
+  describe("getRestockSuggestions", () => {
+    it("should return 200 and restock suggestions", async () => {
+      const fakeSuggestions = [{ spare_part_id: 1, recommended_quantity: 10 }];
+      mockGetRestockSuggestions.mockResolvedValue(fakeSuggestions);
+      const req = {};
       const res = createMockResponse();
 
-      await controller.importSparePartForOrderItem(req, res);
+      await controller.getRestockSuggestions(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(mockImportSparePartForOrderItem).not.toHaveBeenCalled();
+      expect(mockGetRestockSuggestions).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ data: fakeSuggestions });
     });
 
-    it("should return 201 when import for order item succeeds", async () => {
-      const fakeResult = { id: 5 };
-      mockImportSparePartForOrderItem.mockResolvedValue(fakeResult);
-      const req = {
-        body: {
-          supplier_id: 1,
-          items: [{ quotation_item_id: 12, quantity: 2, unit_price: 50000, part_id: 1 }],
-        },
-      };
+    it("should return error when service throws", async () => {
+      const error = new Error("Restock recommendation failure");
+      error.status = 500;
+      mockGetRestockSuggestions.mockRejectedValue(error);
+      const req = {};
       const res = createMockResponse();
 
-      await controller.importSparePartForOrderItem(req, res);
+      await controller.getRestockSuggestions(req, res);
 
-      expect(mockImportSparePartForOrderItem).toHaveBeenCalledWith(1, 1, [{ quotation_item_id: 12, quantity: 2, unit_price: 50000, part_id: 1 }]);
-      expect(res.status).toHaveBeenCalledWith(201);
-      expect(res.json).toHaveBeenCalledWith({
-        message: "Nhập kho cho đơn đặt riêng thành công",
-        data: fakeResult,
-      });
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ message: "Restock recommendation failure" });
     });
   });
 

@@ -31,6 +31,8 @@ const createMockResponse = () => {
   return res;
 };
 
+const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
 describe("FE-09: Rescue & Payment Controller Tests (Customer Role)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -53,7 +55,7 @@ describe("FE-09: Rescue & Payment Controller Tests (Customer Role)", () => {
         body: {
           vehicle_plate: "30A-888.88",
           booking_type: "CUSTOMER_REPAIR",
-          scheduled_time: "2026-08-04T15:00:00.000Z",
+          scheduled_time: futureDate,
           notes: "Cứu hộ chết máy tại 45 Lê Văn Lương",
         },
       };
@@ -91,7 +93,7 @@ describe("FE-09: Rescue & Payment Controller Tests (Customer Role)", () => {
         body: {
           vehicle_plate: "30A-888.88",
           booking_type: "CUSTOMER_REPAIR",
-          scheduled_time: "2026-08-04T15:00:00.000Z",
+          scheduled_time: futureDate,
         },
       };
       const res = createMockResponse();
@@ -110,7 +112,7 @@ describe("FE-09: Rescue & Payment Controller Tests (Customer Role)", () => {
         body: {
           vehicle_plate: "30A-888.88",
           booking_type: "CUSTOMER_REPAIR",
-          scheduled_time: "2026-08-04T15:00:00.000Z",
+          scheduled_time: futureDate,
         },
       };
       const res = createMockResponse();
@@ -245,6 +247,58 @@ describe("FE-09: Rescue & Payment Controller Tests (Customer Role)", () => {
       const res = createMockResponse();
 
       await paymentController.initPayment(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "Internal server error" });
+    });
+
+    it("UTCID13 - Process Payment - should return 200 OK for confirmPayment when orderId and method provided", async () => {
+      const mockResult = { payment_id: 100, status: "PAID" };
+      paymentService.confirmPayment.mockResolvedValue(mockResult);
+
+      const req = { body: { orderId: 10, amount: 500000, method: "VIETQR" } };
+      const res = createMockResponse();
+      res.locals.user = { id: 3 };
+
+      await paymentController.confirmPayment(req, res);
+
+      expect(paymentService.confirmPayment).toHaveBeenCalledWith(10, 500000, "VIETQR", 3, undefined);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ success: true, data: mockResult });
+    });
+
+    it("UTCID14 - Process Payment - should default method and pass receptionistId as null when confirmPayment called without user", async () => {
+      const mockResult = { payment_id: 101, status: "PAID" };
+      paymentService.confirmPayment.mockResolvedValue(mockResult);
+
+      const req = { body: { orderId: 11, amount: 150000, pointsRedeemed: 100 } };
+      const res = createMockResponse();
+
+      await paymentController.confirmPayment(req, res);
+
+      expect(paymentService.confirmPayment).toHaveBeenCalledWith(11, 150000, "VIETQR", null, 100);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ success: true, data: mockResult });
+    });
+
+    it("UTCID15 - Process Payment - should return 400 Bad Request when orderId is missing in confirmPayment", async () => {
+      const req = { body: { amount: 200000 } };
+      const res = createMockResponse();
+
+      await paymentController.confirmPayment(req, res);
+
+      expect(paymentService.confirmPayment).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ success: false, message: "Missing orderId" });
+    });
+
+    it("UTCID16 - Process Payment - should return 500 Internal Server Error when confirmPayment fails", async () => {
+      paymentService.confirmPayment.mockRejectedValue(new Error("Sepay confirmation failed"));
+
+      const req = { body: { orderId: 10, amount: 500000 } };
+      const res = createMockResponse();
+
+      await paymentController.confirmPayment(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ success: false, message: "Internal server error" });

@@ -29,6 +29,7 @@ module.exports.createStaff = async (req, res) => {
       roleCode: req.body.roleCode,
       password: req.body.password,
       confirmPassword: req.body.confirmPassword,
+      avatar: req.body.avatar,
     });
     if (!validation.success) {
       return res.status(400).json({ message: validation.error.issues[0].message });
@@ -53,6 +54,7 @@ module.exports.updateStaff = async (req, res) => {
       phoneNumber: req.body.phoneNumber,
       roleCode: req.body.roleCode,
       status: req.body.status,
+      avatar: req.body.avatar,
     });
     if (!validation.success) {
       return res.status(400).json({ message: validation.error.issues[0].message });
@@ -69,6 +71,23 @@ module.exports.updateStaff = async (req, res) => {
   }
 };
 
+const { uploadToCloudinary } = require("../../helper/uploadToCloudinary.helper");
+
+module.exports.uploadAvatar = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "Vui lòng chọn ảnh đại diện" });
+    }
+    const result = await uploadToCloudinary(req.file.buffer, "avatars", false);
+    return res.status(200).json({
+      success: true,
+      url: result.secure_url,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || "Lỗi upload avatar" });
+  }
+};
+
 module.exports.getRoles = async (req,res) =>{
   try {
     const roles = await staffService.getRoles();
@@ -77,5 +96,31 @@ module.exports.getRoles = async (req,res) =>{
     });
   } catch (error) {
     return res.status(error.status || 500).json({ message: error.message || "Internal server error" });
+  }
+};
+
+module.exports.getStaffPerformance = async (req, res) => {
+  try {
+    const { timeframe } = req.query;
+    const result = await staffService.getStaffPerformanceList(timeframe);
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports.getStaffFeedbacks = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const result = await staffService.getStaffFeedbacks(userId);
+    return res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
   }
 };

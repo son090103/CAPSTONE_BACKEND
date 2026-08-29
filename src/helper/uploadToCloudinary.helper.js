@@ -6,6 +6,7 @@ const uploadToCloudinary = (fileBuffer, folder, isPdf = false) => {
         const options = { folder: folder || "WDP301" };
         if (isPdf) {
             options.resource_type = "raw";
+            options.format = "pdf";
         }
         const stream = cloudinary.uploader.upload_stream(options, (error, result) => {
             if (error) return reject(error);

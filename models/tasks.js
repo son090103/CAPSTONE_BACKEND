@@ -42,6 +42,12 @@ module.exports = (sequelize, DataTypes) => {
           as: "quotations",
         });
       }
+      if (models.Vehicle_Issues) {
+        Task.hasMany(models.Vehicle_Issues, {
+          foreignKey: "task_id",
+          as: "issues",
+        });
+      }
     }
   }
 

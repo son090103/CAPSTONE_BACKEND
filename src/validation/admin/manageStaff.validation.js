@@ -18,6 +18,7 @@ const createStaffSchema = z
       .min(6, "Mật khẩu phải có ít nhất 8 ký tự")
       .optional(),
     confirmPassword: z.string().optional(),
+    avatar: z.string().optional().nullable(),
   })
   .refine(
     (data) => {
@@ -47,10 +48,11 @@ const updateStaffSchema = z
       .min(1, "Vai trò là bắt buộc")
       .optional(),
     status: z
-      .enum(["ACTIVE", "INACTIVE", "PENDING", "BANNED"], {
+      .enum(["ACTIVE", "INACTIVE", "BANNED"], {
         required_error: "Trạng thái tài khoản không hợp lệ",
       })
       .optional(),
+    avatar: z.string().optional().nullable(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: "Vui lòng cung cấp ít nhất một trường để cập nhật",

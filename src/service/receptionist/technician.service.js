@@ -2,6 +2,7 @@ const db = require("../../../models");
 const { notifyUser } = require("../../util/notification.util");
 
 const ACTIVE_RESCUE_STATUSES = ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'TOWING'];
+const MAX_RESCUE_DISTANCE_KM = 20;
 
 const ensureTechnicianCanBeAssignedToRescue = async (technicianId, excludedRescueId = null) => {
     const workingTechnicians = await module.exports.getTechniciansWorkingToday();
@@ -198,6 +199,10 @@ module.exports.createRescueRequest = async (data) => {
         throw new Error("Số điện thoại không được để trống");
     }
 
+    if (distance_km != null && Number(distance_km) > MAX_RESCUE_DISTANCE_KM) {
+        throw { status: 400, message: `Khoảng cách cứu hộ vượt quá ${MAX_RESCUE_DISTANCE_KM}km, không thể tạo dịch vụ.` };
+    }
+
     // 1. Tìm hoặc tạo hồ sơ khách hàng trong table Customers
     let customer = await db.Customers.findOne({ where: { phone: phone_number } });
     const user = await db.User.findOne({ where: { phoneNumber: phone_number } });
@@ -287,6 +292,48 @@ module.exports.createRescueRequest = async (data) => {
                 priority: "HIGH",
             }, "new_notification", { type: "RESCUE_ASSIGNED", rescueId: rescue.id, status: rescue.status });
         }
+    }
+
+    return rescue;
+};
+
+module.exports.cancelRescueRequest = async (rescueId, cancelReason) => {
+    if (!cancelReason || !cancelReason.trim()) {
+        throw { status: 400, message: "Vui lòng nhập lý do hủy cứu hộ" };
+    }
+
+    const rescue = await db.Rescue_Requests.findByPk(rescueId, {
+        include: [{ model: db.Customers, as: "customer" }],
+    });
+    if (!rescue) {
+        throw { status: 404, message: "Không tìm thấy yêu cầu cứu hộ" };
+    }
+    if (!ACTIVE_RESCUE_STATUSES.includes(rescue.status)) {
+        throw { status: 400, message: "Yêu cầu cứu hộ này không còn ở trạng thái có thể hủy" };
+    }
+
+    const technicianId = rescue.technician_id;
+    rescue.status = "CANCELLED";
+    rescue.cancel_reason = cancelReason.trim();
+    await rescue.save();
+
+    if (technicianId) {
+        await notifyUser(technicianId, {
+            title: "Cuốc cứu hộ đã bị hủy",
+            content: `Lễ tân đã hủy cuốc cứu hộ bạn đang phụ trách. Lý do: ${rescue.cancel_reason}`,
+            notificationType: "SYSTEM",
+            priority: "HIGH",
+            link: "/technician/rescue",
+        }, "new_notification", { type: "RESCUE_CANCELLED", rescueId: rescue.id });
+    }
+
+    if (rescue.customer?.user_id) {
+        await notifyUser(rescue.customer.user_id, {
+            title: "Yêu cầu cứu hộ đã bị hủy",
+            content: `Yêu cầu cứu hộ của bạn đã bị hủy. Lý do: ${rescue.cancel_reason}`,
+            notificationType: "SYSTEM",
+            priority: "HIGH",
+        }, "new_notification", { type: "RESCUE_CANCELLED", rescueId: rescue.id });
     }
 
     return rescue;

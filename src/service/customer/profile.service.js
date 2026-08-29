@@ -5,6 +5,23 @@ const { notifyRole, notifyUser } = require("../../util/notification.util");
 const { normalizeVnPhone } = require("../../util/phone.util");
 const bcrypt = require("bcrypt");
 
+// Giữ đồng bộ với luồng lễ tân (technician.service.js) — cùng giới hạn phạm vi cứu hộ tối đa,
+// và cùng toạ độ Gara cố định với FE (MapTracking.tsx: garageLocation).
+const MAX_RESCUE_DISTANCE_KM = 20;
+const GARAGE_LAT = 15.9675;
+const GARAGE_LNG = 108.2605;
+
+function haversineDistanceKm(lat1, lng1, lat2, lng2) {
+    const toRad = (deg) => (deg * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLng = toRad(lng2 - lng1);
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 module.exports.getActiveRescueTracking = async (userId) => {
     const customer = await db.Customers.findOne({ where: { user_id: userId } });
     if (!customer) return null;
@@ -44,7 +61,7 @@ module.exports.getProfile = async (userId) => {
             {
                 model: db.Customers,
                 as: "customerProfile",
-                attributes: ["id", "membership_tier", "loyalty_points"],
+                attributes: ["id", "membership_tier", "loyalty_points", "total_spent"],
                 required: false
             },
         ],
@@ -158,6 +175,15 @@ module.exports.updateLocation = async (userId, latitude, longitude, contactName,
     const user = await User.findByPk(userId);
     if (!user) {
         throw { status: 404, message: "Người dùng không tồn tại" };
+    }
+
+    // Chặn ở BE ngoài validate FE (MapTracking.tsx) — tránh khách hàng gọi thẳng API bỏ qua
+    // giới hạn phạm vi cứu hộ, giống cách luồng lễ tân đã chặn ở technician.service.js.
+    if (latitude !== undefined && longitude !== undefined && latitude !== null && longitude !== null) {
+        const distanceKm = haversineDistanceKm(GARAGE_LAT, GARAGE_LNG, latitude, longitude);
+        if (distanceKm > MAX_RESCUE_DISTANCE_KM) {
+            throw { status: 400, message: `Khoảng cách cứu hộ vượt quá ${MAX_RESCUE_DISTANCE_KM}km, không thể gửi yêu cầu.` };
+        }
     }
 
     if (latitude !== undefined) user.latitude = latitude;
