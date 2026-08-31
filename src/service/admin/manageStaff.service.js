@@ -166,6 +166,10 @@ module.exports.updateStaff = async (userId, payload) => {
     updates.avatar = payload.avatar;
   }
 
+  if (payload.password) {
+    updates.password = await bcrypt.hash(payload.password, 10);
+  }
+
   if (Object.keys(updates).length === 0) {
     throw { status: 400, message: "Vui lòng cung cấp ít nhất một trường để cập nhật" };
   }

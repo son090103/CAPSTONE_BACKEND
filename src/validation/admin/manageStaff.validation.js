@@ -53,10 +53,25 @@ const updateStaffSchema = z
       })
       .optional(),
     avatar: z.string().optional().nullable(),
+    password: z
+      .string()
+      .min(6, "Mật khẩu phải có ít nhất 6 ký tự")
+      .optional(),
+    confirmPassword: z.string().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: "Vui lòng cung cấp ít nhất một trường để cập nhật",
-  });
+  })
+  .refine(
+    (data) => {
+      if (!data.password) return true;
+      return data.password === data.confirmPassword;
+    },
+    {
+      message: "Mật khẩu xác nhận không khớp",
+      path: ["confirmPassword"],
+    }
+  );
 
 module.exports = {
   createStaffSchema,
