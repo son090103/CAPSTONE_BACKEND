@@ -55,6 +55,8 @@ module.exports.updateStaff = async (req, res) => {
       roleCode: req.body.roleCode,
       status: req.body.status,
       avatar: req.body.avatar,
+      password: req.body.password,
+      confirmPassword: req.body.confirmPassword,
     });
     if (!validation.success) {
       return res.status(400).json({ message: validation.error.issues[0].message });
