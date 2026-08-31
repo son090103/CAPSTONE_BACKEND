@@ -2,7 +2,7 @@ const db = require("../../../models");
 const { notifyUser } = require("../../util/notification.util");
 
 const ACTIVE_RESCUE_STATUSES = ['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'TOWING'];
-const MAX_RESCUE_DISTANCE_KM = 20;
+const MAX_RESCUE_DISTANCE_KM = 40;
 
 const ensureTechnicianCanBeAssignedToRescue = async (technicianId, excludedRescueId = null) => {
     const workingTechnicians = await module.exports.getTechniciansWorkingToday();

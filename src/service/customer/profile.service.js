@@ -7,7 +7,7 @@ const bcrypt = require("bcrypt");
 
 // Giữ đồng bộ với luồng lễ tân (technician.service.js) — cùng giới hạn phạm vi cứu hộ tối đa,
 // và cùng toạ độ Gara cố định với FE (MapTracking.tsx: garageLocation).
-const MAX_RESCUE_DISTANCE_KM = 20;
+const MAX_RESCUE_DISTANCE_KM = 40;
 const GARAGE_LAT = 15.9675;
 const GARAGE_LNG = 108.2605;
 

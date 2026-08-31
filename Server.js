@@ -14,13 +14,15 @@ const whitelist = [
   "https://agm-garage.id.vn",
   "https://www.agm-garage.id.vn",
   "192.168.0.191:8081",
-  "http://localhost:5173/"
+  "http://localhost:5173/",
+  "https://slight-cinema-artificial-pressed.trycloudflare.com",
+  "https://acting-protective-radical-tion.trycloudflare.com"
 ];
 const isOriginAllowed = (origin) => {
   if (!origin) return true;
   if (whitelist.includes(origin)) return true;
-  if (whitelist.includes(origin + "/")) return true; 
-
+  if (whitelist.includes(origin + "/")) return true;
+  if (/\.trycloudflare\.com$/.test(origin)) return true;
   if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
     return true;
   }

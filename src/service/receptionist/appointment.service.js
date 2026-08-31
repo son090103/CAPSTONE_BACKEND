@@ -255,9 +255,11 @@ module.exports.createAppointmentForCustomer = async (data, receptionistId) => {
         });
         if (freeCheckupService) {
             allDetails.push({ catalog_id: freeCheckupService.id });
-        } else {
-            throw { status: 400, message: "Vui lòng chọn ít nhất 1 dịch vụ hoặc combo" };
         }
+        //  else {
+        //     throw { status: 400, message: "Vui lòng chọn ít nhất 1 dịch vụ hoặc combo" };
+        // }
+        // hàm này có thể bỏ ở else
     }
 
     for (const detail of allDetails) {
@@ -515,9 +517,11 @@ module.exports.createWalkInTicket = async (data, receptionistId) => {
         });
         if (freeCheckupService) {
             allDetails.push({ catalog_id: freeCheckupService.id });
-        } else {
-            throw { status: 400, message: "Vui lòng chọn ít nhất 1 dịch vụ hoặc combo" };
         }
+        // else {
+        //     throw { status: 400, message: "Vui lòng chọn ít nhất 1 dịch vụ hoặc combo" };
+        // }
+        // hàm này có thể bỏ ở else 
     }
 
     for (const detail of allDetails) {
