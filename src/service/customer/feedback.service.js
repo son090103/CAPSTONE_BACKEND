@@ -127,9 +127,39 @@ module.exports.getAllFeedbacks = async () => {
         attributes: ['id', 'name', 'phone', 'email']
       },
       {
+        // Lễ tân xem lại đánh giá cần biết đánh giá thuộc xe nào và dịch vụ nào,
+        // nên kèm luôn biển số xe và danh sách công việc đã làm trong đơn.
         model: Service_Orders,
         as: 'serviceOrder',
-        attributes: ['id', 'appointment_id', 'vehicle_id', 'status', 'actual_finish_time']
+        attributes: ['id', 'appointment_id', 'vehicle_id', 'status', 'actual_finish_time'],
+        include: [
+          {
+            model: db.Vehicles,
+            as: 'vehicle',
+            attributes: ['id', 'license_plate', 'color'],
+            required: false,
+            include: [
+              {
+                model: db.Vehicle_Models,
+                as: 'model',
+                attributes: ['id', 'model_name'],
+                required: false,
+                include: [
+                  { model: db.Vehicle_Makes, as: 'make', attributes: ['id', 'make_name'], required: false }
+                ]
+              }
+            ]
+          },
+          {
+            model: db.Task,
+            as: 'tasks',
+            attributes: ['id', 'type', 'status'],
+            required: false,
+            include: [
+              { model: db.Service_Catalog, as: 'catalog', attributes: ['id', 'service_name'], required: false }
+            ]
+          }
+        ]
       },
       {
         model: db.User,
