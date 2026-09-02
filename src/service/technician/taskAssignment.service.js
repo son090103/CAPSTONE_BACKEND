@@ -1359,13 +1359,18 @@ module.exports.getRepairHistory = async () => {
           {
             model: Vehicles,
             as: "vehicle",
-            attributes: ["id", "model_id"],
+            // KTV cần biết kinh nghiệm này rút ra từ xe nào để đối chiếu, nên trả kèm
+            // biển số và hãng xe chứ không chỉ dòng xe.
+            attributes: ["id", "license_plate", "model_id"],
             required: true,
             include: [
               {
                 model: Vehicle_Models,
                 as: "model",
                 attributes: ["id", "model_name"],
+                include: [
+                  { model: db.Vehicle_Makes, as: "make", attributes: ["id", "make_name"], required: false },
+                ],
               },
             ],
           },
@@ -1424,6 +1429,9 @@ module.exports.searchRepairHistory = async (keyword) => {
                 model: Vehicle_Models,
                 as: "model",
                 attributes: ["id", "model_name"],
+                include: [
+                  { model: db.Vehicle_Makes, as: "make", attributes: ["id", "make_name"], required: false },
+                ],
               },
             ],
           },
