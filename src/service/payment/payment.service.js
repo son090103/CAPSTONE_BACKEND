@@ -520,8 +520,107 @@ const confirmPayment = async (orderId, amount, paymentMethod = 'VIETQR', recepti
     }
 };
 
+// Lễ tân thu tiền cọc phụ tùng đặt riêng bằng tiền mặt tại quầy.
+// Làm đúng những gì nhánh cọc của handleSepayTransaction làm, chỉ khác nguồn tiền là CASH:
+// ghi deposit_paid_at, ghi nhận hóa đơn cọc, mở khóa Custom_Part_Orders để thủ kho đặt hàng.
+// KHÔNG cộng điểm tích lũy — điểm chỉ cộng ở lần thanh toán cuối (confirmPayment).
+const confirmDepositCash = async (quotationId, receptionistId = null) => {
+    const numericQuotationId = parseInt(String(quotationId).replace(/\D/g, ''), 10);
+    if (isNaN(numericQuotationId)) {
+        throw { status: 400, message: "Mã báo giá không hợp lệ" };
+    }
+
+    const quotation = await db.Quotations.findByPk(numericQuotationId, {
+        include: [{ model: db.Task, as: "task", attributes: ["id", "service_order_id"] }],
+    });
+    if (!quotation) {
+        throw { status: 404, message: "Không tìm thấy báo giá" };
+    }
+    if (quotation.deposit_paid_at) {
+        throw { status: 400, message: "Báo giá này đã được thu cọc trước đó" };
+    }
+    const depositAmount = Number(quotation.deposit_amount || 0);
+    if (depositAmount <= 0) {
+        throw { status: 400, message: "Báo giá này không có khoản cọc cần thu" };
+    }
+
+    const serviceOrderId = quotation.task ? quotation.task.service_order_id : null;
+    if (!serviceOrderId) {
+        throw { status: 400, message: "Không xác định được lệnh sửa chữa của báo giá" };
+    }
+
+    const paidAt = new Date();
+
+    return await db.sequelize.transaction(async (t) => {
+        // Booking_Payments.order_id là unique nên mỗi đơn chỉ có 1 bản ghi: lần cọc tạo mới,
+        // lần thanh toán cuối sẽ cập nhật chính bản ghi này sang PAID (giống luồng Sepay).
+        let bookingPayment = await db.Booking_Payments.findOne({
+            where: { order_id: serviceOrderId },
+            transaction: t,
+        });
+        if (!bookingPayment) {
+            bookingPayment = await db.Booking_Payments.create({
+                order_id: serviceOrderId,
+                amount: depositAmount,
+                payment_status: 'DEPOSITED',
+                payment_method: 'CASH',
+                payment_gateway: 'CASH',
+                transaction_code: `CASH-DEP-${numericQuotationId}-${Date.now()}`,
+                paid_at: paidAt,
+            }, { transaction: t });
+        } else {
+            await bookingPayment.update({
+                payment_status: 'DEPOSITED',
+                payment_method: 'CASH',
+                payment_gateway: 'CASH',
+                amount: depositAmount,
+                transaction_code: `CASH-DEP-${numericQuotationId}-${Date.now()}`,
+                paid_at: paidAt,
+            }, { transaction: t });
+        }
+
+        // Nhật ký giao dịch để đối soát tiền mặt cuối ngày, cùng định dạng với confirmPayment.
+        await db.Payment_Transactions.create({
+            payment_id: bookingPayment.id,
+            gateway: 'CASH',
+            transaction_date: paidAt,
+            account_number: 'CASH',
+            sub_account: 'CASH',
+            amount_in: depositAmount,
+            amount_out: 0,
+            accumulated: depositAmount,
+            code: `CASH-DEP-${Date.now()}`,
+            transaction_content: `Thu cọc tiền mặt báo giá #${numericQuotationId} (SO-${serviceOrderId})`,
+            raw_body: JSON.stringify({ quotationId: numericQuotationId, serviceOrderId, depositAmount, receptionistId }),
+        }, { transaction: t });
+
+        await quotation.update({ deposit_paid_at: paidAt }, { transaction: t });
+
+        const quotationDetailIds = (
+            await db.Quotation_Details.findAll({
+                where: { quotation_id: numericQuotationId },
+                attributes: ["id"],
+                transaction: t,
+            })
+        ).map((detail) => detail.id);
+        await db.Custom_Part_Orders.update(
+            { status: "WAITING_ARRIVAL" },
+            {
+                where: { quotation_detail_id: quotationDetailIds, status: "WAITING_DEPOSIT" },
+                transaction: t,
+            },
+        );
+
+        return { bookingPayment, depositAmount, serviceOrderId };
+    }).then(async (result) => {
+        await notifyDepositPaid(numericQuotationId);
+        return { success: true, ...result };
+    });
+};
+
 module.exports = {
     handleSepayTransaction,
+    confirmDepositCash,
     checkPaymentStatus,
     initPayment,
     confirmPayment,
