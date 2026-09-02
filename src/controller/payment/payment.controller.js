@@ -67,9 +67,27 @@ const confirmPayment = async (req, res) => {
     }
 };
 
+const confirmDepositCash = async (req, res) => {
+    try {
+        const { quotationId } = req.body;
+        const receptionistId = res.locals.user?.id || null;
+        if (!quotationId) {
+            return res.status(400).json({ success: false, message: "Thiếu mã báo giá" });
+        }
+        const result = await paymentService.confirmDepositCash(quotationId, receptionistId);
+        return res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        console.error("❌ [Confirm Deposit Cash] Lỗi:", error);
+        return res
+            .status(error.status || 500)
+            .json({ success: false, message: error.message || "Internal server error" });
+    }
+};
+
 module.exports = {
     sepayWebhook,
     checkPaymentStatus,
     initPayment,
     confirmPayment,
+    confirmDepositCash,
 };
