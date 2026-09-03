@@ -671,21 +671,7 @@ module.exports.viewExportDetail = async (receiptCode) => {
   return result;
 };
 
-// Đề xuất nhập hàng thông minh: không chỉ dựa vào ngưỡng min_threshold cố định, mà tính nhu
-// cầu thực tế dựa trên xu hướng tiêu thụ gần đây so với giai đoạn trước đó.
-//
-// Chia lịch sử xuất kho 30 ngày gần nhất thành 2 nửa (mỗi nửa 15 ngày):
-//   - "recent"   = 15 ngày gần nhất  -> phản ánh nhu cầu HIỆN TẠI
-//   - "previous" = 15 ngày trước đó  -> làm mốc so sánh xu hướng
-// Nếu recentRate cao hơn previousRate (nhu cầu đang tăng), tốc độ dự đoán sẽ nghiêng về
-// recentRate để không đề xuất thiếu. Nếu phụ tùng chỉ có dữ liệu ở 1 nửa (mới bắt đầu bán
-// chạy hoặc đã ngừng dùng gần đây), dùng thẳng tốc độ của nửa có dữ liệu, không suy diễn.
-// Trọng số 70/30 (nghiêng về gần đây) là cách làm mượt phổ biến (giống EWMA đơn giản) để
-// một ngày xuất đột biến không làm lệch hẳn dự đoán, nhưng vẫn ưu tiên xu hướng mới nhất.
-//
-// Nhu cầu dự kiến = tốc độ dự đoán/ngày x RESTOCK_DAYS (cấu hình trong Garage_Configurations,
-// mặc định 14 ngày) - trừ đi tồn kho khả dụng thực tế (đã trừ phần đang bị giữ chỗ cho các
-// yêu cầu xuất kho REQUESTED/WAITING_STOCK chưa xuất xong).
+
 const CONSUMPTION_WINDOW_DAYS = 90;
 const DEFAULT_RESTOCK_DAYS = 14;
 
@@ -772,8 +758,7 @@ const computeRestockAnalysis = async () => {
       const targetDemand = Math.max(projectedDemand, part.min_threshold || 0);
       let suggestedQuantity = 0;
       if (availableStock < targetDemand) {
-        const targetStockLevel = Math.max((part.min_threshold || 0) * 2, projectedDemand * 1.5);
-        suggestedQuantity = Math.max(0, Math.ceil(targetStockLevel - availableStock));
+        suggestedQuantity = Math.max(0, Math.ceil(targetDemand - availableStock));
       }
 
       return {
